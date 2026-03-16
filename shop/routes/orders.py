@@ -1,0 +1,47 @@
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException
+
+from core.schemas import PaginationParams
+from db.supabase import get_supabase_client
+from core.security import get_current_user_id
+from shop import service as shop_service
+from shop.schemas import OrderCreate, OrderResponse, OrderUpdate
+
+router = APIRouter()
+
+
+@router.post("/", response_model=OrderResponse)
+async def create_order(
+  body: OrderCreate,
+  client: Annotated[any, Depends(get_supabase_client)],
+  user_id: str = Depends(get_current_user_id),
+):
+    try:
+        return shop_service.create_order(client, user_id, body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/")
+async def list_orders(
+  client: Annotated[any, Depends(get_supabase_client)],
+  params: Annotated[PaginationParams, Depends()],
+  user_id: str = Depends(get_current_user_id),
+):
+    # RLS: customer sees own orders; merchant sees orders for their shops
+    return shop_service.list_orders(client, page=params.page, limit=params.limit, customer_id=user_id)
+
+
+@router.patch("/{order_id}", response_model=OrderResponse)
+async def update_order(
+  order_id: str,
+  body: OrderUpdate,
+  client: Annotated[any, Depends(get_supabase_client)],
+  user_id: str = Depends(get_current_user_id),
+):
+    order_status = body.order_status or "pending"
+    updated = shop_service.update_order_status(client, order_id, order_status)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return updated

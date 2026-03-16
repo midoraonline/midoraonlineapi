@@ -1,0 +1,1 @@
+# Tenants (shops) domain
