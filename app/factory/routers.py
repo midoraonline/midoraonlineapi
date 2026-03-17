@@ -1,7 +1,19 @@
+from datetime import datetime, timezone
+
 from fastapi import FastAPI
 
 
 def register_routers(app: FastAPI) -> None:
+    async def health() -> dict:
+        return {
+            "status": "ok",
+            "service": app.title,
+            "version": app.version,
+            "time": datetime.now(timezone.utc).isoformat(),
+        }
+
+    app.add_api_route("/api/v1/health", health, methods=["GET"], tags=["health"])
+
     # Lazy imports to avoid circular imports
     from auth.router import router as auth_router
     from tenants.router import router as tenants_router
