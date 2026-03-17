@@ -12,8 +12,8 @@ security = HTTPBearer(auto_error=False)
 
 class TokenPayload(BaseModel):
     sub: str | None = None
-    email: str | None = None
     role: str | None = None
+    type: str | None = None
 
 
 def get_bearer_token(
@@ -26,6 +26,22 @@ def get_bearer_token(
     return credentials.credentials
 
 
+def _decode_auth_token(token: str) -> TokenPayload:
+    settings = get_settings()
+    try:
+        payload = jwt.decode(
+            token,
+            settings.app_jwt_secret,
+            algorithms=[settings.app_jwt_algorithm],
+        )
+        return TokenPayload(**payload)
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        )
+
+
 def get_current_user_id(token: Annotated[str | None, Depends(get_bearer_token)]) -> str:
     if not token:
         raise HTTPException(
@@ -33,26 +49,13 @@ def get_current_user_id(token: Annotated[str | None, Depends(get_bearer_token)])
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    settings = get_settings()
-    # Supabase JWT: no shared secret; we optionally decode for local claims only.
-    # For RLS, the token is passed to Supabase client via set_session.
-    try:
-        payload = jwt.decode(
-            token,
-            options={"verify_signature": False},
-        )
-        sub = payload.get("sub")
-        if not sub:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token",
-            )
-        return sub
-    except JWTError:
+    payload = _decode_auth_token(token)
+    if not payload.sub or payload.type != "access":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token",
         )
+    return payload.sub
 
 
 def get_optional_user_id(
@@ -61,12 +64,11 @@ def get_optional_user_id(
     if not token:
         return None
     try:
-        payload = jwt.decode(
-            token,
-            options={"verify_signature": False},
-        )
-        return payload.get("sub")
-    except JWTError:
+        payload = _decode_auth_token(token)
+        if payload.type != "access":
+            return None
+        return payload.sub
+    except HTTPException:
         return None
 
 

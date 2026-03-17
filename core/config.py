@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     # Admin API (optional): set ADMIN_API_KEY to protect admin routes
     admin_api_key: str = Field(default="", alias="ADMIN_API_KEY")
 
+    # App-auth JWT settings (for custom auth)
+    app_jwt_secret: str = Field(default="CHANGE_ME_IN_PROD", alias="APP_JWT_SECRET")
+    app_jwt_algorithm: str = Field(default="HS256", alias="APP_JWT_ALGORITHM")
+    app_access_token_expire_minutes: int = Field(default=15, alias="APP_ACCESS_TOKEN_EXPIRE_MINUTES")
+    app_refresh_token_expire_days: int = Field(default=30, alias="APP_REFRESH_TOKEN_EXPIRE_DAYS")
+
+    # Public API base URL (for building links in emails)
+    api_base_url: str = Field(default="http://localhost:8000", alias="API_BASE_URL")
+
 
 def get_settings() -> Settings:
     return Settings()

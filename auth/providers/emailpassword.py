@@ -1,6 +1,8 @@
 from typing import Any
+from uuid import uuid4
 
-from core.config import get_settings
+from auth import service as auth_service
+from db.supabase import get_supabase_admin
 
 
 def sign_up(
@@ -9,80 +11,150 @@ def sign_up(
     full_name: str | None = None,
     user_role: str = "customer",
 ) -> dict[str, Any]:
-    """Register user via Supabase Auth and create profile row. Optionally send verification email."""
-    settings = get_settings()
-    from supabase import create_client
+    """Register user via custom auth and create profile row if needed.
 
-    client = create_client(settings.supabase_url, settings.supabase_anon_key)
-    opts: dict[str, Any] = {}
-    if full_name is not None or user_role:
-        opts["data"] = {"full_name": full_name or "", "user_role": user_role}
-    response = client.auth.sign_up({"email": email, "password": password, "options": opts})
-    user = getattr(response, "user", None)
-    session = getattr(response, "session", None)
-    if user:
-        # Create profile row using service_role so RLS doesn't block
-        admin = create_client(settings.supabase_url, settings.supabase_service_role_key)
-        try:
-            admin.table("profiles").insert(
-                {"id": user.id, "full_name": full_name, "user_role": user_role}
-            ).execute()
-        except Exception:
-            pass  # Profile might already exist or table missing
-        return {"user": user, "session": session}
-    raise ValueError(getattr(response, "message", str(response)))
+    Also creates an email verification token record for custom verification flow.
+    """
+    user = auth_service.create_user(
+        email=email,
+        password=password,
+        full_name=full_name,
+        user_role=user_role,
+    )
+
+    client = get_supabase_admin()
+    # Optionally mirror into profiles table for existing domain logic
+    try:
+        client.table("profiles").insert(
+            {
+                "id": user["id"],
+                "full_name": user.get("full_name"),
+                "user_role": user.get("user_role", "customer"),
+            }
+        ).execute()
+    except Exception:
+        # Profile might already exist or table missing; do not fail registration
+        pass
+
+    # Create verification token row
+    token = uuid4().hex
+    client.table("email_verification_tokens").insert(
+        {
+            "user_id": user["id"],
+            "token": token,
+        }
+    ).execute()
+
+    access_token, refresh_token = auth_service.create_access_and_refresh_tokens(
+        user_id=str(user["id"]),
+        role=user.get("user_role", "customer"),
+    )
+    return {
+        "user": user,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "verification_token": token,
+    }
 
 
 def sign_in(email: str, password: str) -> dict[str, Any]:
-    """Sign in via Supabase Auth. Returns session/tokens."""
-    settings = get_settings()
-    from supabase import create_client
-
-    client = create_client(settings.supabase_url, settings.supabase_anon_key)
-    response = client.auth.sign_in_with_password({"email": email, "password": password})
-    session = getattr(response, "session", None)
-    if session:
-        return {
-            "access_token": session.access_token,
-            "refresh_token": getattr(session, "refresh_token", None) or "",
-            "user": getattr(response, "user", None),
-        }
-    raise ValueError("Sign in failed")
+    """Sign in via custom users table. Returns JWT access/refresh tokens."""
+    user = auth_service.authenticate_user(email, password)
+    if not user:
+        raise ValueError("Invalid email or password")
+    access_token, refresh_token = auth_service.create_access_and_refresh_tokens(
+        user_id=str(user["id"]),
+        role=user.get("user_role", "customer"),
+    )
+    return {
+        "user": user,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+    }
 
 
 def verify_email(token: str) -> dict[str, Any]:
-    """Mark email as verified (custom flow or Supabase confirmation)."""
-    settings = get_settings()
-    from supabase import create_client
+    """Mark email as verified using custom token table and return user + fresh tokens."""
+    client = get_supabase_admin()
+    r = (
+        client.table("email_verification_tokens")
+        .select("user_id, used_at")
+        .eq("token", token)
+        .limit(1)
+        .execute()
+    )
+    if not r.data:
+        raise ValueError("Invalid or expired verification token")
+    row = r.data[0]
+    if row.get("used_at") is not None:
+        raise ValueError("Verification token has already been used")
 
-    client = create_client(settings.supabase_url, settings.supabase_anon_key)
-    response = client.auth.verify_otp({"token_hash": token, "type": "email"})
-    return {"verified": True, "user": getattr(response, "user", None)}
+    user_id = row["user_id"]
+    # Mark user as verified
+    client.table("users").update({"email_verified": True}).eq("id", user_id).execute()
+    # Mark token as used
+    client.table("email_verification_tokens").update({"used_at": "now()"}).eq("token", token).execute()
+
+    # Load user details and issue fresh tokens
+    user_res = client.table("users").select("id,email,full_name,user_role,email_verified").eq("id", user_id).limit(1).execute()
+    if not user_res.data:
+        raise ValueError("User not found for verification token")
+    user = user_res.data[0]
+    access_token, refresh_token = auth_service.create_access_and_refresh_tokens(
+        user_id=str(user["id"]),
+        role=user.get("user_role", "customer"),
+    )
+    return {
+        "user": user,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+    }
 
 
 def refresh_session(refresh_token: str) -> dict[str, Any]:
-    """Refresh Supabase session. Returns new tokens."""
-    settings = get_settings()
-    from supabase import create_client
-
-    client = create_client(settings.supabase_url, settings.supabase_anon_key)
-    response = client.auth.refresh_session(refresh_token)
-    session = getattr(response, "session", None)
-    if session:
-        return {
-            "access_token": session.access_token,
-            "refresh_token": getattr(session, "refresh_token", None) or "",
-        }
-    raise ValueError("Refresh failed")
+    """Validate refresh token and return new access/refresh pair."""
+    payload = auth_service.decode_token(refresh_token)
+    if payload.get("type") != "refresh":
+        raise ValueError("Invalid refresh token")
+    user_id = payload.get("sub")
+    role = payload.get("role", "customer")
+    if not user_id:
+        raise ValueError("Invalid refresh token payload")
+    # Optionally ensure user still exists
+    client = get_supabase_admin()
+    res = client.table("users").select("id, user_role").eq("id", user_id).limit(1).execute()
+    if not res.data:
+        raise ValueError("User not found")
+    db_user = res.data[0]
+    new_role = db_user.get("user_role", role)
+    access_token, new_refresh_token = auth_service.create_access_and_refresh_tokens(
+        user_id=str(db_user["id"]),
+        role=new_role,
+    )
+    return {
+        "access_token": access_token,
+        "refresh_token": new_refresh_token,
+    }
 
 
 def get_profile(user_id: str) -> dict[str, Any] | None:
-    """Fetch profile by user id (auth.users.id)."""
-    settings = get_settings()
-    from supabase import create_client
+    """Fetch profile by user id (custom users.id), joined with profiles if present."""
+    client = get_supabase_admin()
+    # Try to pull profile; fall back to users row only
+    profile = (
+        client.table("profiles").select("*").eq("id", user_id).limit(1).execute()
+    )
+    if profile.data:
+        return profile.data[0]
 
-    client = create_client(settings.supabase_url, settings.supabase_service_role_key)
-    r = client.table("profiles").select("*").eq("id", user_id).execute()
-    if r.data and len(r.data) > 0:
-        return r.data[0]
+    user_res = client.table("users").select("id, email, full_name, user_role").eq("id", user_id).limit(1).execute()
+    if user_res.data:
+        row = user_res.data[0]
+        return {
+            "id": row.get("id"),
+            "full_name": row.get("full_name"),
+            "avatar_url": None,
+            "phone_number": None,
+            "user_role": row.get("user_role", "customer"),
+        }
     return None

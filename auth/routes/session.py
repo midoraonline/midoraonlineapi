@@ -9,6 +9,7 @@ router = APIRouter()
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(body: RefreshRequest):
     from auth.providers.emailpassword import refresh_session
+
     try:
         result = refresh_session(body.refresh_token)
         return TokenResponse(
@@ -22,6 +23,7 @@ async def refresh(body: RefreshRequest):
 @router.get("/me", response_model=ProfileResponse)
 async def me(user_id: str = Depends(get_current_user_id)):
     from auth.providers.emailpassword import get_profile
+
     profile = get_profile(user_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
