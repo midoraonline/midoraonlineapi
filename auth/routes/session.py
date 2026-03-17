@@ -34,3 +34,9 @@ async def me(user_id: str = Depends(get_current_user_id)):
         phone_number=profile.get("phone_number"),
         user_role=profile.get("user_role", "customer"),
     )
+
+
+@router.post("/logout")
+async def logout() -> dict:
+    """Stateless logout: client should delete stored tokens."""
+    return {"message": "Logged out. Please delete tokens on client."}
