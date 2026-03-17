@@ -3,17 +3,40 @@ from typing import Any
 from core.config import get_settings
 
 
-def get_gemini_model():
-    """Lazy init Gemini model."""
+def _get_genai_client():
+    """Lazy init Google GenAI client (new google.genai SDK)."""
     settings = get_settings()
     if not settings.gemini_api_key:
         return None
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=settings.gemini_api_key)
-        return genai.GenerativeModel("gemini-1.5-flash")
+        from google import genai
+
+        client = genai.Client(api_key=settings.gemini_api_key)
+        return client
     except Exception:
         return None
+
+
+def get_gemini_model() -> Any:
+    """
+    Backwards-compatible helper returning a small wrapper with a generate_content(prompt: str) method,
+    so existing call sites do not need to change.
+    """
+    client = _get_genai_client()
+    if not client:
+        return None
+
+    class _ModelWrapper:
+        def __init__(self, _client):
+            self._client = _client
+            # Default text model for general Midora chat.
+            # Using a free-tier supported model ID.
+            self._model = "gemini-2.5-flash"
+
+        def generate_content(self, prompt: str):
+            return self._client.models.generate_content(model=self._model, contents=prompt)
+
+    return _ModelWrapper(client)
 
 
 def generate_product_copy_from_image(image_url: str | None = None, image_base64: str | None = None) -> dict[str, str]:
@@ -38,6 +61,35 @@ def chat_with_context(shop_context: str, product_summary: str | None, message: s
         return "Sorry, I couldn't process that."
 
 
+MIDORA_INFO_SYSTEM = """You are Midora Online's product assistant.
+
+Your only job is to explain and answer questions about:
+- Midora Online / DigitalMall as a product
+- what it is, who it's for, and what you can do with it
+- how shops, products, orders, payments, and AI assistants work at a high level
+
+Guidelines:
+- Be friendly, clear, and concise.
+- Assume the user is a potential merchant or buyer on Midora Online.
+- Do NOT give legal, medical, or financial advice.
+- If the user asks for something outside Midora Online, politely redirect back to what Midora is and how it works.
+"""
+
+
+def chat_midora_info(message: str) -> str:
+    """General Midora Online info bot (not tied to any shop)."""
+    model = get_gemini_model()
+    if not model:
+        return "AI is not configured."
+    prompt = f"{MIDORA_INFO_SYSTEM}\n\nUser: {message}\n\nAssistant:"
+    try:
+        response = model.generate_content(prompt)
+        return response.text if hasattr(response, "text") else str(response)
+    except Exception as e:
+        # Surface underlying error so it's easier to debug in dev
+        return f"AI error: {e}"
+
+
 CREATE_SHOP_SYSTEM = """You are helping a user create their online shop on the mall. Be friendly and concise.
 
 Ask for (one at a time or together):
@@ -58,13 +110,16 @@ Do not output anything else after the JSON block. If you already output a JSON b
 
 def _get_create_shop_model():
     """Gemini model with create-shop system instruction."""
-    settings = get_settings()
-    if not settings.gemini_api_key:
+    client = _get_genai_client()
+    if not client:
         return None
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=settings.gemini_api_key)
-        return genai.GenerativeModel("gemini-1.5-flash", system_instruction=CREATE_SHOP_SYSTEM)
+        # Use a dedicated model with system_instruction if supported
+        from google import genai  # type: ignore
+
+        # New google.genai SDK prefers configuring system_instruction via config in generate_content,
+        # but we keep this factory for potential future extension. For now, we just reuse the client.
+        return client
     except Exception:
         return None
 
@@ -76,8 +131,8 @@ def chat_create_shop(messages: list[dict]) -> tuple[str, dict | None]:
     """
     import json
     import re
-    model = _get_create_shop_model()
-    if not model:
+    client = _get_create_shop_model()
+    if not client:
         return "AI is not configured. Please create your shop manually.", None
     # Build conversation for Gemini (user turn, model turn, ...)
     history = []
@@ -85,8 +140,16 @@ def chat_create_shop(messages: list[dict]) -> tuple[str, dict | None]:
         role = "user" if m.get("sender_type") == "customer" else "model"
         history.append({"role": role, "parts": [m.get("message", "")]})
     try:
-        chat = model.start_chat(history=history[:-1] if len(history) > 1 else [])
-        response = chat.send_message(history[-1]["parts"][0] if history else "I want to create a shop.")
+        from google.genai.types import GenerateContentConfig  # type: ignore
+
+        prompt = history[-1]["parts"][0] if history else "I want to create a shop."
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=GenerateContentConfig(
+                system_instruction=[CREATE_SHOP_SYSTEM],
+            ),
+        )
         reply = response.text if hasattr(response, "text") else str(response)
     except Exception:
         return "Sorry, I couldn't process that. Try again or create your shop from the dashboard.", None

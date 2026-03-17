@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from db.supabase import get_supabase_client
 from core.security import get_optional_user_id
@@ -8,6 +9,21 @@ from ai import service as ai_service
 from ai.schemas import ChatSessionCreate
 
 router = APIRouter()
+
+
+class MidoraChatRequest(BaseModel):
+    message: str
+
+
+class MidoraChatResponse(BaseModel):
+    message: str
+
+
+@router.post("/midora", response_model=MidoraChatResponse)
+async def midora_info_chat(body: MidoraChatRequest) -> MidoraChatResponse:
+    """Simple Midora Online info bot (no sessions, no shop context)."""
+    reply = ai_service.chat_midora_info(body.message)
+    return MidoraChatResponse(message=reply)
 
 
 @router.post("/sessions")
@@ -89,7 +105,7 @@ async def send_message(
 @router.get("/sessions/{session_id}/messages")
 async def get_messages(
     session_id: str,
-  client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[any, Depends(get_supabase_client)],
 ):
     r = client.table("chat_messages").select("*").eq("session_id", session_id).order("created_at").execute()
     return r.data or []

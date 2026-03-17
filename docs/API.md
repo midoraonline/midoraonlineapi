@@ -99,6 +99,8 @@
   - Purpose: Send a message; stores conversation and returns AI reply
 - `GET /api/v1/chat/sessions/{session_id}/messages`
   - Purpose: List messages for a session
+ - `POST /api/v1/chat/midora`
+   - Purpose: Simple Midora Online info bot (no sessions); send `{ "message": "..." }` and receive `{ "message": "..." }`
 
 ### AI images (`/api/v1/ai/*`)
 
