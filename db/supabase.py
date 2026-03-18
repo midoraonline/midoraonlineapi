@@ -33,7 +33,13 @@ def get_supabase_admin() -> Client:
 def get_supabase_client(
     token: Annotated[str | None, Depends(get_bearer_token)],
 ) -> Client:
-    """Dependency: returns Supabase client with user session when Bearer token present."""
-    if not token:
-        return get_supabase_admin()
-    return get_supabase_with_jwt(token)
+    """
+    Dependency: returns Supabase client.
+
+    Temporarily always uses the admin client to avoid Supabase JWT signature
+    issues while custom JWT integration is being updated. This means RLS
+    is evaluated with service role privileges, so do not use this in
+    production until Supabase JWT is correctly configured and the
+    per-user session flow (get_supabase_with_jwt) is re-enabled.
+    """
+    return get_supabase_admin()
