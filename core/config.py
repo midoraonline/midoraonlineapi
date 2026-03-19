@@ -34,6 +34,8 @@ class Settings(BaseSettings):
 
     # AI - .env uses Gemini_API_Key
     gemini_api_key: str = Field(default="", alias="Gemini_API_Key")
+    # Override via GEMINI_MODEL env var; gemini-2.5-flash is confirmed working on free tier
+    gemini_model: str = Field(default="gemini-2.5-flash", alias="GEMINI_MODEL")
     nano_banana_api_key: str = ""
     nano_banana_url: str = ""
 
