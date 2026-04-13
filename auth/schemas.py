@@ -39,6 +39,8 @@ class GoogleOAuthUrlResponse(BaseModel):
 
 class ProfileResponse(BaseModel):
     id: str
+    email: EmailStr
+    email_verified: bool
     full_name: str | None
     avatar_url: str | None
     phone_number: str | None

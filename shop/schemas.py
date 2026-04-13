@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class ProductCreate(BaseModel):
@@ -6,9 +6,18 @@ class ProductCreate(BaseModel):
     description: str | None = None
     price_ugx: float
     stock_quantity: int = 0
-    image_urls: list[str] | None = None
+    image_urls: list[str] | str | None = None
     category: str | None = None
     is_published: bool = True
+
+    @field_validator("image_urls", mode="before")
+    @classmethod
+    def _coerce_image_urls(cls, v: list[str] | str | None) -> list[str] | None:
+        if v is None or v == "":
+            return None
+        if isinstance(v, str):
+            return [v]
+        return v
 
 
 class ProductUpdate(BaseModel):
@@ -16,7 +25,18 @@ class ProductUpdate(BaseModel):
     description: str | None = None
     price_ugx: float | None = None
     stock_quantity: int | None = None
-    image_urls: list[str] | None = None
+    image_urls: list[str] | str | None = None
+
+    @field_validator("image_urls", mode="before")
+    @classmethod
+    def _coerce_image_urls(cls, v: list[str] | str | None) -> list[str] | None:
+        if v is None:
+            return None
+        if v == "":
+            return []
+        if isinstance(v, str):
+            return [v]
+        return v
     category: str | None = None
     is_published: bool | None = None
 

@@ -76,6 +76,13 @@ def list_products(
     return {"items": items, "total": total, "page": page, "limit": limit, "total_pages": total_pages}
 
 
+def _image_urls_for_db(value: list[str] | None) -> list[str] | None:
+    """Postgres column is TEXT[]; PostgREST expects a JSON array, not a comma-separated string."""
+    if value is None:
+        return None
+    return list(value)
+
+
 def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
     payload = {
         "shop_id": shop_id,
@@ -86,8 +93,9 @@ def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
         "category": data.category,
         "is_published": data.is_published,
     }
-    if data.image_urls:
-        payload["image_urls"] = ",".join(data.image_urls) if isinstance(data.image_urls, list) else data.image_urls
+    imgs = _image_urls_for_db(data.image_urls)
+    if imgs is not None:
+        payload["image_urls"] = imgs
     r = client.table("products").insert(payload).execute()
     if not r.data or len(r.data) == 0:
         raise ValueError("Failed to create product")
@@ -106,7 +114,7 @@ def get_product(client: Any, product_id: str, viewer_id: str | None = None) -> d
 def update_product(client: Any, product_id: str, data: ProductUpdate) -> dict | None:
     payload = data.model_dump(exclude_unset=True)
     if data.image_urls is not None:
-        payload["image_urls"] = ",".join(data.image_urls) if isinstance(data.image_urls, list) else data.image_urls
+        payload["image_urls"] = _image_urls_for_db(data.image_urls) or []
     if not payload:
         return get_product(client, product_id, viewer_id=None)
     r = client.table("products").update(payload).eq("id", product_id).execute()
@@ -122,7 +130,9 @@ def delete_product(client: Any, product_id: str) -> bool:
 
 def _row_to_product_response(row: dict) -> dict:
     image_urls = row.get("image_urls")
-    if isinstance(image_urls, str) and image_urls:
+    if isinstance(image_urls, list):
+        image_urls = [str(x).strip() for x in image_urls if x is not None and str(x).strip()]
+    elif isinstance(image_urls, str) and image_urls:
         image_urls = [s.strip() for s in image_urls.split(",")]
     elif not image_urls:
         image_urls = []

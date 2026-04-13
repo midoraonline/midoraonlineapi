@@ -29,6 +29,8 @@ async def me(user_id: str = Depends(get_current_user_id)):
         raise HTTPException(status_code=404, detail="Profile not found")
     return ProfileResponse(
         id=str(profile.get("id", "")),
+        email=profile.get("email", ""),
+        email_verified=bool(profile.get("email_verified")),
         full_name=profile.get("full_name"),
         avatar_url=profile.get("avatar_url"),
         phone_number=profile.get("phone_number"),

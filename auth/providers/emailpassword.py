@@ -138,23 +138,38 @@ def refresh_session(refresh_token: str) -> dict[str, Any]:
 
 
 def get_profile(user_id: str) -> dict[str, Any] | None:
-    """Fetch profile by user id (custom users.id), joined with profiles if present."""
+    """Fetch profile: merge `users` (email, verification, auth fields) with `profiles` (avatar, phone)."""
     client = get_supabase_admin()
-    # Try to pull profile; fall back to users row only
-    profile = (
-        client.table("profiles").select("*").eq("id", user_id).limit(1).execute()
+    user_res = (
+        client.table("users")
+        .select("id, email, full_name, user_role, email_verified")
+        .eq("id", user_id)
+        .limit(1)
+        .execute()
     )
-    if profile.data:
-        return profile.data[0]
+    if not user_res.data:
+        return None
+    user = user_res.data[0]
 
-    user_res = client.table("users").select("id, email, full_name, user_role").eq("id", user_id).limit(1).execute()
-    if user_res.data:
-        row = user_res.data[0]
+    prof_res = client.table("profiles").select("full_name, avatar_url, phone_number, user_role").eq("id", user_id).limit(1).execute()
+    if prof_res.data:
+        p = prof_res.data[0]
         return {
-            "id": row.get("id"),
-            "full_name": row.get("full_name"),
-            "avatar_url": None,
-            "phone_number": None,
-            "user_role": row.get("user_role", "customer"),
+            "id": user.get("id"),
+            "email": user.get("email", ""),
+            "email_verified": bool(user.get("email_verified")),
+            "full_name": p.get("full_name") or user.get("full_name"),
+            "avatar_url": p.get("avatar_url"),
+            "phone_number": p.get("phone_number"),
+            "user_role": p.get("user_role") or user.get("user_role", "customer"),
         }
-    return None
+
+    return {
+        "id": user.get("id"),
+        "email": user.get("email", ""),
+        "email_verified": bool(user.get("email_verified")),
+        "full_name": user.get("full_name"),
+        "avatar_url": None,
+        "phone_number": None,
+        "user_role": user.get("user_role", "customer"),
+    }
