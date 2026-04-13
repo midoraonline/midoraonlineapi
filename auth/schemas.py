@@ -23,6 +23,16 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class GoogleCodeExchangeRequest(BaseModel):
+    code: str
+    state: str | None = None
+
+
+class GoogleOAuthUrlResponse(BaseModel):
+    url: str
+    state: str
+
+
 class ProfileResponse(BaseModel):
     id: str
     full_name: str | None

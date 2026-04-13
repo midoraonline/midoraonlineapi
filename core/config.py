@@ -48,6 +48,19 @@ class Settings(BaseSettings):
     app_access_token_expire_minutes: int = Field(default=15, alias="APP_ACCESS_TOKEN_EXPIRE_MINUTES")
     app_refresh_token_expire_days: int = Field(default=30, alias="APP_REFRESH_TOKEN_EXPIRE_DAYS")
 
+    # Google OAuth (Authorization Code flow)
+    google_oauth_client_id: str = Field(default="", alias="GOOGLE_OAUTH_CLIENT_ID")
+    google_oauth_client_secret: str = Field(default="", alias="GOOGLE_OAUTH_CLIENT_SECRET")
+    google_oauth_redirect_uri: str = Field(default="", alias="GOOGLE_OAUTH_REDIRECT_URI")
+    google_oauth_frontend_callback_url: str = Field(
+        default="",
+        alias="GOOGLE_OAUTH_FRONTEND_CALLBACK_URL",
+    )
+    email_verification_frontend_url: str = Field(
+        default="",
+        alias="EMAIL_VERIFICATION_FRONTEND_URL",
+    )
+
     # Public API base URL (for building links in emails)
     api_base_url: str = Field(default="http://localhost:8000", alias="API_BASE_URL")
 
