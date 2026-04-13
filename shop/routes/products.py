@@ -5,8 +5,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from core.schemas import PaginationParams
 from db.supabase import get_supabase_client
 from core.security import get_current_user_id, get_optional_user_id
-from shop import service as shop_service
-from shop.schemas import ProductCreate, ProductResponse, ProductUpdate
+from shop import engagement_service, service as shop_service
+from shop.schemas import (
+    ProductCreate,
+    ProductEngagementState,
+    ProductResponse,
+    ProductUpdate,
+    ViewCountResponse,
+)
 
 router = APIRouter()
 
@@ -43,12 +49,58 @@ async def list_products(
 router_products = APIRouter()
 
 
+@router_products.get("/{product_id}/engagement", response_model=ProductEngagementState)
+async def get_product_engagement(
+    product_id: str,
+    client: Annotated[any, Depends(get_supabase_client)],
+    viewer_id: str | None = Depends(get_optional_user_id),
+):
+    if not engagement_service.product_exists(client, product_id):
+        raise HTTPException(status_code=404, detail="Product not found")
+    return engagement_service.get_product_engagement(client, product_id, viewer_id)
+
+
+@router_products.post("/{product_id}/like", response_model=ProductEngagementState)
+async def like_product(
+    product_id: str,
+    client: Annotated[any, Depends(get_supabase_client)],
+    user_id: str = Depends(get_current_user_id),
+):
+    try:
+        return engagement_service.like_product(client, user_id, product_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router_products.delete("/{product_id}/like", response_model=ProductEngagementState)
+async def unlike_product(
+    product_id: str,
+    client: Annotated[any, Depends(get_supabase_client)],
+    user_id: str = Depends(get_current_user_id),
+):
+    return engagement_service.unlike_product(client, user_id, product_id)
+
+
+@router_products.post("/{product_id}/views", response_model=ViewCountResponse)
+async def record_product_view(
+    product_id: str,
+    client: Annotated[any, Depends(get_supabase_client)],
+):
+    """Increment product/service detail view (click) count. Call when a customer opens the product page."""
+    try:
+        n = engagement_service.record_product_view(client, product_id)
+        return ViewCountResponse(view_count=n)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router_products.get("/{product_id}", response_model=ProductResponse)
 async def get_product(
   product_id: str,
   client: Annotated[any, Depends(get_supabase_client)],
+  viewer_id: str | None = Depends(get_optional_user_id),
 ):
-    product = shop_service.get_product(client, product_id)
+    product = shop_service.get_product(client, product_id, viewer_id=viewer_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     return product
@@ -61,10 +113,13 @@ async def update_product(
   client: Annotated[any, Depends(get_supabase_client)],
   user_id: str = Depends(get_current_user_id),
 ):
-    product = shop_service.update_product(client, product_id, body)
-    if not product:
+    updated = shop_service.update_product(client, product_id, body)
+    if not updated:
         raise HTTPException(status_code=404, detail="Product not found")
-    return product
+    out = shop_service.get_product(client, product_id, viewer_id=user_id)
+    if not out:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return out
 
 
 @router_products.delete("/{product_id}")

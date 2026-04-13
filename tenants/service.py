@@ -1,7 +1,23 @@
 from typing import Any
 
-from core.schemas import PaginatedResponse
-from tenants.schemas import ShopCreate, ShopListItem, ShopResponse, ShopUpdate
+from postgrest.exceptions import APIError
+
+from core.postgrest_compat import is_undefined_column_error
+from shop import engagement_service
+from tenants.schemas import ShopCreate, ShopListItem, ShopResponse, ShopUpdate, ShopThemeConfig
+
+_SHOP_LIST_COLS_WITH_VIEWS = (
+    "id,name,slug,description,logo_url,shop_type,is_active,created_at,view_count"
+)
+_SHOP_LIST_COLS_BASE = "id,name,slug,description,logo_url,shop_type,is_active,created_at"
+
+
+def _theme_config_for_db(value: ShopThemeConfig | dict[str, Any] | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    return value.model_dump(mode="json", exclude_none=True)
 
 
 def list_shops(
@@ -14,15 +30,22 @@ def list_shops(
     """List shops (public). Paginated. Optional filter by shop_type (product, service, both)."""
     limit = min(limit, 100)
     offset = (page - 1) * limit
-    q = client.table("shops").select(
-        "id,name,slug,description,logo_url,shop_type,is_active,created_at", count="exact"
-    )
-    if search:
-        q = q.or_(f"name.ilike.%{search}%,slug.ilike.%{search}%")
-    if shop_type and shop_type in ("product", "service", "both"):
-        q = q.eq("shop_type", shop_type)
-    q = q.range(offset, offset + limit - 1).order("created_at", desc=True)
-    r = q.execute()
+
+    def _run_list(select_cols: str):
+        q = client.table("shops").select(select_cols, count="exact")
+        if search:
+            q = q.or_(f"name.ilike.%{search}%,slug.ilike.%{search}%")
+        if shop_type and shop_type in ("product", "service", "both"):
+            q = q.eq("shop_type", shop_type)
+        return q.range(offset, offset + limit - 1).order("created_at", desc=True).execute()
+
+    try:
+        r = _run_list(_SHOP_LIST_COLS_WITH_VIEWS)
+    except APIError as exc:
+        if is_undefined_column_error(exc):
+            r = _run_list(_SHOP_LIST_COLS_BASE)
+        else:
+            raise
     total = r.count if hasattr(r, "count") and r.count is not None else len(r.data or [])
     total_pages = (total + limit - 1) // limit if limit else 0
     items = [
@@ -35,6 +58,7 @@ def list_shops(
             shop_type=row.get("shop_type") or "product",
             is_active=row.get("is_active", False),
             created_at=str(row["created_at"]) if row.get("created_at") else None,
+            view_count=int(row.get("view_count") or 0),
         )
         for row in (r.data or [])
     ]
@@ -45,13 +69,25 @@ def list_my_shops(client: Any, page: int = 1, limit: int = 20) -> dict:
     """List shops owned by current user (RLS filters by owner_id)."""
     limit = min(limit, 100)
     offset = (page - 1) * limit
-    r = (
-        client.table("shops")
-        .select("id,name,slug,description,logo_url,shop_type,is_active,created_at", count="exact")
-        .range(offset, offset + limit - 1)
-        .order("created_at", desc=True)
-        .execute()
-    )
+    try:
+        r = (
+            client.table("shops")
+            .select(_SHOP_LIST_COLS_WITH_VIEWS, count="exact")
+            .range(offset, offset + limit - 1)
+            .order("created_at", desc=True)
+            .execute()
+        )
+    except APIError as exc:
+        if is_undefined_column_error(exc):
+            r = (
+                client.table("shops")
+                .select(_SHOP_LIST_COLS_BASE, count="exact")
+                .range(offset, offset + limit - 1)
+                .order("created_at", desc=True)
+                .execute()
+            )
+        else:
+            raise
     total = r.count if hasattr(r, "count") and r.count is not None else len(r.data or [])
     total_pages = (total + limit - 1) // limit if limit else 0
     items = [
@@ -64,6 +100,7 @@ def list_my_shops(client: Any, page: int = 1, limit: int = 20) -> dict:
             shop_type=row.get("shop_type") or "product",
             is_active=row.get("is_active", False),
             created_at=str(row["created_at"]) if row.get("created_at") else None,
+            view_count=int(row.get("view_count") or 0),
         )
         for row in (r.data or [])
     ]
@@ -72,55 +109,63 @@ def list_my_shops(client: Any, page: int = 1, limit: int = 20) -> dict:
 
 def create_shop(client: Any, owner_id: str, data: ShopCreate) -> dict:
     """Create shop. Validate slug uniqueness. shop_type: product, service, or both."""
-    r = client.table("shops").insert(
-        {
-            "owner_id": owner_id,
-            "name": data.name,
-            "slug": data.slug,
-            "description": data.description,
-            "about": data.about,
-            "logo_url": data.logo_url,
-            "shop_email": data.shop_email,
-            "whatsapp_number": data.whatsapp_number,
-            "contacts": data.contacts,
-            "social_links": data.social_links,
-            "location": data.location,
-            "availability": data.availability,
-            "theme_config": data.theme_config,
-            "shop_type": data.shop_type,
-        }
-    ).execute()
+    insert_payload: dict[str, Any] = {
+        "owner_id": owner_id,
+        "name": data.name,
+        "slug": data.slug,
+        "description": data.description,
+        "about": data.about,
+        "logo_url": data.logo_url,
+        "shop_email": data.shop_email,
+        "whatsapp_number": data.whatsapp_number,
+        "contacts": data.contacts,
+        "social_links": data.social_links,
+        "location": data.location,
+        "availability": data.availability,
+        "shop_type": data.shop_type,
+    }
+    tc = _theme_config_for_db(data.theme_config)
+    if tc is not None:
+        insert_payload["theme_config"] = tc
+    r = client.table("shops").insert(insert_payload).execute()
     if not r.data or len(r.data) == 0:
         raise ValueError("Failed to create shop")
     row = r.data[0]
-    return _row_to_shop_response(row)
+    return get_shop(client, str(row["id"]), viewer_id=owner_id)
 
 
-def get_shop(client: Any, shop_id: str) -> dict | None:
-    """Get one shop by id."""
+def get_shop(client: Any, shop_id: str, viewer_id: str | None = None) -> dict | None:
+    """Get one shop by id, including follower/like counts and viewer flags."""
     r = client.table("shops").select("*").eq("id", shop_id).execute()
     if not r.data or len(r.data) == 0:
         return None
-    return _row_to_shop_response(r.data[0])
+    out = _row_to_shop_response(r.data[0])
+    out.update(engagement_service.get_shop_engagement(client, shop_id, viewer_id))
+    return out
 
 
-def get_shop_by_slug(client: Any, slug: str) -> dict | None:
+def get_shop_by_slug(client: Any, slug: str, viewer_id: str | None = None) -> dict | None:
     """Get shop by slug."""
     r = client.table("shops").select("*").eq("slug", slug).execute()
     if not r.data or len(r.data) == 0:
         return None
-    return _row_to_shop_response(r.data[0])
+    row = r.data[0]
+    out = _row_to_shop_response(row)
+    out.update(engagement_service.get_shop_engagement(client, str(row["id"]), viewer_id))
+    return out
 
 
-def update_shop(client: Any, shop_id: str, data: ShopUpdate) -> dict | None:
+def update_shop(client: Any, shop_id: str, data: ShopUpdate, viewer_id: str | None = None) -> dict | None:
     """Update shop (partial). RLS: owner only."""
     payload = data.model_dump(exclude_unset=True)
+    if "theme_config" in payload:
+        payload["theme_config"] = _theme_config_for_db(data.theme_config)
     if not payload:
-        return get_shop(client, shop_id)
+        return get_shop(client, shop_id, viewer_id=viewer_id)
     r = client.table("shops").update(payload).eq("id", shop_id).execute()
     if not r.data or len(r.data) == 0:
         return None
-    return _row_to_shop_response(r.data[0])
+    return get_shop(client, shop_id, viewer_id=viewer_id)
 
 
 def _row_to_shop_response(row: dict) -> dict:
@@ -144,4 +189,9 @@ def _row_to_shop_response(row: dict) -> dict:
         "subscription_end_date": str(row["subscription_end_date"]) if row.get("subscription_end_date") else None,
         "created_at": str(row["created_at"]) if row.get("created_at") else None,
         "updated_at": str(row["updated_at"]) if row.get("updated_at") else None,
+        "follower_count": 0,
+        "like_count": 0,
+        "viewer_following": None,
+        "viewer_liked_shop": None,
+        "view_count": int(row.get("view_count") or 0),
     }

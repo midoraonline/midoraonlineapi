@@ -4,7 +4,7 @@ create table if not exists public.users (
   email text not null unique,
   password_hash text not null,
   full_name text,
-  user_role text not null default 'customer',
+  user_role text not null default 'customer' check (user_role in ('merchant', 'customer', 'admin', 'staff')),
   email_verified boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()

@@ -1,5 +1,9 @@
 from typing import Any
 
+from postgrest.exceptions import APIError
+
+from core.postgrest_compat import is_undefined_column_error
+from shop import engagement_service
 from shop.schemas import (
     OrderCreate,
     OrderListItem,
@@ -8,6 +12,13 @@ from shop.schemas import (
     ProductListItem,
     ProductResponse,
     ProductUpdate,
+)
+
+_PRODUCT_LIST_COLS_WITH_VIEWS = (
+    "id,shop_id,title,description,price_ugx,image_urls,category,is_published,created_at,view_count"
+)
+_PRODUCT_LIST_COLS_BASE = (
+    "id,shop_id,title,description,price_ugx,image_urls,category,is_published,created_at"
 )
 
 
@@ -23,18 +34,24 @@ def list_products(
     """List products for a shop. If not owner, only is_published=True."""
     limit = min(limit, 100)
     offset = (page - 1) * limit
-    q = client.table("products").select(
-        "id,shop_id,title,description,price_ugx,image_urls,category,is_published,created_at",
-        count="exact",
-    ).eq("shop_id", shop_id)
-    if not is_owner:
-        q = q.eq("is_published", True)
-    if category:
-        q = q.eq("category", category)
-    if search:
-        q = q.or_(f"title.ilike.%{search}%,description.ilike.%{search}%")
-    q = q.range(offset, offset + limit - 1).order("created_at", desc=True)
-    r = q.execute()
+
+    def _run_list(select_cols: str):
+        q = client.table("products").select(select_cols, count="exact").eq("shop_id", shop_id)
+        if not is_owner:
+            q = q.eq("is_published", True)
+        if category:
+            q = q.eq("category", category)
+        if search:
+            q = q.or_(f"title.ilike.%{search}%,description.ilike.%{search}%")
+        return q.range(offset, offset + limit - 1).order("created_at", desc=True).execute()
+
+    try:
+        r = _run_list(_PRODUCT_LIST_COLS_WITH_VIEWS)
+    except APIError as exc:
+        if is_undefined_column_error(exc):
+            r = _run_list(_PRODUCT_LIST_COLS_BASE)
+        else:
+            raise
     total = r.count if hasattr(r, "count") and r.count is not None else len(r.data or [])
     total_pages = (total + limit - 1) // limit if limit else 0
     items = []
@@ -53,6 +70,7 @@ def list_products(
                 category=row.get("category"),
                 is_published=row.get("is_published", True),
                 created_at=str(row["created_at"]) if row.get("created_at") else None,
+                view_count=int(row.get("view_count") or 0),
             )
         )
     return {"items": items, "total": total, "page": page, "limit": limit, "total_pages": total_pages}
@@ -76,11 +94,13 @@ def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
     return _row_to_product_response(r.data[0])
 
 
-def get_product(client: Any, product_id: str) -> dict | None:
+def get_product(client: Any, product_id: str, viewer_id: str | None = None) -> dict | None:
     r = client.table("products").select("*").eq("id", product_id).execute()
     if not r.data or len(r.data) == 0:
         return None
-    return _row_to_product_response(r.data[0])
+    out = _row_to_product_response(r.data[0])
+    out.update(engagement_service.get_product_engagement(client, product_id, viewer_id))
+    return out
 
 
 def update_product(client: Any, product_id: str, data: ProductUpdate) -> dict | None:
@@ -88,7 +108,7 @@ def update_product(client: Any, product_id: str, data: ProductUpdate) -> dict | 
     if data.image_urls is not None:
         payload["image_urls"] = ",".join(data.image_urls) if isinstance(data.image_urls, list) else data.image_urls
     if not payload:
-        return get_product(client, product_id)
+        return get_product(client, product_id, viewer_id=None)
     r = client.table("products").update(payload).eq("id", product_id).execute()
     if not r.data or len(r.data) == 0:
         return None
@@ -119,6 +139,9 @@ def _row_to_product_response(row: dict) -> dict:
         "ai_generated_desc": row.get("ai_generated_desc", False),
         "is_published": row.get("is_published", True),
         "created_at": str(row["created_at"]) if row.get("created_at") else None,
+        "like_count": 0,
+        "view_count": int(row.get("view_count") or 0),
+        "viewer_liked": None,
     }
 
 

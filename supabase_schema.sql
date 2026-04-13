@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS public.users (
     email TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     full_name TEXT,
-    user_role TEXT NOT NULL DEFAULT 'customer' CHECK (user_role IN ('merchant', 'customer', 'admin')),
+    user_role TEXT NOT NULL DEFAULT 'customer' CHECK (user_role IN ('merchant', 'customer', 'admin', 'staff')),
     email_verified BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -45,10 +45,11 @@ CREATE TABLE IF NOT EXISTS public.shops (
     location JSONB,
     -- Availability / opening hours / delivery windows etc.
     availability JSONB,
-    theme_config JSONB DEFAULT '{"primary_color": "#000000", "font": "Inter"}'::jsonb,
+    theme_config JSONB DEFAULT '{"primary_color": "#000000", "background_color": "#ffffff", "text_color": "#111111", "font": "Inter", "theme": "default", "metadata": {}}'::jsonb,
     shop_type TEXT NOT NULL DEFAULT 'product' CHECK (shop_type IN ('product', 'service', 'both')),
     is_active BOOLEAN DEFAULT false,
     subscription_end_date TIMESTAMPTZ,
+    view_count BIGINT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -71,13 +72,41 @@ CREATE TABLE IF NOT EXISTS public.shop_verifications (
 ALTER TABLE public.shop_verifications ENABLE ROW LEVEL SECURITY;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_shop_verifications_shop_id_unique ON public.shop_verifications(shop_id);
 
+-- 1c. Shop engagement (follows / likes)
+CREATE TABLE IF NOT EXISTS public.shop_follows (
+    user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    shop_id UUID NOT NULL REFERENCES public.shops(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, shop_id)
+);
+ALTER TABLE public.shop_follows ENABLE ROW LEVEL SECURITY;
+CREATE INDEX IF NOT EXISTS idx_shop_follows_shop_id ON public.shop_follows(shop_id);
+
+CREATE TABLE IF NOT EXISTS public.shop_likes (
+    user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    shop_id UUID NOT NULL REFERENCES public.shops(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, shop_id)
+);
+ALTER TABLE public.shop_likes ENABLE ROW LEVEL SECURITY;
+CREATE INDEX IF NOT EXISTS idx_shop_likes_shop_id ON public.shop_likes(shop_id);
+
+CREATE TABLE IF NOT EXISTS public.product_likes (
+    user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, product_id)
+);
+ALTER TABLE public.product_likes ENABLE ROW LEVEL SECURITY;
+CREATE INDEX IF NOT EXISTS idx_product_likes_product_id ON public.product_likes(product_id);
+
 -- 2. Profiles (extends public.users)
 CREATE TABLE IF NOT EXISTS public.profiles (
     id UUID PRIMARY KEY REFERENCES public.users(id) ON DELETE CASCADE,
     full_name TEXT,
     avatar_url TEXT,
     phone_number TEXT UNIQUE,
-    user_role TEXT CHECK (user_role IN ('merchant', 'customer', 'admin')) DEFAULT 'customer',
+    user_role TEXT CHECK (user_role IN ('merchant', 'customer', 'admin', 'staff')) DEFAULT 'customer',
     created_at TIMESTAMPTZ DEFAULT now()
 );
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
@@ -97,6 +126,7 @@ CREATE TABLE IF NOT EXISTS public.products (
     ai_seo_tags TEXT,
     ai_generated_desc BOOLEAN DEFAULT false,
     is_published BOOLEAN DEFAULT true,
+    view_count BIGINT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_products_shop_id ON public.products(shop_id);
@@ -167,15 +197,53 @@ CREATE TABLE IF NOT EXISTS public.pesapal_webhook_logs (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- View / click counters (atomic increments via API)
+CREATE OR REPLACE FUNCTION public.increment_shop_view_count(p_shop_id uuid)
+RETURNS bigint
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE v bigint;
+BEGIN
+  UPDATE public.shops
+  SET view_count = view_count + 1, updated_at = now()
+  WHERE id = p_shop_id
+  RETURNING view_count INTO v;
+  RETURN v;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.increment_product_view_count(p_product_id uuid)
+RETURNS bigint
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE v bigint;
+BEGIN
+  UPDATE public.products
+  SET view_count = view_count + 1
+  WHERE id = p_product_id
+  RETURNING view_count INTO v;
+  RETURN v;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.increment_shop_view_count(uuid) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.increment_product_view_count(uuid) TO anon, authenticated, service_role;
+
 -- RLS policies (examples; adjust to your rules)
--- Shops: owner can all, public can select
+-- Idempotent: safe to re-run after policies already exist
+DROP POLICY IF EXISTS "shops_select_public" ON public.shops;
 CREATE POLICY "shops_select_public" ON public.shops FOR SELECT USING (true);
+DROP POLICY IF EXISTS "shops_all_owner" ON public.shops;
 CREATE POLICY "shops_all_owner" ON public.shops FOR ALL USING (owner_id = auth.uid());
 
--- Profiles: own profile only
+DROP POLICY IF EXISTS "profiles_own" ON public.profiles;
 CREATE POLICY "profiles_own" ON public.profiles FOR ALL USING (id = auth.uid());
 
--- Users: own row only
+DROP POLICY IF EXISTS "users_own" ON public.users;
 CREATE POLICY "users_own" ON public.users FOR ALL USING (id = auth.uid());
 
 -- Migrations for existing DBs (run if tables already exist):
@@ -191,3 +259,5 @@ CREATE POLICY "users_own" ON public.users FOR ALL USING (id = auth.uid());
 -- ALTER TABLE public.chat_sessions ADD COLUMN IF NOT EXISTS intent TEXT;
 -- ALTER TABLE public.products ADD COLUMN IF NOT EXISTS item_type TEXT NOT NULL DEFAULT 'product';
 -- ALTER TABLE public.products ADD COLUMN IF NOT EXISTS image_urls TEXT[] DEFAULT '{}'::text[];
+-- ALTER TABLE public.shops ADD COLUMN IF NOT EXISTS view_count BIGINT NOT NULL DEFAULT 0;
+-- ALTER TABLE public.products ADD COLUMN IF NOT EXISTS view_count BIGINT NOT NULL DEFAULT 0;

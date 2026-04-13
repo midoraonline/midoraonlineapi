@@ -6,7 +6,7 @@ from core.schemas import PaginationParams
 from db.supabase import get_supabase_client
 from tenants.schemas import ShopCreate, ShopListItem, ShopResponse, ShopUpdate
 from tenants import service as tenants_service
-from core.security import get_current_user_id
+from core.security import get_current_user_id, get_optional_user_id
 
 router = APIRouter()
 
@@ -37,8 +37,9 @@ async def create_shop(
 async def get_shop(
     shop_id: str,
     client: Annotated[any, Depends(get_supabase_client)],
+    viewer_id: str | None = Depends(get_optional_user_id),
 ):
-    shop = tenants_service.get_shop(client, shop_id)
+    shop = tenants_service.get_shop(client, shop_id, viewer_id=viewer_id)
     if not shop:
         raise HTTPException(status_code=404, detail="Shop not found")
     return shop
@@ -51,7 +52,7 @@ async def update_shop(
     client: Annotated[any, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
-    shop = tenants_service.update_shop(client, shop_id, body)
+    shop = tenants_service.update_shop(client, shop_id, body, viewer_id=user_id)
     if not shop:
         raise HTTPException(status_code=404, detail="Shop not found")
     return shop

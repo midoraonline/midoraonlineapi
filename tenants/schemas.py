@@ -1,8 +1,24 @@
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 ShopType = Literal["product", "service", "both"]
+UserRole = Literal["customer", "merchant", "admin", "staff"]
+
+
+class ShopThemeConfig(BaseModel):
+    """Stored as JSON in shops.theme_config. Extra keys are allowed for forward compatibility."""
+
+    model_config = ConfigDict(extra="allow")
+
+    primary_color: str | None = None
+    background_color: str | None = None
+    text_color: str | None = None
+    accent_color: str | None = None
+    font_family: str | None = None
+    font: str | None = Field(default=None, description="Legacy alias; prefer font_family")
+    theme: str | None = Field(default=None, description="Preset key, e.g. minimal, bold, boutique")
+    metadata: dict[str, Any] | None = None
 
 
 class ShopCreate(BaseModel):
@@ -17,7 +33,7 @@ class ShopCreate(BaseModel):
     social_links: list[dict] | None = None
     location: dict | None = None
     availability: dict | None = None
-    theme_config: dict | None = None
+    theme_config: ShopThemeConfig | dict[str, Any] | None = None
     shop_type: ShopType = "product"
 
 
@@ -32,7 +48,7 @@ class ShopUpdate(BaseModel):
     social_links: list[dict] | None = None
     location: dict | None = None
     availability: dict | None = None
-    theme_config: dict | None = None
+    theme_config: ShopThemeConfig | dict[str, Any] | None = None
     shop_type: ShopType | None = None
 
 
@@ -50,12 +66,17 @@ class ShopResponse(BaseModel):
     social_links: list[dict] | None
     location: dict | None
     availability: dict | None
-    theme_config: dict | None
+    theme_config: dict[str, Any] | None
     shop_type: ShopType
     is_active: bool
     subscription_end_date: str | None
     created_at: str | None
     updated_at: str | None
+    follower_count: int = 0
+    like_count: int = 0
+    view_count: int = 0
+    viewer_following: bool | None = None
+    viewer_liked_shop: bool | None = None
 
 
 class ShopListItem(BaseModel):
@@ -67,3 +88,4 @@ class ShopListItem(BaseModel):
     shop_type: ShopType
     is_active: bool
     created_at: str | None
+    view_count: int = 0

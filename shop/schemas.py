@@ -32,16 +32,22 @@ class ProductResponse(BaseModel):
     category: str | None
     is_published: bool
     created_at: str | None
+    like_count: int = 0
+    view_count: int = 0
+    viewer_liked: bool | None = None
 
 
 class ProductListItem(BaseModel):
     id: str
     shop_id: str
     title: str
+    description: str | None = None
     price_ugx: float
+    image_urls: list[str] | None = None
     category: str | None
     is_published: bool
     created_at: str | None
+    view_count: int = 0
 
 
 class OrderCreate(BaseModel):
@@ -68,3 +74,21 @@ class OrderListItem(BaseModel):
     total_amount: float
     order_status: str
     created_at: str | None
+
+
+class ShopEngagementState(BaseModel):
+    follower_count: int
+    like_count: int
+    view_count: int = 0
+    viewer_following: bool | None = None
+    viewer_liked_shop: bool | None = None
+
+
+class ProductEngagementState(BaseModel):
+    like_count: int
+    view_count: int = 0
+    viewer_liked: bool | None = None
+
+
+class ViewCountResponse(BaseModel):
+    view_count: int
