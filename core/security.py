@@ -1,10 +1,11 @@
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, status
+import jwt
+from fastapi import Cookie, Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
 from pydantic import BaseModel
 
+from auth.cookies import ACCESS_COOKIE
 from core.config import get_settings
 
 security = HTTPBearer(auto_error=False)
@@ -26,6 +27,17 @@ def get_bearer_token(
     return credentials.credentials
 
 
+def get_access_token(
+    bearer: Annotated[str | None, Depends(get_bearer_token)],
+    cookie_token: Annotated[str | None, Cookie(alias=ACCESS_COOKIE)] = None,
+) -> str | None:
+    """Read the access token from either the Authorization header or cookie.
+
+    Bearer wins so we don't break SSR / mobile / server-to-server callers.
+    """
+    return bearer or cookie_token
+
+
 def _decode_auth_token(token: str) -> TokenPayload:
     settings = get_settings()
     try:
@@ -35,14 +47,16 @@ def _decode_auth_token(token: str) -> TokenPayload:
             algorithms=[settings.app_jwt_algorithm],
         )
         return TokenPayload(**payload)
-    except JWTError:
+    except jwt.InvalidTokenError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token",
         )
 
 
-def get_current_user_id(token: Annotated[str | None, Depends(get_bearer_token)]) -> str:
+def get_current_user_id(
+    token: Annotated[str | None, Depends(get_access_token)],
+) -> str:
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -59,7 +73,7 @@ def get_current_user_id(token: Annotated[str | None, Depends(get_bearer_token)])
 
 
 def get_optional_user_id(
-    token: Annotated[str | None, Depends(get_bearer_token)],
+    token: Annotated[str | None, Depends(get_access_token)],
 ) -> str | None:
     if not token:
         return None
@@ -72,15 +86,81 @@ def get_optional_user_id(
         return None
 
 
-def require_admin(
-    x_admin_key: Annotated[str | None, Header(alias="X-Admin-Key")] = None,
-) -> None:
-    """Dependency: allow access only if X-Admin-Key matches ADMIN_API_KEY. If ADMIN_API_KEY is unset, allow (dev)."""
-    settings = get_settings()
-    if not settings.admin_api_key:
-        return
-    if not x_admin_key or x_admin_key != settings.admin_api_key:
+def get_current_claims(
+    token: Annotated[str | None, Depends(get_access_token)],
+) -> TokenPayload:
+    if not token:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Forbidden",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
         )
+    payload = _decode_auth_token(token)
+    if not payload.sub or payload.type != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        )
+    return payload
+
+
+def get_optional_claims(
+    token: Annotated[str | None, Depends(get_access_token)],
+) -> TokenPayload | None:
+    if not token:
+        return None
+    try:
+        payload = _decode_auth_token(token)
+    except HTTPException:
+        return None
+    if not payload.sub or payload.type != "access":
+        return None
+    return payload
+
+
+def require_admin_role(
+    token: Annotated[str | None, Depends(get_access_token)],
+    x_admin_key: Annotated[str | None, Header(alias="X-Admin-Key")] = None,
+) -> TokenPayload | None:
+    """Admin gate for browser-facing endpoints.
+
+    A request is allowed if EITHER
+      * the authenticated user has role=admin in their JWT, OR
+      * a valid X-Admin-Key header is presented (kept for ops scripts / CI).
+
+    In production, `ADMIN_API_KEY` is required to exist at boot (see
+    `core.config.get_settings`), but the browser itself should use role-based
+    admin access, not the header.
+    """
+    settings = get_settings()
+
+    # Script / ops fallback: X-Admin-Key without a bearer/cookie still works.
+    if settings.admin_api_key and x_admin_key and x_admin_key == settings.admin_api_key:
+        return None
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        payload = _decode_auth_token(token)
+    except HTTPException as exc:
+        raise exc
+    if payload.type != "access" or not payload.sub:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        )
+    if (payload.role or "").lower() == "admin":
+        return payload
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Forbidden",
+    )
+
+
+# Backwards-compat alias — still accepted by existing admin routes during
+# the migration. Prefer `require_admin_role` going forward.
+require_admin = require_admin_role

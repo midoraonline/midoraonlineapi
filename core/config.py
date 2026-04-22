@@ -26,11 +26,27 @@ class Settings(BaseSettings):
     # Email (SMTP) - .env uses Email, Email_Password
     email: str = Field(default="", alias="Email")
     email_password: str = Field(default="", alias="Email_Password")
+    # Address(es) that receive internal notifications (new shop submissions,
+    # support pings). Comma-separated. Falls back to `email` (SMTP sender) when
+    # unset, which effectively emails ourselves.
+    admin_notification_email: str = Field(
+        default="",
+        validation_alias=AliasChoices("ADMIN_NOTIFICATION_EMAIL", "admin_notification_email"),
+    )
 
     # Pesapal (optional for M1)
     pesapal_consumer_key: str = ""
     pesapal_consumer_secret: str = ""
     pesapal_ipn_url: str = ""
+    # Base URL for Pesapal API. Sandbox vs. production.
+    pesapal_api_base_url: str = Field(
+        default="https://pay.pesapal.com/v3",
+        alias="PESAPAL_API_BASE_URL",
+    )
+    # Subscription window (days) granted on a completed payment.
+    subscription_duration_days: int = Field(
+        default=30, alias="SUBSCRIPTION_DURATION_DAYS"
+    )
 
     # AI - .env uses Gemini_API_Key
     gemini_api_key: str = Field(default="", alias="Gemini_API_Key")
@@ -64,6 +80,53 @@ class Settings(BaseSettings):
     # Public API base URL (for building links in emails)
     api_base_url: str = Field(default="http://localhost:8000", alias="API_BASE_URL")
 
+    # Deployment environment: "development" | "production" | "test"
+    environment: str = Field(default="development", alias="ENVIRONMENT")
+
+    # Comma-separated list of allowed frontend origins for CORS
+    # e.g. "http://localhost:3000,https://www.midoraonline.com"
+    cors_allowed_origins: str = Field(default="", alias="CORS_ALLOWED_ORIGINS")
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.strip().lower() == "production"
+
+    @property
+    def admin_notification_recipients(self) -> list[str]:
+        raw = self.admin_notification_email.strip()
+        if not raw:
+            # Fallback: send to the SMTP sender address (i.e. email ourselves).
+            return [self.email] if self.email else []
+        return [e.strip() for e in raw.split(",") if e.strip()]
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        raw = self.cors_allowed_origins.strip()
+        if not raw:
+            # Dev default: allow the common Next.js local origins
+            return [
+                "http://localhost:3000",
+                "http://127.0.0.1:3000",
+            ]
+        return [o.strip() for o in raw.split(",") if o.strip()]
+
 
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    if settings.is_production:
+        missing: list[str] = []
+        if not settings.app_jwt_secret or settings.app_jwt_secret == "CHANGE_ME_IN_PROD":
+            missing.append("APP_JWT_SECRET")
+        if not settings.supabase_url:
+            missing.append("SUPABASE_URL")
+        if not settings.supabase_service_role_key:
+            missing.append("SUPABASE_SERVICE_ROLE_KEY")
+        if not settings.admin_api_key:
+            missing.append("ADMIN_API_KEY")
+        if not settings.cors_allowed_origins.strip():
+            missing.append("CORS_ALLOWED_ORIGINS")
+        if missing:
+            raise RuntimeError(
+                "Missing required production environment variables: " + ", ".join(missing)
+            )
+    return settings

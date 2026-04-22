@@ -24,7 +24,13 @@ class TokenResponse(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    """Optional JSON body for /auth/refresh.
+
+    The refresh token is normally delivered via the `midora_refresh` cookie.
+    This body shape is kept for non-browser clients (mobile apps, scripts).
+    """
+
+    refresh_token: str | None = None
 
 
 class GoogleCodeExchangeRequest(BaseModel):

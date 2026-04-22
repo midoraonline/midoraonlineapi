@@ -1,9 +1,15 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from urllib.parse import urlencode
 
-from auth.providers.googleauth import generate_state_token, get_redirect_url, handle_callback
+from auth.cookies import set_auth_cookies
+from auth.providers.googleauth import (
+    generate_state_token,
+    get_redirect_url,
+    handle_callback,
+)
 from auth.schemas import GoogleCodeExchangeRequest, GoogleOAuthUrlResponse
+from auth.service import access_ttl_seconds, refresh_ttl_seconds
 from core.config import get_settings
 
 router = APIRouter()
@@ -22,21 +28,39 @@ async def google_oauth_url(state: str | None = Query(default=None)):
 
 
 @router.get("/google/callback")
-async def google_oauth_callback(code: str = Query(...), state: str | None = Query(default=None)):
+async def google_oauth_callback(
+    request: Request,
+    code: str = Query(...),
+    state: str | None = Query(default=None),
+):
     settings = get_settings()
     frontend_callback_url = settings.google_oauth_frontend_callback_url.strip()
     try:
         result = handle_callback(code=code, state=state)
         if frontend_callback_url:
-            fragment = urlencode(
-                {
-                    "access_token": result["access_token"],
-                    "refresh_token": result["refresh_token"],
-                    "token_type": "bearer",
-                    "provider": "google",
-                }
+            # Issue cookies scoped to the API domain. The frontend reads
+            # `verified=true` + calls /auth/me to hydrate; the token fragment
+            # remains for legacy clients during the cookie migration.
+            response = RedirectResponse(
+                url=f"{frontend_callback_url}#"
+                + urlencode(
+                    {
+                        "access_token": result["access_token"],
+                        "refresh_token": result["refresh_token"],
+                        "token_type": "bearer",
+                        "provider": "google",
+                    }
+                ),
+                status_code=302,
             )
-            return RedirectResponse(url=f"{frontend_callback_url}#{fragment}", status_code=302)
+            set_auth_cookies(
+                response,
+                access_token=result["access_token"],
+                refresh_token=result["refresh_token"],
+                access_ttl_seconds=access_ttl_seconds(),
+                refresh_ttl_seconds=refresh_ttl_seconds(),
+            )
+            return response
         return {
             "message": "Google sign-in successful",
             "user": result["user"],
@@ -52,14 +76,21 @@ async def google_oauth_callback(code: str = Query(...), state: str | None = Quer
 
 
 @router.post("/google/exchange")
-async def google_oauth_exchange(body: GoogleCodeExchangeRequest):
+async def google_oauth_exchange(body: GoogleCodeExchangeRequest, response: Response):
     try:
         result = handle_callback(code=body.code, state=body.state)
-        return {
-            "user": result["user"],
-            "access_token": result["access_token"],
-            "refresh_token": result["refresh_token"],
-            "token_type": "bearer",
-        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    set_auth_cookies(
+        response,
+        access_token=result["access_token"],
+        refresh_token=result["refresh_token"],
+        access_ttl_seconds=access_ttl_seconds(),
+        refresh_ttl_seconds=refresh_ttl_seconds(),
+    )
+    return {
+        "user": result["user"],
+        "access_token": result["access_token"],
+        "refresh_token": result["refresh_token"],
+        "token_type": "bearer",
+    }

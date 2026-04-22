@@ -26,13 +26,21 @@ def list_shops(
     limit: int = 20,
     search: str | None = None,
     shop_type: str | None = None,
+    include_inactive: bool = False,
 ) -> dict:
-    """List shops (public). Paginated. Optional filter by shop_type (product, service, both)."""
+    """List shops (public). Paginated. Optional filter by shop_type (product, service, both).
+
+    By default only `is_active=True` shops are returned — shops that haven't
+    completed verification or whose subscription lapsed stay hidden from the
+    public directory. Pass `include_inactive=True` for admin surfaces.
+    """
     limit = min(limit, 100)
     offset = (page - 1) * limit
 
     def _run_list(select_cols: str):
         q = client.table("shops").select(select_cols, count="exact")
+        if not include_inactive:
+            q = q.eq("is_active", True)
         if search:
             q = q.or_(f"name.ilike.%{search}%,slug.ilike.%{search}%")
         if shop_type and shop_type in ("product", "service", "both"):
@@ -108,7 +116,16 @@ def list_my_shops(client: Any, page: int = 1, limit: int = 20) -> dict:
 
 
 def create_shop(client: Any, owner_id: str, data: ShopCreate) -> dict:
-    """Create shop. Validate slug uniqueness. shop_type: product, service, or both."""
+    """Create shop. Validate slug uniqueness. shop_type: product, service, or both.
+
+    Side effect: the owner's `user_role` is upgraded from `customer` to
+    `merchant` automatically. We surface the resulting role under
+    `_owner_role` / `_role_changed` so the route layer can re-issue auth
+    cookies with the new claim if needed.
+    """
+    # Local import keeps tenants/auth modules loosely coupled.
+    from auth import service as auth_service
+
     insert_payload: dict[str, Any] = {
         "owner_id": owner_id,
         "name": data.name,
@@ -131,7 +148,13 @@ def create_shop(client: Any, owner_id: str, data: ShopCreate) -> dict:
     if not r.data or len(r.data) == 0:
         raise ValueError("Failed to create shop")
     row = r.data[0]
-    return get_shop(client, str(row["id"]), viewer_id=owner_id)
+
+    new_role, changed = auth_service.promote_to_merchant(owner_id)
+
+    shop = get_shop(client, str(row["id"]), viewer_id=owner_id) or {}
+    shop["_owner_role"] = new_role
+    shop["_role_changed"] = changed
+    return shop
 
 
 def get_shop(client: Any, shop_id: str, viewer_id: str | None = None) -> dict | None:

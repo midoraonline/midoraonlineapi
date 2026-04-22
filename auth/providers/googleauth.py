@@ -4,7 +4,7 @@ from urllib.parse import urlencode
 from uuid import uuid4
 
 import httpx
-from jose import JWTError, jwt
+import jwt
 
 from auth import service as auth_service
 from core.config import get_settings
@@ -37,7 +37,7 @@ def _validate_state_token(state: str) -> None:
             settings.app_jwt_secret,
             algorithms=[settings.app_jwt_algorithm],
         )
-    except JWTError as exc:
+    except jwt.InvalidTokenError as exc:
         raise ValueError("Invalid Google OAuth state") from exc
     if payload.get("type") != "google_oauth_state":
         raise ValueError("Invalid Google OAuth state")

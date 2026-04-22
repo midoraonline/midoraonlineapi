@@ -10,6 +10,9 @@ def sign_up(
     password: str,
     full_name: str | None = None,
     user_role: str = "customer",
+    *,
+    user_agent: str | None = None,
+    ip: str | None = None,
 ) -> dict[str, Any]:
     """Register user via custom auth and create profile row if needed.
 
@@ -48,6 +51,8 @@ def sign_up(
     access_token, refresh_token = auth_service.create_access_and_refresh_tokens(
         user_id=str(user["id"]),
         role=user.get("user_role", "customer"),
+        user_agent=user_agent,
+        ip=ip,
     )
     return {
         "user": user,
@@ -57,7 +62,13 @@ def sign_up(
     }
 
 
-def sign_in(email: str, password: str) -> dict[str, Any]:
+def sign_in(
+    email: str,
+    password: str,
+    *,
+    user_agent: str | None = None,
+    ip: str | None = None,
+) -> dict[str, Any]:
     """Sign in via custom users table. Returns JWT access/refresh tokens."""
     user = auth_service.authenticate_user(email, password)
     if not user:
@@ -65,6 +76,8 @@ def sign_in(email: str, password: str) -> dict[str, Any]:
     access_token, refresh_token = auth_service.create_access_and_refresh_tokens(
         user_id=str(user["id"]),
         role=user.get("user_role", "customer"),
+        user_agent=user_agent,
+        ip=ip,
     )
     return {
         "user": user,
@@ -73,7 +86,12 @@ def sign_in(email: str, password: str) -> dict[str, Any]:
     }
 
 
-def verify_email(token: str) -> dict[str, Any]:
+def verify_email(
+    token: str,
+    *,
+    user_agent: str | None = None,
+    ip: str | None = None,
+) -> dict[str, Any]:
     """Mark email as verified using custom token table and return user + fresh tokens."""
     client = get_supabase_admin()
     r = (
@@ -103,6 +121,8 @@ def verify_email(token: str) -> dict[str, Any]:
     access_token, refresh_token = auth_service.create_access_and_refresh_tokens(
         user_id=str(user["id"]),
         role=user.get("user_role", "customer"),
+        user_agent=user_agent,
+        ip=ip,
     )
     return {
         "user": user,
@@ -111,26 +131,30 @@ def verify_email(token: str) -> dict[str, Any]:
     }
 
 
-def refresh_session(refresh_token: str) -> dict[str, Any]:
-    """Validate refresh token and return new access/refresh pair."""
-    payload = auth_service.decode_token(refresh_token)
-    if payload.get("type") != "refresh":
-        raise ValueError("Invalid refresh token")
-    user_id = payload.get("sub")
-    role = payload.get("role", "customer")
-    if not user_id:
-        raise ValueError("Invalid refresh token payload")
-    # Optionally ensure user still exists
-    client = get_supabase_admin()
-    res = client.table("users").select("id, user_role").eq("id", user_id).limit(1).execute()
-    if not res.data:
-        raise ValueError("User not found")
-    db_user = res.data[0]
-    new_role = db_user.get("user_role", role)
-    access_token, new_refresh_token = auth_service.create_access_and_refresh_tokens(
-        user_id=str(db_user["id"]),
-        role=new_role,
+def refresh_session(
+    refresh_token: str,
+    *,
+    user_agent: str | None = None,
+    ip: str | None = None,
+) -> dict[str, Any]:
+    """Validate + rotate a refresh token. Raises on reuse / revocation."""
+    access_token, new_refresh_token, claims = auth_service.rotate_refresh_token(
+        refresh_token, user_agent=user_agent, ip=ip
     )
+    # Sanity: ensure the user still exists. If not, revoke what we just issued.
+    user_id = claims.get("sub")
+    if user_id:
+        client = get_supabase_admin()
+        res = (
+            client.table("users")
+            .select("id, user_role")
+            .eq("id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            auth_service.revoke_refresh_token(new_refresh_token)
+            raise ValueError("User not found")
     return {
         "access_token": access_token,
         "refresh_token": new_refresh_token,
@@ -151,7 +175,11 @@ def get_profile(user_id: str) -> dict[str, Any] | None:
         return None
     user = user_res.data[0]
 
-    prof_res = client.table("profiles").select("full_name, avatar_url, phone_number, user_role").eq("id", user_id).limit(1).execute()
+    prof_res = client.table("profiles").select("full_name, avatar_url, phone_number").eq("id", user_id).limit(1).execute()
+    # `users.user_role` is the canonical source of truth. `profiles.user_role`
+    # used to be read here too but it can drift out of sync (see promote_to_merchant),
+    # so we now ignore it. promote_to_merchant keeps profiles in sync for any legacy
+    # queries that still read it directly.
     if prof_res.data:
         p = prof_res.data[0]
         return {
@@ -161,7 +189,7 @@ def get_profile(user_id: str) -> dict[str, Any] | None:
             "full_name": p.get("full_name") or user.get("full_name"),
             "avatar_url": p.get("avatar_url"),
             "phone_number": p.get("phone_number"),
-            "user_role": p.get("user_role") or user.get("user_role", "customer"),
+            "user_role": user.get("user_role", "customer"),
         }
 
     return {

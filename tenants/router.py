@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends
 from core.schemas import PaginationParams
 from db.supabase import get_supabase_client
 from tenants import service as tenants_service
-from tenants.routes import discovery, shops
+from tenants.routes import discovery, shops, verifications
 
 router = APIRouter(prefix="/shops", tags=["shops"])
 
@@ -26,3 +26,4 @@ async def list_shops(
 
 router.include_router(shops.router)
 router.include_router(discovery.router)
+router.include_router(verifications.router)

@@ -2,6 +2,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from core.authz import ensure_product_owner, ensure_shop_owner
 from core.schemas import PaginationParams
 from db.supabase import get_supabase_client
 from core.security import get_current_user_id, get_optional_user_id
@@ -24,6 +25,12 @@ async def create_product(
   client: Annotated[any, Depends(get_supabase_client)],
   user_id: str = Depends(get_current_user_id),
 ):
+    try:
+        ensure_shop_owner(client, shop_id, user_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     try:
         return shop_service.create_product(client, shop_id, body)
     except Exception as e:
@@ -113,6 +120,13 @@ async def update_product(
   client: Annotated[any, Depends(get_supabase_client)],
   user_id: str = Depends(get_current_user_id),
 ):
+    try:
+        ensure_product_owner(client, product_id, user_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Product not found")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     updated = shop_service.update_product(client, product_id, body)
     if not updated:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -128,6 +142,13 @@ async def delete_product(
   client: Annotated[any, Depends(get_supabase_client)],
   user_id: str = Depends(get_current_user_id),
 ):
+    try:
+        ensure_product_owner(client, product_id, user_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Product not found")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     ok = shop_service.delete_product(client, product_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Product not found")
