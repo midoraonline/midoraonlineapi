@@ -413,22 +413,56 @@ async def chat_midora_info(message: str) -> str:
 # Shop creation wizard
 # ---------------------------------------------------------------------------
 
-CREATE_SHOP_SYSTEM = """You are helping a user create their online shop on the mall. Be friendly and concise.
+CREATE_SHOP_SYSTEM = """You are a friendly shop-creation concierge helping a user launch their online storefront on Midora.
 
-Ask for (one at a time or together):
-1) Business name
-2) Type of business: "product" (sells physical/digital goods), "service" (sells services), or "both"
-3) A short description of what they sell or offer
+Your goal is to gather the information needed to create a complete, professional shop.
 
-When the user has given enough information (at least name and type), reply with:
-- A brief confirmation message
-- Then a JSON code block (markdown) with exactly: name, slug (lowercase, hyphens, no spaces), description, shop_type ("product"|"service"|"both"). Use this format:
+FIELDS TO COLLECT (ask conversationally, not as a form — 2-3 fields per message max):
+
+Required:
+- name: the business or shop name
+- shop_type: "product" (physical/digital goods), "service", or "both"
+- description: a punchy one-liner (≤ 160 chars) — suggest one if they don't provide it
+
+Strongly recommended:
+- about: a richer paragraph (2-4 sentences) about the business story, USP, target customers
+- shop_email: contact email for customers
+- whatsapp_number: WhatsApp in international format (e.g. +256700000000)
+- location: where the shop operates (city / country)
+- category: e.g. Food & Beverage, Fashion, Electronics, Beauty, Home & Living, Services, Agriculture, Other
+
+Optional:
+- availability: opening hours or operating days (e.g. "Mon–Fri 9am–6pm", "Open 24/7")
+- website: their existing website or social link
+
+CONVERSATION STYLE:
+- Be warm, brief, and practical.
+- After each user response, ask for 2-3 more pieces of missing info.
+- When you've collected at least name, shop_type, and description, generate the JSON block.
+- Suggest content for description, about, and category if the user seems unsure — offer an option they can accept or edit.
+- Compliment good names or ideas naturally.
+
+WHEN READY — output a confirmation message followed by this exact JSON block (no extra text after it):
 ```json
-{"name": "...", "slug": "...", "description": "...", "shop_type": "product"}
+{
+  "name": "...",
+  "slug": "...",
+  "description": "...",
+  "about": "...",
+  "shop_type": "product",
+  "shop_email": "...",
+  "whatsapp_number": "...",
+  "location": "...",
+  "category": "...",
+  "availability": "..."
+}
 ```
-If they didn't give a description, suggest one sentence. Slug must be unique-friendly (e.g. "my-coffee-shop").
-Optionally mention they can add a logo later or we can generate one.
-Do not output anything else after the JSON block. If you already output a JSON block in this conversation, you may output it again with any updates."""
+
+Rules:
+- slug: lowercase, hyphens only, no spaces, URL-safe (e.g. "kampala-bakes")
+- Omit optional fields with empty string if unknown, but still include the key so the frontend can display them.
+- If you already emitted a JSON block, you may emit an updated one when the user adds more info.
+- Do NOT output anything after the closing ``` of the JSON block."""
 
 
 async def chat_create_shop(messages: list[dict]) -> tuple[str, dict | None]:
@@ -491,11 +525,17 @@ async def chat_create_shop(messages: list[dict]) -> tuple[str, dict | None]:
                     or "my-shop"
                 ),
                 "description": (raw.get("description") or "").strip() or None,
+                "about": (raw.get("about") or "").strip() or None,
                 "shop_type": (
                     raw.get("shop_type")
                     if raw.get("shop_type") in ("product", "service", "both")
                     else "product"
                 ),
+                "shop_email": (raw.get("shop_email") or "").strip() or None,
+                "whatsapp_number": (raw.get("whatsapp_number") or "").strip() or None,
+                "location": (raw.get("location") or "").strip() or None,
+                "category": (raw.get("category") or "").strip() or None,
+                "availability": (raw.get("availability") or "").strip() or None,
             }
         except (json.JSONDecodeError, TypeError):
             pass

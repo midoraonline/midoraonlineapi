@@ -120,7 +120,9 @@ CREATE TABLE IF NOT EXISTS public.products (
     description TEXT,
     price_ugx NUMERIC(12, 2) NOT NULL,
     stock_quantity INTEGER DEFAULT 0,
-    -- Multiple image URLs, matches API schemas (list[str])
+    -- Mixed media URLs (images AND videos).  Named image_urls for legacy
+    -- reasons; the frontend/API treat any .mp4/.webm/.mov/.m4v entry as a
+    -- video and render it with a player instead of <img>.
     image_urls TEXT[] DEFAULT '{}'::text[],
     category TEXT,
     ai_seo_tags TEXT,

@@ -15,8 +15,14 @@ class SuggestedShop(BaseModel):
     name: str
     slug: str
     description: str | None = None
+    about: str | None = None
     logo_url: str | None = None
     shop_type: Literal["product", "service", "both"] = "product"
+    shop_email: str | None = None
+    whatsapp_number: str | None = None
+    location: str | None = None
+    category: str | None = None
+    availability: str | None = None
 
 
 class MessageCreate(BaseModel):
