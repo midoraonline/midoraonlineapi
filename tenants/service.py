@@ -2,14 +2,16 @@ from typing import Any
 
 from postgrest.exceptions import APIError
 
-from core.postgrest_compat import is_undefined_column_error
 from shop import engagement_service
 from tenants.schemas import ShopCreate, ShopListItem, ShopResponse, ShopUpdate, ShopThemeConfig
 
-_SHOP_LIST_COLS_WITH_VIEWS = (
-    "id,name,slug,description,logo_url,shop_type,is_active,created_at,view_count"
+# When optional columns are missing (no migration yet), try narrower selects — see list_shops().
+_SHOP_LIST_COLS_TIERS: tuple[str, ...] = (
+    "id,name,slug,description,logo_url,shop_type,category,location,is_active,created_at,view_count",
+    "id,name,slug,description,logo_url,shop_type,location,is_active,created_at,view_count",
+    "id,name,slug,description,logo_url,shop_type,is_active,created_at,view_count",
+    "id,name,slug,description,logo_url,shop_type,is_active,created_at",
 )
-_SHOP_LIST_COLS_BASE = "id,name,slug,description,logo_url,shop_type,is_active,created_at"
 
 
 def _theme_config_for_db(value: ShopThemeConfig | dict[str, Any] | None) -> dict[str, Any] | None:
@@ -47,13 +49,18 @@ def list_shops(
             q = q.eq("shop_type", shop_type)
         return q.range(offset, offset + limit - 1).order("created_at", desc=True).execute()
 
-    try:
-        r = _run_list(_SHOP_LIST_COLS_WITH_VIEWS)
-    except APIError as exc:
-        if is_undefined_column_error(exc):
-            r = _run_list(_SHOP_LIST_COLS_BASE)
-        else:
-            raise
+    r = None
+    last_err: APIError | None = None
+    for select_cols in _SHOP_LIST_COLS_TIERS:
+        try:
+            r = _run_list(select_cols)
+            break
+        except APIError as exc:
+            if getattr(exc, "code", None) != "42703":
+                raise
+            last_err = exc
+    if r is None:
+        raise last_err  # type: ignore[misc]
     total = r.count if hasattr(r, "count") and r.count is not None else len(r.data or [])
     total_pages = (total + limit - 1) // limit if limit else 0
     items = [
@@ -63,6 +70,8 @@ def list_shops(
             slug=row.get("slug", ""),
             description=row.get("description"),
             logo_url=row.get("logo_url"),
+            category=row.get("category"),
+            location=row.get("location"),
             shop_type=row.get("shop_type") or "product",
             is_active=row.get("is_active", False),
             created_at=str(row["created_at"]) if row.get("created_at") else None,
@@ -77,25 +86,24 @@ def list_my_shops(client: Any, page: int = 1, limit: int = 20) -> dict:
     """List shops owned by current user (RLS filters by owner_id)."""
     limit = min(limit, 100)
     offset = (page - 1) * limit
-    try:
-        r = (
-            client.table("shops")
-            .select(_SHOP_LIST_COLS_WITH_VIEWS, count="exact")
-            .range(offset, offset + limit - 1)
-            .order("created_at", desc=True)
-            .execute()
-        )
-    except APIError as exc:
-        if is_undefined_column_error(exc):
+    last_err: APIError | None = None
+    r = None
+    for select_cols in _SHOP_LIST_COLS_TIERS:
+        try:
             r = (
                 client.table("shops")
-                .select(_SHOP_LIST_COLS_BASE, count="exact")
+                .select(select_cols, count="exact")
                 .range(offset, offset + limit - 1)
                 .order("created_at", desc=True)
                 .execute()
             )
-        else:
-            raise
+            break
+        except APIError as exc:
+            if getattr(exc, "code", None) != "42703":
+                raise
+            last_err = exc
+    if r is None:
+        raise last_err  # type: ignore[misc]
     total = r.count if hasattr(r, "count") and r.count is not None else len(r.data or [])
     total_pages = (total + limit - 1) // limit if limit else 0
     items = [
@@ -105,6 +113,8 @@ def list_my_shops(client: Any, page: int = 1, limit: int = 20) -> dict:
             slug=row.get("slug", ""),
             description=row.get("description"),
             logo_url=row.get("logo_url"),
+            category=row.get("category"),
+            location=row.get("location"),
             shop_type=row.get("shop_type") or "product",
             is_active=row.get("is_active", False),
             created_at=str(row["created_at"]) if row.get("created_at") else None,
@@ -197,6 +207,7 @@ def _row_to_shop_response(row: dict) -> dict:
         "owner_id": str(row["owner_id"]),
         "name": row.get("name", ""),
         "slug": row.get("slug", ""),
+        "category": row.get("category"),
         "description": row.get("description"),
         "about": row.get("about"),
         "logo_url": row.get("logo_url"),

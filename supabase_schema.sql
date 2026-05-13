@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS public.shops (
     availability JSONB,
     theme_config JSONB DEFAULT '{"primary_color": "#000000", "background_color": "#ffffff", "text_color": "#111111", "font": "Inter", "theme": "default", "metadata": {}}'::jsonb,
     shop_type TEXT NOT NULL DEFAULT 'product' CHECK (shop_type IN ('product', 'service', 'both')),
+    category TEXT,
     is_active BOOLEAN DEFAULT false,
     subscription_end_date TIMESTAMPTZ,
     view_count BIGINT NOT NULL DEFAULT 0,

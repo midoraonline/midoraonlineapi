@@ -57,6 +57,7 @@ class ShopResponse(BaseModel):
     owner_id: str
     name: str
     slug: str
+    category: str | None = None
     description: str | None
     about: str | None
     logo_url: str | None
@@ -85,6 +86,8 @@ class ShopListItem(BaseModel):
     slug: str
     description: str | None
     logo_url: str | None
+    category: str | None = None
+    location: dict[str, Any] | str | None = None
     shop_type: ShopType
     is_active: bool
     created_at: str | None
