@@ -87,6 +87,21 @@ class Settings(BaseSettings):
     # e.g. "http://localhost:3000,https://www.midoraonline.com"
     cors_allowed_origins: str = Field(default="", alias="CORS_ALLOWED_ORIGINS")
 
+    # Next.js storefront: used to POST /api/revalidate after shop/product mutations
+    # so Vercel Data Cache (unstable_cache) reflects changes immediately.
+    frontend_public_url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "FRONTEND_PUBLIC_URL",
+            "NEXT_PUBLIC_SITE_URL",
+            "NEXT_PUBLIC_URL",
+        ),
+    )
+    revalidate_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("REVALIDATE_SECRET", "NEXT_REVALIDATE_SECRET"),
+    )
+
     @property
     def is_production(self) -> bool:
         return self.environment.strip().lower() == "production"

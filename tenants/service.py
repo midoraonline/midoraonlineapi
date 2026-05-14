@@ -2,6 +2,7 @@ from typing import Any
 
 from postgrest.exceptions import APIError
 
+from core.next_cache import revalidate_nextjs_cache_tag
 from shop import engagement_service
 from tenants.schemas import ShopCreate, ShopListItem, ShopResponse, ShopUpdate, ShopThemeConfig
 
@@ -164,6 +165,7 @@ def create_shop(client: Any, owner_id: str, data: ShopCreate) -> dict:
     shop = get_shop(client, str(row["id"]), viewer_id=owner_id) or {}
     shop["_owner_role"] = new_role
     shop["_role_changed"] = changed
+    revalidate_nextjs_cache_tag("shops")
     return shop
 
 
@@ -198,6 +200,7 @@ def update_shop(client: Any, shop_id: str, data: ShopUpdate, viewer_id: str | No
     r = client.table("shops").update(payload).eq("id", shop_id).execute()
     if not r.data or len(r.data) == 0:
         return None
+    revalidate_nextjs_cache_tag("shops")
     return get_shop(client, shop_id, viewer_id=viewer_id)
 
 

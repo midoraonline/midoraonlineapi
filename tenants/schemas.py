@@ -50,6 +50,7 @@ class ShopUpdate(BaseModel):
     availability: dict | None = None
     theme_config: ShopThemeConfig | dict[str, Any] | None = None
     shop_type: ShopType | None = None
+    is_active: bool | None = None
 
 
 class ShopResponse(BaseModel):
