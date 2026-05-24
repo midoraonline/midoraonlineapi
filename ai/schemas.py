@@ -1,6 +1,8 @@
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+from core.categories import validate_category_field
 
 
 class ChatSessionCreate(BaseModel):
@@ -23,6 +25,11 @@ class SuggestedShop(BaseModel):
     location: str | None = None
     category: str | None = None
     availability: str | None = None
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def _category(cls, v: str | None) -> str | None:
+        return validate_category_field(v)
 
 
 class MessageCreate(BaseModel):

@@ -1,6 +1,8 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from core.categories import validate_category_field
 
 ShopType = Literal["product", "service", "both"]
 UserRole = Literal["customer", "merchant", "admin", "staff"]
@@ -35,6 +37,12 @@ class ShopCreate(BaseModel):
     availability: dict | None = None
     theme_config: ShopThemeConfig | dict[str, Any] | None = None
     shop_type: ShopType = "product"
+    category: str | None = None
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def _category(cls, v: str | None) -> str | None:
+        return validate_category_field(v)
 
 
 class ShopUpdate(BaseModel):
@@ -50,7 +58,13 @@ class ShopUpdate(BaseModel):
     availability: dict | None = None
     theme_config: ShopThemeConfig | dict[str, Any] | None = None
     shop_type: ShopType | None = None
+    category: str | None = None
     is_active: bool | None = None
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def _category(cls, v: str | None) -> str | None:
+        return validate_category_field(v)
 
 
 class ShopResponse(BaseModel):

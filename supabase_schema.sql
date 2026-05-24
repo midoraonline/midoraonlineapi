@@ -249,6 +249,15 @@ CREATE POLICY "profiles_own" ON public.profiles FOR ALL USING (id = auth.uid());
 DROP POLICY IF EXISTS "users_own" ON public.users;
 CREATE POLICY "users_own" ON public.users FOR ALL USING (id = auth.uid());
 
+-- 6. Canonical browse categories (seeded; see db/migrations/003_categories.sql)
+CREATE TABLE IF NOT EXISTS public.categories (
+    slug TEXT PRIMARY KEY,
+    label TEXT NOT NULL UNIQUE,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE public.categories ENABLE ROW LEVEL SECURITY;
+
 -- Migrations for existing DBs (run if tables already exist):
 -- ALTER TABLE public.shops ADD COLUMN IF NOT EXISTS shop_type TEXT NOT NULL DEFAULT 'product';
 -- ALTER TABLE public.shops ADD COLUMN IF NOT EXISTS about TEXT;
@@ -264,3 +273,23 @@ CREATE POLICY "users_own" ON public.users FOR ALL USING (id = auth.uid());
 -- ALTER TABLE public.products ADD COLUMN IF NOT EXISTS image_urls TEXT[] DEFAULT '{}'::text[];
 -- ALTER TABLE public.shops ADD COLUMN IF NOT EXISTS view_count BIGINT NOT NULL DEFAULT 0;
 -- ALTER TABLE public.products ADD COLUMN IF NOT EXISTS view_count BIGINT NOT NULL DEFAULT 0;
+
+-- 7. Reposts log
+CREATE TABLE IF NOT EXISTS public.product_reposts_log (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    product_id UUID NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+ALTER TABLE public.product_reposts_log ENABLE ROW LEVEL SECURITY;
+CREATE INDEX IF NOT EXISTS idx_product_reposts_log_product_id ON public.product_reposts_log(product_id);
+
+-- 8. Search History
+CREATE TABLE IF NOT EXISTS public.search_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    query TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+ALTER TABLE public.search_history ENABLE ROW LEVEL SECURITY;
+CREATE INDEX IF NOT EXISTS idx_search_history_user_id ON public.search_history(user_id);
+

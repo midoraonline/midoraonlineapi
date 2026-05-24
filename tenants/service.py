@@ -151,6 +151,7 @@ def create_shop(client: Any, owner_id: str, data: ShopCreate) -> dict:
         "location": data.location,
         "availability": data.availability,
         "shop_type": data.shop_type,
+        "category": data.category,
     }
     tc = _theme_config_for_db(data.theme_config)
     if tc is not None:

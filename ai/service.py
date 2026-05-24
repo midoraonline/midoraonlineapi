@@ -14,6 +14,7 @@ import re
 import time
 from typing import Any
 
+from core.categories import categories_for_prompt, normalize_category
 from core.config import get_settings
 from ai.tools import ingest_shop_ai_context, pull_shop_catalog
 
@@ -413,7 +414,20 @@ async def chat_midora_info(message: str) -> str:
 # Shop creation wizard
 # ---------------------------------------------------------------------------
 
-CREATE_SHOP_SYSTEM = """You are a friendly shop-creation concierge helping a user launch their online storefront on Midora.
+
+def _normalize_ai_category(value: object) -> str | None:
+    raw = (str(value) if value is not None else "").strip()
+    if not raw:
+        return None
+    try:
+        return normalize_category(raw)
+    except ValueError:
+        return None
+
+
+_CREATE_SHOP_CATEGORIES = categories_for_prompt()
+
+CREATE_SHOP_SYSTEM = f"""You are a friendly shop-creation concierge helping a user launch their online storefront on Midora.
 
 Your goal is to gather the information needed to create a complete, professional shop.
 
@@ -429,7 +443,7 @@ Strongly recommended:
 - shop_email: contact email for customers
 - whatsapp_number: WhatsApp in international format (e.g. +256700000000)
 - location: where the shop operates (city / country)
-- category: e.g. Food & Beverage, Fashion, Electronics, Beauty, Home & Living, Services, Agriculture, Other
+- category: MUST be exactly one of: {_CREATE_SHOP_CATEGORIES}
 
 Optional:
 - availability: opening hours or operating days (e.g. "Mon–Fri 9am–6pm", "Open 24/7")
@@ -444,7 +458,7 @@ CONVERSATION STYLE:
 
 WHEN READY — output a confirmation message followed by this exact JSON block (no extra text after it):
 ```json
-{
+{{
   "name": "...",
   "slug": "...",
   "description": "...",
@@ -455,7 +469,7 @@ WHEN READY — output a confirmation message followed by this exact JSON block (
   "location": "...",
   "category": "...",
   "availability": "..."
-}
+}}
 ```
 
 Rules:
@@ -534,7 +548,7 @@ async def chat_create_shop(messages: list[dict]) -> tuple[str, dict | None]:
                 "shop_email": (raw.get("shop_email") or "").strip() or None,
                 "whatsapp_number": (raw.get("whatsapp_number") or "").strip() or None,
                 "location": (raw.get("location") or "").strip() or None,
-                "category": (raw.get("category") or "").strip() or None,
+                "category": _normalize_ai_category(raw.get("category")),
                 "availability": (raw.get("availability") or "").strip() or None,
             }
         except (json.JSONDecodeError, TypeError):

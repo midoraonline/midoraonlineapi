@@ -4,6 +4,7 @@ from postgrest.exceptions import APIError
 
 from core.postgrest_compat import is_undefined_column_error
 from shop import engagement_service
+from core.categories import normalize_category
 from shop.schemas import (
     OrderCreate,
     OrderListItem,
@@ -40,7 +41,12 @@ def list_products(
         if not is_owner:
             q = q.eq("is_published", True)
         if category:
-            q = q.eq("category", category)
+            try:
+                cat = normalize_category(category)
+            except ValueError:
+                cat = category.strip()
+            if cat:
+                q = q.eq("category", cat)
         if search:
             q = q.or_(f"title.ilike.%{search}%,description.ilike.%{search}%")
         return q.range(offset, offset + limit - 1).order("created_at", desc=True).execute()
@@ -126,6 +132,26 @@ def update_product(client: Any, product_id: str, data: ProductUpdate) -> dict | 
 def delete_product(client: Any, product_id: str) -> bool:
     r = client.table("products").delete().eq("id", product_id).execute()
     return bool(r.data)
+
+
+def repost_product(client: Any, product_id: str) -> dict | None:
+    from datetime import datetime, timezone, timedelta
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    
+    logs = client.table("product_reposts_log").select("id").eq("product_id", product_id).gte("created_at", yesterday).execute()
+    
+    if logs.data and len(logs.data) >= 2:
+        raise ValueError("Repost limit reached (2x per 24 hours)")
+        
+    # Insert log
+    client.table("product_reposts_log").insert({"product_id": product_id}).execute()
+    
+    # Update product created_at
+    r = client.table("products").update({"created_at": datetime.now(timezone.utc).isoformat()}).eq("id", product_id).execute()
+    
+    if not r.data or len(r.data) == 0:
+        return None
+    return _row_to_product_response(r.data[0])
 
 
 def _row_to_product_response(row: dict) -> dict:

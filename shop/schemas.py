@@ -1,5 +1,7 @@
 from pydantic import BaseModel, field_validator
 
+from core.categories import validate_category_field
+
 
 class ProductCreate(BaseModel):
     title: str
@@ -18,6 +20,11 @@ class ProductCreate(BaseModel):
         if isinstance(v, str):
             return [v]
         return v
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def _category(cls, v: str | None) -> str | None:
+        return validate_category_field(v)
 
 
 class ProductUpdate(BaseModel):
@@ -39,6 +46,11 @@ class ProductUpdate(BaseModel):
         return v
     category: str | None = None
     is_published: bool | None = None
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def _category(cls, v: str | None) -> str | None:
+        return validate_category_field(v)
 
 
 class ProductResponse(BaseModel):

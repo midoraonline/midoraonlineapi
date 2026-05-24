@@ -37,6 +37,13 @@
 - `POST /api/v1/auth/verify-email`
   - Purpose: Currently not implemented for custom auth (returns 400)
 
+### Categories (`/api/v1/categories/*`)
+
+- `GET /api/v1/categories/`
+  - Purpose: List canonical browse categories (seeded in `public.categories`)
+  - Response: `{ "items": [{ "slug", "label", "sort_order" }, ...] }`
+  - Shop and product `category` fields must use one of these **labels** (validated on create/update)
+
 ### Shops / tenants (`/api/v1/shops/*`)
 
 - `GET /api/v1/shops/`

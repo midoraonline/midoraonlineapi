@@ -155,6 +155,29 @@ async def delete_product(
     return {"deleted": product_id}
 
 
+@router_products.post("/{product_id}/repost", response_model=ProductResponse)
+async def repost_product(
+  product_id: str,
+  client: Annotated[any, Depends(get_supabase_client)],
+  user_id: str = Depends(get_current_user_id),
+):
+    try:
+        ensure_product_owner(client, product_id, user_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Product not found")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    try:
+        updated = shop_service.repost_product(client, product_id)
+        if not updated:
+            raise HTTPException(status_code=404, detail="Product not found")
+        return updated
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+
+
+
 @router_products.post("/generate-from-image")
 async def generate_from_image(
   client: Annotated[any, Depends(get_supabase_client)],

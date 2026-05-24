@@ -25,3 +25,6 @@ google-genai>=0.3.0,<2.0
 
 # Tests
 pytest>=8.0.0,<9.0
+
+# Cache
+fastapi-cache2>=0.2.1,<1.0
