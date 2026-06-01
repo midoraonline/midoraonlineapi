@@ -91,6 +91,11 @@ class ShopResponse(BaseModel):
     follower_count: int = 0
     like_count: int = 0
     view_count: int = 0
+    trust_score: float = 0.0
+    seller_score: float = 0.0
+    fraud_score: float = 0.0
+    available_now: bool = False
+    last_seen_at: str | None = None
     viewer_following: bool | None = None
     viewer_liked_shop: bool | None = None
 

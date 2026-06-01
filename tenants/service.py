@@ -232,4 +232,9 @@ def _row_to_shop_response(row: dict) -> dict:
         "viewer_following": None,
         "viewer_liked_shop": None,
         "view_count": int(row.get("view_count") or 0),
+        "trust_score": float(row.get("trust_score") or 0),
+        "seller_score": float(row.get("seller_score") or 0),
+        "fraud_score": float(row.get("fraud_score") or 0),
+        "available_now": bool(row.get("available_now") or False),
+        "last_seen_at": str(row["last_seen_at"]) if row.get("last_seen_at") else None,
     }

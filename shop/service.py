@@ -16,10 +16,12 @@ from shop.schemas import (
 )
 
 _PRODUCT_LIST_COLS_WITH_VIEWS = (
-    "id,shop_id,title,description,price_ugx,image_urls,category,is_published,created_at,view_count"
+    "id,shop_id,title,description,price_ugx,image_urls,category,item_type,status,"
+    "listing_score,location_name,is_published,created_at,view_count"
 )
 _PRODUCT_LIST_COLS_BASE = (
-    "id,shop_id,title,description,price_ugx,image_urls,category,is_published,created_at"
+    "id,shop_id,title,description,price_ugx,image_urls,category,item_type,"
+    "is_published,created_at"
 )
 
 
@@ -39,7 +41,7 @@ def list_products(
     def _run_list(select_cols: str):
         q = client.table("products").select(select_cols, count="exact").eq("shop_id", shop_id)
         if not is_owner:
-            q = q.eq("is_published", True)
+            q = q.eq("is_published", True).eq("status", "active")
         if category:
             try:
                 cat = normalize_category(category)
@@ -75,6 +77,10 @@ def list_products(
                 image_urls=image_urls[:1] if image_urls else None,
                 category=row.get("category"),
                 is_published=row.get("is_published", True),
+                item_type=row.get("item_type"),
+                status=row.get("status"),
+                listing_score=int(row.get("listing_score") or 0),
+                location_name=row.get("location_name"),
                 created_at=str(row["created_at"]) if row.get("created_at") else None,
                 view_count=int(row.get("view_count") or 0),
             )
@@ -98,6 +104,8 @@ def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
         "stock_quantity": data.stock_quantity,
         "category": data.category,
         "is_published": data.is_published,
+        "item_type": data.item_type or "product",
+        "location_name": data.location_name,
     }
     imgs = _image_urls_for_db(data.image_urls)
     if imgs is not None:
@@ -105,7 +113,10 @@ def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
     r = client.table("products").insert(payload).execute()
     if not r.data or len(r.data) == 0:
         raise ValueError("Failed to create product")
-    return _row_to_product_response(r.data[0])
+    result = _row_to_product_response(r.data[0])
+    from ranking.service import calculate_listing_score
+    calculate_listing_score(str(r.data[0]["id"]))
+    return result
 
 
 def get_product(client: Any, product_id: str, viewer_id: str | None = None) -> dict | None:
@@ -171,6 +182,10 @@ def _row_to_product_response(row: dict) -> dict:
         "stock_quantity": row.get("stock_quantity", 0),
         "image_urls": image_urls,
         "category": row.get("category"),
+        "item_type": row.get("item_type", "product"),
+        "status": row.get("status", "active"),
+        "listing_score": int(row.get("listing_score") or 0),
+        "location_name": row.get("location_name"),
         "ai_seo_tags": row.get("ai_seo_tags"),
         "ai_generated_desc": row.get("ai_generated_desc", False),
         "is_published": row.get("is_published", True),

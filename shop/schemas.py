@@ -11,6 +11,8 @@ class ProductCreate(BaseModel):
     image_urls: list[str] | str | None = None
     category: str | None = None
     is_published: bool = True
+    item_type: str | None = None
+    location_name: str | None = None
 
     @field_validator("image_urls", mode="before")
     @classmethod
@@ -46,6 +48,9 @@ class ProductUpdate(BaseModel):
         return v
     category: str | None = None
     is_published: bool | None = None
+    item_type: str | None = None
+    status: str | None = None
+    location_name: str | None = None
 
     @field_validator("category", mode="before")
     @classmethod
@@ -63,6 +68,10 @@ class ProductResponse(BaseModel):
     image_urls: list[str] | None
     category: str | None
     is_published: bool
+    item_type: str | None = None
+    status: str | None = None
+    listing_score: int = 0
+    location_name: str | None = None
     created_at: str | None
     like_count: int = 0
     view_count: int = 0
@@ -78,6 +87,10 @@ class ProductListItem(BaseModel):
     image_urls: list[str] | None = None
     category: str | None
     is_published: bool
+    item_type: str | None = None
+    status: str | None = None
+    listing_score: int = 0
+    location_name: str | None = None
     created_at: str | None
     view_count: int = 0
 

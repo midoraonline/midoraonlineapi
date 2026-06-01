@@ -8,7 +8,7 @@ from app.factory.routers import register_routers
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="DigitalMall API",
+        title="Midora Online API",
         version="1.0.0",
         lifespan=lifespan,
     )

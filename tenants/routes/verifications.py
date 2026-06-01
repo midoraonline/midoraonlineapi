@@ -43,6 +43,11 @@ def _row_to_response(row: dict[str, Any]) -> VerificationResponse:
         reviewed_by=str(row["reviewed_by"]) if row.get("reviewed_by") else None,
         notes=row.get("notes"),
         metadata=row.get("metadata"),
+        submitted_docs=row.get("submitted_docs"),
+        submitted_phone=row.get("submitted_phone"),
+        submitted_whatsapp=row.get("submitted_whatsapp"),
+        submitted_location=row.get("submitted_location"),
+        shop_duration_days=row.get("shop_duration_days") or 0,
     )
 
 
@@ -53,6 +58,10 @@ def _upsert_verification(
     notes: str | None = None,
     reviewed_by: str | None = None,
     metadata: dict[str, Any] | None = None,
+    documents: list[dict[str, Any]] | None = None,
+    submitted_phone: str | None = None,
+    submitted_whatsapp: str | None = None,
+    submitted_location: str | None = None,
 ) -> dict[str, Any]:
     client = get_supabase_admin()
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -63,10 +72,29 @@ def _upsert_verification(
         "notes": notes,
         "metadata": metadata,
     }
+    if documents is not None:
+        payload["submitted_docs"] = documents
+    if submitted_phone is not None:
+        payload["submitted_phone"] = submitted_phone
+    if submitted_whatsapp is not None:
+        payload["submitted_whatsapp"] = submitted_whatsapp
+    if submitted_location is not None:
+        payload["submitted_location"] = submitted_location
+
     if status == "pending":
         payload["requested_at"] = now_iso
         payload["reviewed_at"] = None
         payload["reviewed_by"] = None
+        try:
+            shop_r = client.table("shops").select("created_at").eq("id", shop_id).execute()
+            if shop_r.data:
+                from datetime import timezone
+                created = shop_r.data[0].get("created_at")
+                if created:
+                    delta = datetime.now(timezone.utc) - datetime.fromisoformat(created.replace("Z", "+00:00"))
+                    payload["shop_duration_days"] = delta.days
+        except Exception:
+            pass
     else:
         payload["reviewed_at"] = now_iso
         payload["reviewed_by"] = reviewed_by
@@ -241,15 +269,19 @@ async def submit_for_verification(
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
 
+    docs_dict = [d.model_dump() for d in (body.documents or [])] if body.documents else None
+
     row = _upsert_verification(
         shop_id,
         status="pending",
         notes=body.notes,
         metadata=body.metadata,
+        documents=docs_dict,
+        submitted_phone=body.submitted_phone,
+        submitted_whatsapp=body.submitted_whatsapp,
+        submitted_location=body.submitted_location,
     )
 
-    # Fire-and-forget notifications to the merchant + admin team. Any SMTP
-    # failure is logged but never breaks the submission flow.
     await _send_submission_emails(shop_id, notes=body.notes)
 
     return _row_to_response(row)

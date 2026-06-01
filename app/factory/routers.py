@@ -23,6 +23,7 @@ def register_routers(app: FastAPI) -> None:
     from admin.router import router as admin_router
     from categories.router import router as categories_router
     from feed.router import router as feed_router
+    from marketplace.router import router as marketplace_router
 
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(categories_router, prefix="/api/v1")
@@ -32,3 +33,4 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(payments_router, prefix="/api/v1")
     app.include_router(admin_router, prefix="/api/v1")
     app.include_router(feed_router, prefix="/api/v1")
+    app.include_router(marketplace_router, prefix="/api/v1")

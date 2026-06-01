@@ -1,6 +1,6 @@
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi_cache.decorator import cache
 from pydantic import BaseModel
 
@@ -9,6 +9,7 @@ from core.security import get_optional_user_id, get_current_user_id
 from db.supabase import get_supabase_client
 from shop.schemas import ProductResponse
 from feed import service as feed_service
+from feed.composite import get_home_feed
 
 router = APIRouter(prefix="/feed", tags=["feed"])
 
@@ -28,9 +29,20 @@ async def log_search(
     return {"status": "ok"}
 
 
+@router.get("/home")
+@cache(expire=300)
+async def home_feed(limit: int = Query(72, ge=1, le=200)) -> dict[str, Any]:
+    """Composite endpoint: all 4 feeds with shop + boost data embedded.
+
+    Returns algorithm, trending, premium, and fresh feeds in a single call.
+    Shop details and boost status are batch-fetched and embedded so the
+    frontend doesn't need N+1 round-trips.
+    """
+    return get_home_feed(limit=limit)
+
 
 @router.get("/algorithm", response_model=list[ProductResponse])
-@cache(expire=60)
+@cache(expire=300)
 async def get_algorithm_feed(
     client: Annotated[any, Depends(get_supabase_client)],
     params: Annotated[PaginationParams, Depends()],
@@ -43,7 +55,7 @@ async def get_algorithm_feed(
 
 
 @router.get("/latest", response_model=list[ProductResponse])
-@cache(expire=60)
+@cache(expire=300)
 async def get_latest_feed(
     client: Annotated[any, Depends(get_supabase_client)],
     params: Annotated[PaginationParams, Depends()],

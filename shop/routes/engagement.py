@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi_cache.decorator import cache
 
 from db.supabase import get_supabase_admin, get_supabase_client
 from core.security import get_current_user_id, get_optional_user_id
@@ -156,6 +157,104 @@ async def my_liked_shops(user_id: str = Depends(get_current_user_id)) -> dict:
     by_id = {str(r["id"]): r for r in (sr.data or [])}
     items = [_enrich_shop_row(by_id[sid]) for sid in shop_ids if sid in by_id]
     return {"items": items, "total": len(items)}
+
+
+@router.get("/{shop_id}/dashboard")
+@cache(expire=120)
+async def shop_dashboard(
+    shop_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> dict[str, Any]:
+    """Composite endpoint: shop profile + engagement + products + lead stats.
+
+    Returns everything a merchant dashboard needs in a single call instead of
+    the previous 4 separate round-trips.
+    """
+    admin = get_supabase_admin()
+
+    shop_data: dict[str, Any] | None = None
+    try:
+        sr = admin.table("shops").select("*").eq("id", shop_id).limit(1).execute()
+        if sr.data:
+            shop_data = sr.data[0]
+    except Exception:
+        pass
+
+    if not shop_data:
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    # Engagement
+    engagement = engagement_service.get_shop_engagement(admin, shop_id, user_id)
+
+    # Products
+    products_list: list[dict[str, Any]] = []
+    try:
+        pr = (
+            admin.table("products")
+            .select(
+                "id,title,description,price_ugx,image_urls,category,item_type,"
+                "status,listing_score,location_name,is_published,view_count,"
+                "like_count,created_at,updated_at"
+            )
+            .eq("shop_id", shop_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        for row in (pr.data or []):
+            imgs = row.get("image_urls")
+            if isinstance(imgs, str):
+                imgs = [s.strip() for s in imgs.split(",") if s.strip()]
+            elif not isinstance(imgs, list):
+                imgs = []
+            products_list.append({
+                "id": str(row["id"]),
+                "shop_id": shop_id,
+                "title": row.get("title", ""),
+                "description": row.get("description"),
+                "price_ugx": float(row.get("price_ugx", 0)),
+                "image_urls": imgs[:1] if imgs else None,
+                "category": row.get("category"),
+                "item_type": row.get("item_type", "product"),
+                "status": row.get("status", "active"),
+                "listing_score": int(row.get("listing_score") or 0),
+                "location_name": row.get("location_name"),
+                "is_published": bool(row.get("is_published", True)),
+                "view_count": int(row.get("view_count") or 0),
+                "like_count": int(row.get("like_count") or 0),
+                "created_at": str(row["created_at"]) if row.get("created_at") else None,
+                "updated_at": str(row["updated_at"]) if row.get("updated_at") else None,
+            })
+    except Exception as exc:
+        logger.warning("shop_dashboard products failed: %s", exc)
+
+    # Lead stats
+    lead_stats: dict[str, Any] = {}
+    try:
+        from ranking.lead_service import get_lead_stats_for_seller
+        lead_stats = get_lead_stats_for_seller(user_id)
+    except Exception as exc:
+        logger.warning("shop_dashboard leads failed: %s", exc)
+
+    return {
+        "shop": {
+            "id": str(shop_data["id"]),
+            "name": shop_data.get("name", ""),
+            "slug": shop_data.get("slug", ""),
+            "description": shop_data.get("description"),
+            "about": shop_data.get("about"),
+            "logo_url": shop_data.get("logo_url"),
+            "shop_type": shop_data.get("shop_type", "product"),
+            "is_active": bool(shop_data.get("is_active", False)),
+            "category": shop_data.get("category"),
+            "view_count": int(shop_data.get("view_count") or 0),
+            "whatsapp_number": shop_data.get("whatsapp_number"),
+            "location": shop_data.get("location"),
+            "created_at": str(shop_data["created_at"]) if shop_data.get("created_at") else None,
+        },
+        "engagement": engagement,
+        "products": products_list,
+        "lead_stats": lead_stats,
+    }
 
 
 @router.get("/me/stats")
