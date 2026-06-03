@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from core.security import get_current_user_id
 from db.supabase import get_supabase_admin
 
 router = APIRouter()
@@ -28,7 +30,7 @@ async def admin_list_listings(
         .select(
             "id, shop_id, title, description, price_ugx, image_urls, category, "
             "item_type, status, listing_score, location_name, is_published, "
-            "view_count, created_at",
+            "view_count, created_at, reviewed_by, reviewed_at, review_notes",
             count="exact",
         )
     )
@@ -100,7 +102,44 @@ async def admin_update_listing_status(
         return {"error": f"Invalid status. Must be one of: {', '.join(sorted(valid_statuses))}"}
 
     admin = get_supabase_admin()
-    r = admin.table("products").update({"status": status}).eq("id", listing_id).execute()
+    now = datetime.now(timezone.utc).isoformat()
+    r = (
+        admin.table("products")
+        .update({"status": status, "reviewed_at": now})
+        .eq("id", listing_id)
+        .execute()
+    )
+    if not r.data:
+        return {"error": "Listing not found"}
+    return r.data[0]
+
+
+@router.post("/listings/{listing_id}/review")
+async def admin_review_listing(
+    listing_id: str,
+    action: str = Query(..., description="approve or reject"),
+    notes: str | None = Query(None),
+    admin_id: str = Depends(get_current_user_id),
+) -> dict[str, Any]:
+    """Approve or reject a pending listing with review notes."""
+    if action not in {"approve", "reject"}:
+        return {"error": "Action must be 'approve' or 'reject'"}
+
+    new_status = "active" if action == "approve" else "rejected"
+    admin = get_supabase_admin()
+    now = datetime.now(timezone.utc).isoformat()
+
+    r = (
+        admin.table("products")
+        .update({
+            "status": new_status,
+            "reviewed_by": admin_id,
+            "reviewed_at": now,
+            "review_notes": notes,
+        })
+        .eq("id", listing_id)
+        .execute()
+    )
     if not r.data:
         return {"error": "Listing not found"}
     return r.data[0]

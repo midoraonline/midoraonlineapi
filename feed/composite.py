@@ -36,11 +36,16 @@ def _coerce_images(image_urls: Any) -> list[str]:
     return []
 
 
-def get_home_feed(limit: int = MAX_CARDS) -> dict[str, Any]:
+def get_home_feed(
+    limit: int = MAX_CARDS,
+    page: int = 1,
+    user_id: str | None = None,
+) -> dict[str, Any]:
     """Return all 4 home-page feeds in one call with shop + boost data embedded.
 
-    This eliminates ~N/3 + N frontend API round-trips (shop details + boost
-    checks per product).
+    Pass `user_id` for personalised per-user feed scoring.
+    `limit` controls the main algorithm feed size; sub-feeds are fixed.
+    `page` controls which page of the full product pool is scored.
     """
     from feed.service import get_algorithm_feed, get_latest_feed
     from db.supabase import get_supabase_client
@@ -48,13 +53,20 @@ def get_home_feed(limit: int = MAX_CARDS) -> dict[str, Any]:
     admin = get_supabase_admin()
     client = get_supabase_client(None)
 
-    algorithm_raw = get_algorithm_feed(client, limit=limit)
-    trending_raw = get_algorithm_feed(client, limit=8)
-    premium_raw = get_algorithm_feed(client, limit=8)
+    offset = (page - 1) * limit
+    pool_size = limit * page + 24  # fetch extra for trending/premium/fresh
+    pool_size = min(pool_size, MAX_CARDS * 3)
+
+    algorithm_raw = get_algorithm_feed(client, user_id=user_id, limit=pool_size)
     fresh_raw = get_latest_feed(client, limit=12)
 
+    # Paginate the scored pool for the main algorithm feed
+    algorithm_paged = algorithm_raw[offset:offset + limit] if offset < len(algorithm_raw) else []
+    trending_raw = get_algorithm_feed(client, user_id=user_id, limit=8)
+    premium_raw = get_algorithm_feed(client, user_id=user_id, limit=8)
+
     # Collect unique shop IDs from all feeds
-    all_products = algorithm_raw + trending_raw + premium_raw + fresh_raw
+    all_products = algorithm_paged + trending_raw + premium_raw + fresh_raw
     shop_ids = list({str(p.shop_id) for p in all_products if p.shop_id})
 
     # Batch-fetch shops (1 query instead of N)
@@ -92,6 +104,24 @@ def get_home_feed(limit: int = MAX_CARDS) -> dict[str, Any]:
     # Batch-fetch boost status (1 query instead of N)
     product_ids = [str(p.id) for p in all_products if p.id]
     boosted_ids: set[str] = set()
+
+    # Batch-fetch like counts from product_likes (1 query instead of N)
+    like_counts: dict[str, int] = {}
+    if product_ids:
+        try:
+            likes_r = (
+                admin.table("product_likes")
+                .select("product_id")
+                .in_("product_id", product_ids)
+                .execute()
+            )
+            counts_raw: dict[str, int] = {}
+            for row in likes_r.data or []:
+                pid = str(row.get("product_id"))
+                counts_raw[pid] = counts_raw.get(pid, 0) + 1
+            like_counts = {pid: counts_raw.get(pid, 0) for pid in product_ids}
+        except Exception as exc:
+            logger.warning("home feed batch like-count fetch failed: %s", exc)
     if product_ids:
         try:
             now_iso = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
@@ -124,7 +154,7 @@ def get_home_feed(limit: int = MAX_CARDS) -> dict[str, Any]:
                 "item_type": p.item_type,
                 "is_published": p.is_published,
                 "view_count": _safe_int(p.view_count),
-                "like_count": _safe_int(p.like_count),
+                "like_count": like_counts.get(str(p.id), 0),
                 "listing_score": _safe_int(p.listing_score),
                 "location_name": p.location_name,
                 "created_at": p.created_at,
@@ -135,8 +165,11 @@ def get_home_feed(limit: int = MAX_CARDS) -> dict[str, Any]:
         return out
 
     return {
-        "algorithm": _embed(algorithm_raw),
+        "algorithm": _embed(algorithm_paged),
         "trending": _embed(trending_raw),
         "premium": _embed(premium_raw),
         "fresh": _embed(fresh_raw),
+        "page": page,
+        "limit": limit,
+        "total": len(algorithm_raw),
     }

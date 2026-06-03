@@ -106,6 +106,7 @@ def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
         "is_published": data.is_published,
         "item_type": data.item_type or "product",
         "location_name": data.location_name,
+        "status": "pending_review",
     }
     imgs = _image_urls_for_db(data.image_urls)
     if imgs is not None:
@@ -119,11 +120,71 @@ def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
     return result
 
 
+def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[dict]:
+    """Fetch products in the same category, excluding the current product."""
+    product = get_product(client, product_id)
+    if not product or not product.get("category"):
+        return []
+    try:
+        r = (
+            client.table("products")
+            .select("id,shop_id,title,price_ugx,image_urls,category,item_type,"
+                    "listing_score,location_name,is_published,created_at,view_count")
+            .eq("category", product["category"])
+            .eq("is_published", True)
+            .eq("status", "active")
+            .neq("id", product_id)
+            .order("listing_score", desc=True)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+    except Exception:
+        r = (
+            client.table("products")
+            .select("id,shop_id,title,price_ugx,image_urls,category,item_type,"
+                    "is_published,created_at")
+            .eq("category", product["category"])
+            .eq("is_published", True)
+            .eq("status", "active")
+            .neq("id", product_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+    out = []
+    for row in (r.data or []):
+        imgs = row.get("image_urls")
+        if isinstance(imgs, str):
+            imgs = [imgs] if imgs else []
+        out.append({
+            "id": str(row["id"]),
+            "shop_id": str(row["shop_id"]),
+            "title": row.get("title", ""),
+            "price_ugx": float(row.get("price_ugx", 0)),
+            "image_urls": imgs[:1] if imgs else None,
+            "category": row.get("category"),
+            "item_type": row.get("item_type"),
+            "listing_score": int(row.get("listing_score") or 0),
+            "location_name": row.get("location_name"),
+            "created_at": str(row["created_at"]) if row.get("created_at") else None,
+            "view_count": int(row.get("view_count") or 0),
+        })
+    return out
+
+
 def get_product(client: Any, product_id: str, viewer_id: str | None = None) -> dict | None:
     r = client.table("products").select("*").eq("id", product_id).execute()
     if not r.data or len(r.data) == 0:
         return None
-    out = _row_to_product_response(r.data[0])
+    row = r.data[0]
+    shop_id = row.get("shop_id", "")
+    is_owner = bool(viewer_id and shop_id and bool(
+        client.table("shops").select("user_id").eq("id", shop_id).eq("user_id", viewer_id).limit(1).execute().data
+    ))
+    if not is_owner and (row.get("status") != "active" or not row.get("is_published")):
+        return None
+    out = _row_to_product_response(row)
     out.update(engagement_service.get_product_engagement(client, product_id, viewer_id))
     return out
 

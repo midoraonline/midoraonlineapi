@@ -3,6 +3,8 @@
 All templates are simple inline HTML (with a plain-text fallback where it
 matters). Every send is best-effort — callers catch exceptions so email
 failures never break the underlying flow.
+
+All public `send_*` functions now enqueue rather than send synchronously.
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ def get_mail() -> FastMail:
 
 
 # ---------------------------------------------------------------------------
-# Shared HTML shell
+# Shared HTML shell (exported for use by queue worker)
 # ---------------------------------------------------------------------------
 
 
@@ -69,6 +71,7 @@ async def _send_html(
     subject: str,
     body_html: str,
 ) -> None:
+    """Low-level send — used by queue worker, not by callers directly."""
     recipients = [to] if isinstance(to, str) else [r for r in to if r]
     if not recipients:
         return
@@ -87,6 +90,10 @@ async def _send_html(
 # ---------------------------------------------------------------------------
 
 
+async def _enqueue(to: str, subject: str, body_html: str) -> None:
+    from mail.queue import enqueue_mail
+    await enqueue_mail(to=to, subject=subject, body_html=body_html)
+
 async def send_verification_email(to: str, verification_link: str) -> None:
     body = _html_shell(
         "Verify your email",
@@ -100,7 +107,7 @@ async def send_verification_email(to: str, verification_link: str) -> None:
         </p>
         """,
     )
-    await _send_html(to=to, subject="Verify your Midora email", body_html=body)
+    await _enqueue(to=to, subject="Verify your Midora email", body_html=body)
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +149,7 @@ async def send_shop_verification_decision_email(
         """
         title = "Verification update"
 
-    await _send_html(to=to, subject=subject, body_html=_html_shell(title, inner))
+    await _enqueue(to, subject, _html_shell(title, inner))
 
 
 async def send_shop_submission_received_email(
@@ -154,11 +161,7 @@ async def send_shop_submission_received_email(
       <p>Our team typically reviews new shops within one business day. We'll email you as soon as a decision is made.</p>
       <p style=\"color:#64748b;font-size:13px;\">In the meantime, you can keep polishing your storefront from the merchant dashboard.</p>
     """
-    await _send_html(
-        to=to,
-        subject="We received your shop verification request",
-        body_html=_html_shell("Verification request received", inner),
-    )
+    await _enqueue(to, "We received your shop verification request", _html_shell("Verification request received", inner))
 
 
 async def send_new_shop_submission_admin_email(
@@ -198,8 +201,5 @@ async def send_new_shop_submission_admin_email(
       {notes_html}
       <p style=\"margin-top:24px;\">Head to the admin dashboard to approve or reject it.</p>
     """
-    await _send_html(
-        to=recipients,
-        subject=f"[Midora] New shop submission: {shop_name}",
-        body_html=_html_shell("New shop awaiting verification", inner),
-    )
+    for recipient in recipients:
+        await _enqueue(recipient, f"[Midora] New shop submission: {shop_name}", _html_shell("New shop awaiting verification", inner))

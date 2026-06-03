@@ -62,8 +62,8 @@ def shop_exists(client: Any, shop_id: str) -> bool:
 
 
 def product_exists(client: Any, product_id: str) -> bool:
-    r = client.table("products").select("id").eq("id", product_id).limit(1).execute()
-    return bool(r.data)
+    r = client.table("products").select("id,status").eq("id", product_id).limit(1).execute()
+    return bool(r.data and r.data[0].get("status") == "active")
 
 
 def get_shop_engagement(client: Any, shop_id: str, viewer_user_id: str | None) -> dict[str, Any]:

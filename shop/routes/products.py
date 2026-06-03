@@ -1,11 +1,13 @@
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.authz import ensure_product_owner, ensure_shop_owner
+from core.config import get_settings
 from core.schemas import PaginationParams
 from db.supabase import get_supabase_client
 from core.security import get_current_user_id, get_optional_user_id
+from mail.queue import enqueue_mail
 from shop import engagement_service, service as shop_service
 from shop.schemas import (
     ProductCreate,
@@ -22,7 +24,7 @@ router = APIRouter()
 async def create_product(
   shop_id: str,
   body: ProductCreate,
-  client: Annotated[any, Depends(get_supabase_client)],
+  client: Annotated[Any, Depends(get_supabase_client)],
   user_id: str = Depends(get_current_user_id),
 ):
     try:
@@ -32,7 +34,34 @@ async def create_product(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     try:
-        return shop_service.create_product(client, shop_id, body)
+        product = shop_service.create_product(client, shop_id, body)
+
+        # Notify admins (best-effort, queued)
+        settings = get_settings()
+        recipients = settings.admin_notification_recipients
+        if recipients:
+            shop_row = client.table("shops").select("name, slug").eq("id", shop_id).limit(1).execute()
+            shop_name = shop_row.data[0].get("name", "Unknown") if shop_row.data else "Unknown"
+            price = body.price_ugx
+            for recipient in recipients:
+                await enqueue_mail(
+                    to=recipient,
+                    subject=f"[Midora] New product: {body.title}",
+                    body_html=f"""
+                    <div style="font-family:sans-serif;padding:24px;">
+                    <h2>New Product Added</h2>
+                    <p>A new product has been added to <strong>{shop_name}</strong> and is pending review.</p>
+                    <ul>
+                      <li><strong>Title:</strong> {body.title}</li>
+                      <li><strong>Price:</strong> UGX {price:,}</li>
+                      <li><strong>Category:</strong> {body.category}</li>
+                    </ul>
+                    <p><a href="{settings.frontend_public_url}/admin/listings" style="display:inline-block;padding:10px 18px;background:#0f172a;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">Review in admin panel</a></p>
+                    </div>
+                    """,
+                )
+
+        return product
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -99,6 +128,112 @@ async def record_product_view(
         return ViewCountResponse(view_count=n)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router_products.get("/premium")
+async def get_premium_products(
+    client: Annotated[Any, Depends(get_supabase_client)],
+    limit: int = 10,
+):
+    """Return premium (high-scoring boosted) products for the premium carousel."""
+    r = (
+        client.table("products")
+        .select("id, shop_id, title, price_ugx, image_urls, category, view_count, listing_score, created_at")
+        .eq("is_published", True)
+        .eq("status", "active")
+        .order("listing_score", desc=True)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    items = r.data or []
+    shop_ids = list({str(p["shop_id"]) for p in items if p.get("shop_id")})
+    shops_map: dict[str, dict] = {}
+    if shop_ids:
+        sr = (
+            client.table("shops")
+            .select("id, name, slug")
+            .in_("id", shop_ids)
+            .execute()
+        )
+        for s in sr.data or []:
+            shops_map[str(s["id"])] = s
+    out = []
+    for p in items:
+        sid = str(p.get("shop_id", ""))
+        s = shops_map.get(sid, {})
+        out.append({
+            "id": str(p["id"]),
+            "shop_id": sid,
+            "title": p.get("title", ""),
+            "price_ugx": float(p.get("price_ugx", 0)),
+            "image_urls": ([str(x).strip() for x in p.get("image_urls", []) if x] if isinstance(p.get("image_urls"), list) else []),
+            "category": p.get("category"),
+            "view_count": int(p.get("view_count") or 0),
+            "listing_score": int(p.get("listing_score") or 0),
+            "created_at": str(p.get("created_at", "")),
+            "shop_name": s.get("name"),
+            "shop_slug": s.get("slug"),
+        })
+    return out
+
+
+@router_products.get("/trending")
+async def get_trending_products(
+    client: Annotated[Any, Depends(get_supabase_client)],
+    limit: int = 12,
+):
+    """Return trending products (highest view count) for the trending carousel."""
+    r = (
+        client.table("products")
+        .select("id, shop_id, title, price_ugx, image_urls, category, view_count, listing_score, created_at")
+        .eq("is_published", True)
+        .eq("status", "active")
+        .order("view_count", desc=True)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    items = r.data or []
+    shop_ids = list({str(p["shop_id"]) for p in items if p.get("shop_id")})
+    shops_map: dict[str, dict] = {}
+    if shop_ids:
+        sr = (
+            client.table("shops")
+            .select("id, name, slug")
+            .in_("id", shop_ids)
+            .execute()
+        )
+        for s in sr.data or []:
+            shops_map[str(s["id"])] = s
+    out = []
+    for p in items:
+        sid = str(p.get("shop_id", ""))
+        s = shops_map.get(sid, {})
+        out.append({
+            "id": str(p["id"]),
+            "shop_id": sid,
+            "title": p.get("title", ""),
+            "price_ugx": float(p.get("price_ugx", 0)),
+            "image_urls": ([str(x).strip() for x in p.get("image_urls", []) if x] if isinstance(p.get("image_urls"), list) else []),
+            "category": p.get("category"),
+            "view_count": int(p.get("view_count") or 0),
+            "listing_score": int(p.get("listing_score") or 0),
+            "created_at": str(p.get("created_at", "")),
+            "shop_name": s.get("name"),
+            "shop_slug": s.get("slug"),
+        })
+    return out
+
+
+@router_products.get("/{product_id}/similar")
+async def get_similar_products(
+    product_id: str,
+    client: Annotated[Any, Depends(get_supabase_client)],
+    limit: int = 8,
+):
+    """Fetch similar products in the same category."""
+    return shop_service.get_similar_products(client, product_id, limit=limit)
 
 
 @router_products.get("/{product_id}", response_model=ProductResponse)

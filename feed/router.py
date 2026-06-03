@@ -30,19 +30,27 @@ async def log_search(
 
 
 @router.get("/home")
-@cache(expire=300)
-async def home_feed(limit: int = Query(72, ge=1, le=200)) -> dict[str, Any]:
+async def home_feed(
+    limit: int = Query(72, ge=1, le=200),
+    page: int = Query(1, ge=1),
+    user_id: str | None = Depends(get_optional_user_id),
+) -> dict[str, Any]:
     """Composite endpoint: all 4 feeds with shop + boost data embedded.
 
     Returns algorithm, trending, premium, and fresh feeds in a single call.
     Shop details and boost status are batch-fetched and embedded so the
     frontend doesn't need N+1 round-trips.
+
+    When a user is authenticated the algorithm feed is personalised based
+    on viewed/liked categories, search history, and engagement signals.
+
+    Supports pagination via `page` and `limit`. The main algorithm feed
+    returns `limit` products; other sub-feeds are fixed-size.
     """
-    return get_home_feed(limit=limit)
+    return get_home_feed(limit=limit, page=page, user_id=user_id)
 
 
 @router.get("/algorithm", response_model=list[ProductResponse])
-@cache(expire=300)
 async def get_algorithm_feed(
     client: Annotated[any, Depends(get_supabase_client)],
     params: Annotated[PaginationParams, Depends()],

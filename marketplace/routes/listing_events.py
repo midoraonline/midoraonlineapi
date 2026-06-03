@@ -22,7 +22,7 @@ async def record_listing_event(
     device_hash: str | None = Query(None),
 ) -> dict[str, Any]:
     """Record a listing event (view, click, share, report, etc.)."""
-    valid_types = {"viewed", "whatsapp_clicked", "call_clicked", "saved", "shared", "reported", "updated"}
+    valid_types = {"viewed", "whatsapp_clicked", "call_clicked", "saved", "shared", "reported", "updated", "messaged"}
     if event_type not in valid_types:
         return {"error": f"Invalid event_type. Must be one of: {', '.join(sorted(valid_types))}"}
 
@@ -56,7 +56,7 @@ async def record_listing_event(
 async def get_listing_event_stats(product_id: str) -> dict[str, Any]:
     """Get aggregated event counts for a listing."""
     admin = get_supabase_admin()
-    stats = {"views": 0, "whatsapp_clicks": 0, "call_clicks": 0, "saves": 0, "shares": 0, "reports": 0}
+    stats = {"views": 0, "whatsapp_clicks": 0, "call_clicks": 0, "saves": 0, "shares": 0, "reports": 0, "messages": 0}
 
     try:
         r = (
@@ -79,7 +79,34 @@ async def get_listing_event_stats(product_id: str) -> dict[str, Any]:
                 stats["shares"] += 1
             elif et == "reported":
                 stats["reports"] += 1
+            elif et == "messaged":
+                stats["messages"] += 1
     except Exception as exc:
         logger.warning("get_listing_event_stats(%s) failed: %s", product_id, exc)
+
+    return stats
+
+
+@router.get("/stats/user/{user_id}")
+async def get_user_event_stats(user_id: str) -> dict[str, Any]:
+    """Get aggregated event counts for a user (as buyer or seller)."""
+    admin = get_supabase_admin()
+    stats: dict[str, Any] = {"whatsapp_clicks": 0, "messages": 0}
+
+    try:
+        r = (
+            admin.table("listing_events")
+            .select("event_type")
+            .eq("buyer_id", user_id)
+            .execute()
+        )
+        for ev in r.data or []:
+            et = ev.get("event_type")
+            if et == "whatsapp_clicked":
+                stats["whatsapp_clicks"] += 1
+            elif et == "messaged":
+                stats["messages"] += 1
+    except Exception as exc:
+        logger.warning("get_user_event_stats(%s) failed: %s", user_id, exc)
 
     return stats
