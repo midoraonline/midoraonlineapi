@@ -10,6 +10,7 @@ All public `send_*` functions now enqueue rather than send synchronously.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Iterable
 
 from fastapi_mail import ConnectionConfig, FastMail, MessageSchema, MessageType
@@ -44,14 +45,18 @@ def get_mail() -> FastMail:
 # ---------------------------------------------------------------------------
 
 
+_LOGO_CID = "midora_logo"
+_LOGO_PATH = os.path.join(os.path.dirname(__file__), "..", "static", "logo.png")
+
+
 def _html_shell(title: str, inner: str) -> str:
     """Wrap email body HTML in a minimal, email-client-safe shell."""
     return f"""
     <div style=\"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#f6f7f9;padding:32px 16px;\">
       <div style=\"max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;\">
-        <div style=\"padding:24px 28px;border-bottom:1px solid #f1f5f9;\">
-          <div style=\"font-size:14px;font-weight:600;letter-spacing:0.08em;color:#475569;text-transform:uppercase;\">Midora</div>
-          <div style=\"margin-top:6px;font-size:18px;font-weight:600;color:#0f172a;\">{title}</div>
+        <div style=\"padding:24px 28px;border-bottom:1px solid #f1f5f9;text-align:center;\">
+          <img src=\"cid:{_LOGO_CID}\" alt=\"Midora\" style=\"max-width:140px;height:auto;\" />
+          <div style=\"margin-top:8px;font-size:18px;font-weight:600;color:#0f172a;\">{title}</div>
         </div>
         <div style=\"padding:24px 28px;font-size:15px;line-height:1.55;color:#1f2937;\">
           {inner}
@@ -81,6 +86,17 @@ async def _send_html(
         recipients=recipients,
         body=body_html,
         subtype=MessageType.html,
+        attachments=[
+            {
+                "file": _LOGO_PATH,
+                "headers": {
+                    "Content-ID": f"<{_LOGO_CID}>",
+                    "Content-Disposition": "inline; filename=\"logo.png\"",
+                },
+                "mime_type": "image",
+                "mime_subtype": "png",
+            }
+        ],
     )
     await mail.send_message(message)
 

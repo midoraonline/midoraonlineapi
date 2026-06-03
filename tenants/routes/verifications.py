@@ -202,11 +202,12 @@ async def _send_submission_emails(shop_id: str, notes: str | None = None) -> Non
                     exc,
                 )
 
-        admin_recipients = get_settings().admin_notification_recipients
-        if admin_recipients:
+        from mail.queue import get_admin_emails
+        admin_emails = get_admin_emails()
+        if admin_emails:
             try:
                 await send_new_shop_submission_admin_email(
-                    admin_recipients=admin_recipients,
+                    admin_recipients=admin_emails,
                     shop_name=shop.get("name", ""),
                     shop_slug=shop.get("slug"),
                     shop_id=str(shop.get("id", "")),

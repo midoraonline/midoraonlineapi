@@ -43,9 +43,25 @@ async def contact_us(
         logger.warning("contact_us insert failed: %s", exc)
         return {"error": "Failed to submit message. Please try again."}
 
+    # Confirmation to the sender
+    from mail.send import _html_shell
+    confirm_inner = f"""
+    <p>Hi {full_name},</p>
+    <p>Thank you for reaching out to Midora. We've received your message and will get back to you as soon as possible.</p>
+    <div style="margin-top:20px;padding:14px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;">
+      <strong>Your message:</strong><br/>{message}
+    </div>
+    <p style="margin-top:20px;color:#64748b;font-size:13px;">If you have any urgent concerns, please reply directly to this email.</p>
+    """
+    await enqueue_mail(
+        to=email,
+        subject="We received your message — Midora",
+        body_html=_html_shell("Message received", confirm_inner),
+    )
+
     # Notify admins (best-effort, queued)
-    settings = get_settings()
-    recipients = settings.admin_notification_recipients
+    from mail.queue import get_admin_emails
+    recipients = get_admin_emails()
     if recipients:
         inner = f"""
         <p>A new contact form submission has been received.</p>
@@ -58,21 +74,12 @@ async def contact_us(
           <strong>Message:</strong><br/>{message}
         </div>
         """
+        body_html = _html_shell("New contact submission", inner)
         for recipient in recipients:
             await enqueue_mail(
                 to=recipient,
                 subject=f"[Midora Contact] {subject}",
-                body_html=f"""
-                <div style="font-family:sans-serif;padding:24px;">
-                  <h2>New Contact Submission</h2>
-                  {inner}
-                  <p style="margin-top:24px;">
-                    <a href="{settings.frontend_public_url}/admin" style="display:inline-block;padding:10px 18px;background:#0f172a;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">
-                      Open admin panel
-                    </a>
-                  </p>
-                </div>
-                """,
+                body_html=body_html,
             )
 
     return {"status": "submitted", "message": "Thank you! We'll get back to you soon."}

@@ -29,6 +29,22 @@ POLL_INTERVAL_SECONDS = 2
 # ---------------------------------------------------------------------------
 
 
+def get_admin_emails() -> list[str]:
+    """Query all users with admin user_role and return their email addresses."""
+    try:
+        admin = get_supabase_admin()
+        r = (
+            admin.table("users")
+            .select("email")
+            .eq("user_role", "admin")
+            .execute()
+        )
+        return [str(row["email"]) for row in (r.data or []) if row.get("email")]
+    except Exception as exc:
+        logger.warning("Failed to fetch admin emails: %s", exc)
+        return []
+
+
 async def enqueue_mail(
     to: str | list[str],
     subject: str,

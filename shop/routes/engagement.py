@@ -188,6 +188,7 @@ async def shop_dashboard(
 
     # Products
     products_list: list[dict[str, Any]] = []
+    product_event_counts: dict[str, dict[str, int]] = {}
     try:
         pr = (
             admin.table("products")
@@ -200,14 +201,36 @@ async def shop_dashboard(
             .order("created_at", desc=True)
             .execute()
         )
+        product_ids = [str(row["id"]) for row in (pr.data or []) if row.get("id")]
+        if product_ids:
+            try:
+                ev_r = (
+                    admin.table("listing_events")
+                    .select("listing_id, event_type")
+                    .in_("listing_id", product_ids)
+                    .execute()
+                )
+                for ev in (ev_r.data or []):
+                    lid = str(ev.get("listing_id"))
+                    et = ev.get("event_type", "")
+                    if lid not in product_event_counts:
+                        product_event_counts[lid] = {"whatsapp_clicks": 0, "messages": 0}
+                    if et == "whatsapp_clicked":
+                        product_event_counts[lid]["whatsapp_clicks"] += 1
+                    elif et == "messaged":
+                        product_event_counts[lid]["messages"] += 1
+            except Exception:
+                pass
         for row in (pr.data or []):
             imgs = row.get("image_urls")
             if isinstance(imgs, str):
                 imgs = [s.strip() for s in imgs.split(",") if s.strip()]
             elif not isinstance(imgs, list):
                 imgs = []
+            pid = str(row["id"])
+            ec = product_event_counts.get(pid, {})
             products_list.append({
-                "id": str(row["id"]),
+                "id": pid,
                 "shop_id": shop_id,
                 "title": row.get("title", ""),
                 "description": row.get("description"),
@@ -221,6 +244,8 @@ async def shop_dashboard(
                 "is_published": bool(row.get("is_published", True)),
                 "view_count": int(row.get("view_count") or 0),
                 "like_count": int(row.get("like_count") or 0),
+                "whatsapp_clicks": ec.get("whatsapp_clicks", 0),
+                "messages": ec.get("messages", 0),
                 "created_at": str(row["created_at"]) if row.get("created_at") else None,
                 "updated_at": str(row["updated_at"]) if row.get("updated_at") else None,
             })
@@ -314,6 +339,25 @@ async def my_shops_stats(user_id: str = Depends(get_current_user_id)) -> dict:
             )
             product_likes_count = int(plik_r.count or 0)
 
+    total_whatsapp_clicks = 0
+    total_messages = 0
+    if product_ids:
+        try:
+            ev_r = (
+                admin.table("listing_events")
+                .select("event_type", count="exact")
+                .in_("listing_id", product_ids)
+                .execute()
+            )
+            for ev in (ev_r.data or []):
+                et = ev.get("event_type", "")
+                if et == "whatsapp_clicked":
+                    total_whatsapp_clicks += 1
+                elif et == "messaged":
+                    total_messages += 1
+        except Exception:
+            pass
+
     return {
         "total_shops": len(shops),
         "active_shops": sum(1 for s in shops if s.get("is_active")),
@@ -323,5 +367,7 @@ async def my_shops_stats(user_id: str = Depends(get_current_user_id)) -> dict:
         "total_products": product_count,
         "total_product_views": product_views,
         "total_product_likes": product_likes_count,
+        "total_whatsapp_clicks": total_whatsapp_clicks,
+        "total_messages": total_messages,
     }
 

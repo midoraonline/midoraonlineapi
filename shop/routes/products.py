@@ -36,29 +36,50 @@ async def create_product(
     try:
         product = shop_service.create_product(client, shop_id, body)
 
+        from mail.send import _html_shell
+        from mail.queue import get_admin_emails, enqueue_mail
+
+        # Confirmation to the merchant
+        try:
+            user_r = client.table("users").select("email").eq("id", user_id).limit(1).execute()
+            if user_r.data and user_r.data[0].get("email"):
+                merchant_email = user_r.data[0]["email"]
+                confirm_inner = f"""
+                <p>Your product <strong>{body.title}</strong> has been submitted and is now pending review.</p>
+                <p>Our team will review it shortly. Once approved, it will be visible to customers on Midora.</p>
+                <p style="margin-top:24px;color:#64748b;font-size:13px;">You can track the status of your listings from your merchant dashboard.</p>
+                """
+                await enqueue_mail(
+                    to=merchant_email,
+                    subject=f"Product submitted: {body.title} — Midora",
+                    body_html=_html_shell("Product submitted for review", confirm_inner),
+                )
+        except Exception:
+            pass
+
         # Notify admins (best-effort, queued)
-        settings = get_settings()
-        recipients = settings.admin_notification_recipients
+        recipients = get_admin_emails()
         if recipients:
             shop_row = client.table("shops").select("name, slug").eq("id", shop_id).limit(1).execute()
             shop_name = shop_row.data[0].get("name", "Unknown") if shop_row.data else "Unknown"
             price = body.price_ugx
+            settings = get_settings()
+            inner = f"""
+            <p>A new product has been added to <strong>{shop_name}</strong> and is pending review.</p>
+            <ul>
+              <li><strong>Title:</strong> {body.title}</li>
+              <li><strong>Price:</strong> UGX {price:,.0f}</li>
+              <li><strong>Category:</strong> {body.category}</li>
+            </ul>
+            <p style="margin-top:24px;">
+              <a href="{settings.frontend_public_url}/admin/listings" style="display:inline-block;padding:10px 18px;background:#0f172a;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:600;">Review in admin panel</a>
+            </p>
+            """
             for recipient in recipients:
                 await enqueue_mail(
                     to=recipient,
                     subject=f"[Midora] New product: {body.title}",
-                    body_html=f"""
-                    <div style="font-family:sans-serif;padding:24px;">
-                    <h2>New Product Added</h2>
-                    <p>A new product has been added to <strong>{shop_name}</strong> and is pending review.</p>
-                    <ul>
-                      <li><strong>Title:</strong> {body.title}</li>
-                      <li><strong>Price:</strong> UGX {price:,}</li>
-                      <li><strong>Category:</strong> {body.category}</li>
-                    </ul>
-                    <p><a href="{settings.frontend_public_url}/admin/listings" style="display:inline-block;padding:10px 18px;background:#0f172a;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">Review in admin panel</a></p>
-                    </div>
-                    """,
+                    body_html=_html_shell("New product pending review", inner),
                 )
 
         return product

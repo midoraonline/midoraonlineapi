@@ -66,6 +66,25 @@ def product_exists(client: Any, product_id: str) -> bool:
     return bool(r.data and r.data[0].get("status") == "active")
 
 
+def _count_shop_listing_events(client: Any, shop_id: str, event_type: str) -> int:
+    try:
+        pr = client.table("products").select("id").eq("shop_id", shop_id).execute()
+        product_ids = [str(r["id"]) for r in (pr.data or [])]
+        if not product_ids:
+            return 0
+        r = (
+            client.table("listing_events")
+            .select("id", count="exact")
+            .in_("listing_id", product_ids)
+            .eq("event_type", event_type)
+            .limit(1)
+            .execute()
+        )
+        return int(r.count or 0)
+    except Exception:
+        return 0
+
+
 def get_shop_engagement(client: Any, shop_id: str, viewer_user_id: str | None) -> dict[str, Any]:
     follower_count = _count_by_shop(client, "shop_follows", shop_id)
     like_count = _count_by_shop(client, "shop_likes", shop_id)
@@ -96,7 +115,24 @@ def get_shop_engagement(client: Any, shop_id: str, viewer_user_id: str | None) -
         "view_count": _shop_view_count(client, shop_id),
         "viewer_following": viewer_following,
         "viewer_liked_shop": viewer_liked_shop,
+        "whatsapp_clicks": _count_shop_listing_events(client, shop_id, "whatsapp_clicked"),
+        "messages": _count_shop_listing_events(client, shop_id, "messaged"),
     }
+
+
+def _count_listing_events(client: Any, product_id: str, event_type: str) -> int:
+    try:
+        r = (
+            client.table("listing_events")
+            .select("id", count="exact")
+            .eq("listing_id", product_id)
+            .eq("event_type", event_type)
+            .limit(1)
+            .execute()
+        )
+        return int(r.count or 0)
+    except Exception:
+        return 0
 
 
 def get_product_engagement(client: Any, product_id: str, viewer_user_id: str | None) -> dict[str, Any]:
@@ -116,6 +152,8 @@ def get_product_engagement(client: Any, product_id: str, viewer_user_id: str | N
         "like_count": like_count,
         "view_count": _product_view_count(client, product_id),
         "viewer_liked": viewer_liked,
+        "whatsapp_clicks": _count_listing_events(client, product_id, "whatsapp_clicked"),
+        "messages": _count_listing_events(client, product_id, "messaged"),
     }
 
 

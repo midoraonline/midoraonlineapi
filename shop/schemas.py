@@ -127,12 +127,16 @@ class ShopEngagementState(BaseModel):
     view_count: int = 0
     viewer_following: bool | None = None
     viewer_liked_shop: bool | None = None
+    whatsapp_clicks: int = 0
+    messages: int = 0
 
 
 class ProductEngagementState(BaseModel):
     like_count: int
     view_count: int = 0
     viewer_liked: bool | None = None
+    whatsapp_clicks: int = 0
+    messages: int = 0
 
 
 class ViewCountResponse(BaseModel):

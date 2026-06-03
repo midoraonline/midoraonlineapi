@@ -153,13 +153,24 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             .execute()
         )
     out = []
+    shop_ids = list({str(row["shop_id"]) for row in (r.data or []) if row.get("shop_id")})
+    shops_map: dict[str, dict] = {}
+    if shop_ids:
+        try:
+            sr = client.table("shops").select("id, name, slug").in_("id", shop_ids).execute()
+            for s in sr.data or []:
+                shops_map[str(s["id"])] = s
+        except Exception:
+            pass
     for row in (r.data or []):
         imgs = row.get("image_urls")
         if isinstance(imgs, str):
             imgs = [imgs] if imgs else []
+        sid = str(row.get("shop_id", ""))
+        s = shops_map.get(sid, {})
         out.append({
             "id": str(row["id"]),
-            "shop_id": str(row["shop_id"]),
+            "shop_id": sid,
             "title": row.get("title", ""),
             "price_ugx": float(row.get("price_ugx", 0)),
             "image_urls": imgs[:1] if imgs else None,
@@ -169,6 +180,9 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             "location_name": row.get("location_name"),
             "created_at": str(row["created_at"]) if row.get("created_at") else None,
             "view_count": int(row.get("view_count") or 0),
+            "shop_name": s.get("name"),
+            "shop_slug": s.get("slug"),
+            "owner_id": str(s.get("owner_id")) if s.get("owner_id") else None,
         })
     return out
 
