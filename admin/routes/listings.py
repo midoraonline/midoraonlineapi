@@ -111,6 +111,8 @@ async def admin_update_listing_status(
     )
     if not r.data:
         return {"error": "Listing not found"}
+    from feed.embeddings import refresh_product_embedding
+    refresh_product_embedding(listing_id)
     return r.data[0]
 
 
@@ -142,4 +144,17 @@ async def admin_review_listing(
     )
     if not r.data:
         return {"error": "Listing not found"}
+    from feed.embeddings import refresh_product_embedding
+    refresh_product_embedding(listing_id)
     return r.data[0]
+
+
+@router.post("/listings/reindex-embeddings")
+async def admin_reindex_embeddings(
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, Any]:
+    """Backfill or refresh product embeddings for the personalized feed."""
+    from feed.embeddings import backfill_missing_embeddings
+
+    admin = get_supabase_admin()
+    return backfill_missing_embeddings(admin, limit=limit)

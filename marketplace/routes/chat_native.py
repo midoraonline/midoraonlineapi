@@ -5,8 +5,6 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from typing import Any
-
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from postgrest.exceptions import APIError as PostgrestAPIError
 

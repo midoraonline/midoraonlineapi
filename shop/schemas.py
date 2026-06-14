@@ -51,6 +51,7 @@ class ProductUpdate(BaseModel):
     item_type: str | None = None
     status: str | None = None
     location_name: str | None = None
+    ai_seo_tags: str | None = None
 
     @field_validator("category", mode="before")
     @classmethod
@@ -141,3 +142,59 @@ class ProductEngagementState(BaseModel):
 
 class ViewCountResponse(BaseModel):
     view_count: int
+
+
+class ShopSummary(BaseModel):
+    """Lightweight shop snapshot embedded in product detail responses."""
+
+    id: str
+    name: str
+    slug: str | None = None
+    logo_url: str | None = None
+    whatsapp_number: str | None = None
+    is_active: bool = True
+    trust_score: int = 0
+    available_now: bool = False
+    location: str | None = None
+
+
+class ProductDetailResponse(BaseModel):
+    """Rich product detail — product + shop + engagement in a single response.
+
+    Replaces the old pattern of:
+      GET /products/{id}           -> product row
+      GET /products/{id}/engagement -> engagement (like_count, viewer_liked, …)
+    with a single O(3-query) composite fetch, eliminating 4+ sequential
+    round-trips and the separate frontend shop lookup.
+    """
+
+    # Core product fields
+    id: str
+    shop_id: str
+    title: str
+    description: str | None
+    price_ugx: float
+    stock_quantity: int
+    image_urls: list[str]
+    category: str | None
+    item_type: str | None = None
+    status: str | None = None
+    is_published: bool
+    listing_score: int = 0
+    location_name: str | None = None
+    ai_seo_tags: str | None = None
+    ai_generated_desc: bool = False
+    created_at: str | None
+
+    # Engagement — fetched in a single batched pass
+    like_count: int = 0
+    view_count: int = 0
+    viewer_liked: bool | None = None
+    whatsapp_clicks: int = 0
+    messages: int = 0
+
+    # Boost status — resolved in the same call
+    boosted: bool = False
+
+    # Embedded shop snapshot — eliminates a separate shop fetch on the frontend
+    shop: ShopSummary | None = None

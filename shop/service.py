@@ -10,10 +10,13 @@ from shop.schemas import (
     OrderListItem,
     OrderResponse,
     ProductCreate,
+    ProductDetailResponse,
     ProductListItem,
     ProductResponse,
     ProductUpdate,
+    ShopSummary,
 )
+
 
 _PRODUCT_LIST_COLS_WITH_VIEWS = (
     "id,shop_id,title,description,price_ugx,image_urls,category,item_type,status,"
@@ -117,6 +120,8 @@ def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
     result = _row_to_product_response(r.data[0])
     from ranking.service import calculate_listing_score
     calculate_listing_score(str(r.data[0]["id"]))
+    from feed.embeddings import refresh_product_embedding
+    refresh_product_embedding(str(r.data[0]["id"]))
     return result
 
 
@@ -203,6 +208,185 @@ def get_product(client: Any, product_id: str, viewer_id: str | None = None) -> d
     return out
 
 
+def get_product_detail(
+    client: Any,
+    product_id: str,
+    viewer_id: str | None = None,
+) -> ProductDetailResponse | None:
+    """Batched product detail fetch — 3 queries instead of 7.
+
+    Query plan:
+      Q1  products      — full product row (includes view_count, status, etc.)
+      Q2  shops         — shop snapshot + owner_id for visibility check
+      Q3  product_likes — like count (count=exact) + viewer_liked in one pass
+      Q4  listing_events — whatsapp_clicks + messages in a single grouped query
+      Q5  listing_boosts — active boost check (lightweight, single row expected)
+
+    The shop snapshot is embedded in the response, eliminating the separate
+    frontend shop fetch that previously caused an extra round-trip.
+    """
+    from datetime import datetime, timezone
+
+    # -------------------------------------------------------------------
+    # Q1: Product row
+    # -------------------------------------------------------------------
+    prod_r = (
+        client.table("products")
+        .select(
+            "id,shop_id,title,description,price_ugx,stock_quantity,image_urls,"
+            "category,item_type,status,is_published,listing_score,location_name,"
+            "ai_seo_tags,ai_generated_desc,created_at,view_count"
+        )
+        .eq("id", product_id)
+        .limit(1)
+        .execute()
+    )
+    if not prod_r.data:
+        return None
+    row = prod_r.data[0]
+
+    # -------------------------------------------------------------------
+    # Q2: Shop row — owner check + embedded snapshot
+    # -------------------------------------------------------------------
+    shop_id = str(row.get("shop_id", ""))
+    shop_snapshot: ShopSummary | None = None
+    is_owner = False
+
+    if shop_id:
+        try:
+            shop_r = (
+                client.table("shops")
+                .select(
+                    "id,name,slug,logo_url,owner_id,whatsapp_number,"
+                    "is_active,trust_score,available_now,location"
+                )
+                .eq("id", shop_id)
+                .limit(1)
+                .execute()
+            )
+            if shop_r.data:
+                s = shop_r.data[0]
+                loc = s.get("location")
+                location_str = loc.get("display") if isinstance(loc, dict) else loc
+                is_owner = bool(viewer_id and str(s.get("owner_id", "")) == viewer_id)
+                shop_snapshot = ShopSummary(
+                    id=str(s["id"]),
+                    name=s.get("name", ""),
+                    slug=s.get("slug"),
+                    logo_url=s.get("logo_url"),
+                    whatsapp_number=s.get("whatsapp_number"),
+                    is_active=bool(s.get("is_active", True)),
+                    trust_score=int(s.get("trust_score") or 0),
+                    available_now=bool(s.get("available_now", False)),
+                    location=location_str,
+                )
+        except Exception:
+            pass
+
+    # Visibility gate — non-owners can't see inactive/unpublished listings
+    if not is_owner and (row.get("status") != "active" or not row.get("is_published")):
+        return None
+
+    # -------------------------------------------------------------------
+    # Q3: Like count + viewer_liked (single query using count=exact)
+    # -------------------------------------------------------------------
+    like_count = 0
+    viewer_liked: bool | None = None
+    try:
+        likes_q = (
+            client.table("product_likes")
+            .select("user_id", count="exact")
+            .eq("product_id", product_id)
+        )
+        likes_r = likes_q.execute()
+        like_count = int(likes_r.count or 0)
+        if viewer_id:
+            viewer_liked = any(
+                str(row_.get("user_id", "")) == viewer_id
+                for row_ in (likes_r.data or [])
+            )
+    except Exception:
+        pass
+
+    # -------------------------------------------------------------------
+    # Q4: Listing events — both whatsapp_clicks and messages in one query
+    # -------------------------------------------------------------------
+    whatsapp_clicks = 0
+    messages = 0
+    try:
+        events_r = (
+            client.table("listing_events")
+            .select("event_type")
+            .eq("listing_id", product_id)
+            .in_("event_type", ["whatsapp_clicked", "messaged"])
+            .execute()
+        )
+        for evt in (events_r.data or []):
+            t = evt.get("event_type")
+            if t == "whatsapp_clicked":
+                whatsapp_clicks += 1
+            elif t == "messaged":
+                messages += 1
+    except Exception:
+        pass
+
+    # -------------------------------------------------------------------
+    # Q5: Active boost check
+    # -------------------------------------------------------------------
+    boosted = False
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        boost_r = (
+            client.table("listing_boosts")
+            .select("id")
+            .eq("listing_id", product_id)
+            .eq("active", True)
+            .gte("ends_at", now_iso)
+            .limit(1)
+            .execute()
+        )
+        boosted = bool(boost_r.data)
+    except Exception:
+        pass
+
+    # -------------------------------------------------------------------
+    # Assemble response
+    # -------------------------------------------------------------------
+    image_urls = row.get("image_urls") or []
+    if isinstance(image_urls, str):
+        image_urls = [s.strip() for s in image_urls.split(",") if s.strip()]
+    else:
+        image_urls = [str(x).strip() for x in image_urls if x is not None and str(x).strip()]
+
+    return ProductDetailResponse(
+        id=str(row["id"]),
+        shop_id=shop_id,
+        title=row.get("title", ""),
+        description=row.get("description"),
+        price_ugx=float(row.get("price_ugx", 0)),
+        stock_quantity=int(row.get("stock_quantity") or 0),
+        image_urls=image_urls,
+        category=row.get("category"),
+        item_type=row.get("item_type"),
+        status=row.get("status"),
+        is_published=bool(row.get("is_published", True)),
+        listing_score=int(row.get("listing_score") or 0),
+        location_name=row.get("location_name"),
+        ai_seo_tags=row.get("ai_seo_tags"),
+        ai_generated_desc=bool(row.get("ai_generated_desc", False)),
+        created_at=str(row["created_at"]) if row.get("created_at") else None,
+        like_count=like_count,
+        view_count=int(row.get("view_count") or 0),
+        viewer_liked=viewer_liked,
+        whatsapp_clicks=whatsapp_clicks,
+        messages=messages,
+        boosted=boosted,
+        shop=shop_snapshot,
+    )
+
+
+
+
 def update_product(client: Any, product_id: str, data: ProductUpdate) -> dict | None:
     payload = data.model_dump(exclude_unset=True)
     if data.image_urls is not None:
@@ -212,6 +396,8 @@ def update_product(client: Any, product_id: str, data: ProductUpdate) -> dict | 
     r = client.table("products").update(payload).eq("id", product_id).execute()
     if not r.data or len(r.data) == 0:
         return None
+    from feed.embeddings import refresh_product_embedding
+    refresh_product_embedding(product_id)
     return _row_to_product_response(r.data[0])
 
 

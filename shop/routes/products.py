@@ -7,10 +7,10 @@ from core.config import get_settings
 from core.schemas import PaginationParams
 from db.supabase import get_supabase_client
 from core.security import get_current_user_id, get_optional_user_id
-from mail.queue import enqueue_mail
 from shop import engagement_service, service as shop_service
 from shop.schemas import (
     ProductCreate,
+    ProductDetailResponse,
     ProductEngagementState,
     ProductResponse,
     ProductUpdate,
@@ -257,16 +257,28 @@ async def get_similar_products(
     return shop_service.get_similar_products(client, product_id, limit=limit)
 
 
-@router_products.get("/{product_id}", response_model=ProductResponse)
+@router_products.get("/{product_id}", response_model=ProductDetailResponse)
 async def get_product(
-  product_id: str,
-  client: Annotated[any, Depends(get_supabase_client)],
-  viewer_id: str | None = Depends(get_optional_user_id),
+    product_id: str,
+    client: Annotated[any, Depends(get_supabase_client)],
+    viewer_id: str | None = Depends(get_optional_user_id),
 ):
-    product = shop_service.get_product(client, product_id, viewer_id=viewer_id)
-    if not product:
+    """Fetch a single product with shop snapshot and engagement data bundled.
+
+    Returns `ProductDetailResponse` — a composite payload that includes:
+    - Full product fields
+    - Embedded shop summary (name, slug, logo, whatsapp, etc.)
+    - Engagement counters: like_count, view_count, whatsapp_clicks, messages
+    - viewer_liked flag (requires authentication)
+    - boosted flag (active boost status)
+
+    Runs 5 targeted DB queries instead of the previous 7 sequential round-trips.
+    The frontend no longer needs a separate shop fetch for the product detail page.
+    """
+    detail = shop_service.get_product_detail(client, product_id, viewer_id=viewer_id)
+    if not detail:
         raise HTTPException(status_code=404, detail="Product not found")
-    return product
+    return detail
 
 
 @router_products.patch("/{product_id}", response_model=ProductResponse)

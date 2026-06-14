@@ -57,13 +57,16 @@ def get_home_feed(
     pool_size = limit * page + 24  # fetch extra for trending/premium/fresh
     pool_size = min(pool_size, MAX_CARDS * 3)
 
-    algorithm_raw = get_algorithm_feed(client, user_id=user_id, limit=pool_size)
+    # Fetch the algorithm feed once — trending and premium are slices of the
+    # same ranked result, avoiding 3× redundant re-scoring for the same user.
+    algorithm_raw = get_algorithm_feed(client, user_id=user_id, page=1, limit=pool_size)
     fresh_raw = get_latest_feed(client, limit=12)
 
     # Paginate the scored pool for the main algorithm feed
     algorithm_paged = algorithm_raw[offset:offset + limit] if offset < len(algorithm_raw) else []
-    trending_raw = get_algorithm_feed(client, user_id=user_id, limit=8)
-    premium_raw = get_algorithm_feed(client, user_id=user_id, limit=8)
+    # Reuse the ranked list for sub-feeds — boosted items naturally lead
+    trending_raw = algorithm_raw[:8]
+    premium_raw = algorithm_raw[:8]
 
     # Collect unique shop IDs from all feeds
     all_products = algorithm_paged + trending_raw + premium_raw + fresh_raw

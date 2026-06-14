@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     gemini_api_key: str = Field(default="", alias="Gemini_API_Key")
     # Override via GEMINI_MODEL env var; gemini-2.5-flash is confirmed working on free tier
     gemini_model: str = Field(default="gemini-2.5-flash", alias="GEMINI_MODEL")
+    gemini_embedding_model: str = Field(
+        default="gemini-embedding-001",
+        alias="GEMINI_EMBEDDING_MODEL",
+    )
     nano_banana_api_key: str = ""
     nano_banana_url: str = ""
 

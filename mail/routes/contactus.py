@@ -7,7 +7,6 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from core.config import get_settings
 from db.supabase import get_supabase_admin
 from mail.queue import enqueue_mail
 

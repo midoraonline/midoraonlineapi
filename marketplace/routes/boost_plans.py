@@ -5,7 +5,6 @@ from typing import Any
 from fastapi import APIRouter
 
 from ranking.boost_service import list_active_boost_plans, purchase_boost, get_active_boost_for_listing
-from core.security import get_optional_user_id
 
 router = APIRouter()
 

@@ -23,9 +23,9 @@ async def log_search(
     user_id: str = Depends(get_current_user_id),
 ):
     """Log a search query to tailor the algorithm feed."""
-    q = body.query.strip()
-    if len(q) >= 2:
-        client.table("search_history").insert({"user_id": user_id, "query": q}).execute()
+    from search.service import log_search
+
+    log_search(client, body.query, user_id=user_id)
     return {"status": "ok"}
 
 
@@ -55,11 +55,21 @@ async def get_algorithm_feed(
     client: Annotated[any, Depends(get_supabase_client)],
     params: Annotated[PaginationParams, Depends()],
     user_id: str | None = Depends(get_optional_user_id),
+    page: int = Query(1, ge=1, description="Page number for paginated feed (cached in-process)."),
 ):
     """
     Get a personalized feed of products based on user interactions.
+
+    Boosted products are always pinned to the top of the feed (Tier 1),
+    ordered by the user's personal preference vector. Organic products
+    follow immediately after (Tier 2), also ordered by personal score.
+
+    The full ranked list is cached per user for 5 minutes — subsequent
+    page requests are O(1) slice lookups with no re-scoring.
     """
-    return feed_service.get_algorithm_feed(client, user_id=user_id, limit=params.limit)
+    return feed_service.get_algorithm_feed(
+        client, user_id=user_id, page=page, limit=params.limit
+    )
 
 
 @router.get("/latest", response_model=list[ProductResponse])

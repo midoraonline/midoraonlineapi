@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,6 +10,8 @@ from db.supabase import get_supabase_admin, get_supabase_client
 from core.security import get_current_user_id, get_optional_user_id
 from shop import engagement_service
 from shop.schemas import ShopEngagementState, ViewCountResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
