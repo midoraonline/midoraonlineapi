@@ -88,7 +88,6 @@ def _upsert_verification(
         try:
             shop_r = client.table("shops").select("created_at").eq("id", shop_id).execute()
             if shop_r.data:
-                from datetime import timezone
                 created = shop_r.data[0].get("created_at")
                 if created:
                     delta = datetime.now(timezone.utc) - datetime.fromisoformat(created.replace("Z", "+00:00"))

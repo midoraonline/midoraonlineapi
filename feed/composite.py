@@ -57,8 +57,6 @@ def get_home_feed(
     pool_size = limit * page + 24  # fetch extra for trending/premium/fresh
     pool_size = min(pool_size, MAX_CARDS * 3)
 
-    # Fetch the algorithm feed once — trending and premium are slices of the
-    # same ranked result, avoiding 3× redundant re-scoring for the same user.
     algorithm_raw = get_algorithm_feed(client, user_id=user_id, page=1, limit=pool_size)
     fresh_raw = get_latest_feed(client, limit=12)
 
