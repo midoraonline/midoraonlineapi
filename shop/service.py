@@ -440,7 +440,7 @@ def _row_to_product_response(row: dict) -> dict:
         "title": row.get("title", ""),
         "description": row.get("description"),
         "price_ugx": float(row.get("price_ugx", 0)),
-        "stock_quantity": row.get("stock_quantity", 0),
+        "stock_quantity": row.get("stock_quantity") or 0,
         "image_urls": image_urls,
         "category": row.get("category"),
         "item_type": row.get("item_type", "product"),

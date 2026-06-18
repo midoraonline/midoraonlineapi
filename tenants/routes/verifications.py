@@ -33,6 +33,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _normalise_docs(raw: object) -> list[dict[str, Any]] | None:
+    if isinstance(raw, list):
+        return raw
+    if raw is None:
+        return None
+    return None
+
+
 def _row_to_response(row: dict[str, Any]) -> VerificationResponse:
     return VerificationResponse(
         id=str(row.get("id", "")),
@@ -43,7 +51,7 @@ def _row_to_response(row: dict[str, Any]) -> VerificationResponse:
         reviewed_by=str(row["reviewed_by"]) if row.get("reviewed_by") else None,
         notes=row.get("notes"),
         metadata=row.get("metadata"),
-        submitted_docs=row.get("submitted_docs"),
+        submitted_docs=_normalise_docs(row.get("submitted_docs")),
         submitted_phone=row.get("submitted_phone"),
         submitted_whatsapp=row.get("submitted_whatsapp"),
         submitted_location=row.get("submitted_location"),
