@@ -35,6 +35,7 @@ def list_products(
     limit: int = 20,
     category: str | None = None,
     search: str | None = None,
+    status: str | None = None,
     is_owner: bool = False,
 ) -> dict:
     """List products for a shop. If not owner, only is_published=True."""
@@ -54,6 +55,8 @@ def list_products(
                 q = q.eq("category", cat)
         if search:
             q = q.or_(f"title.ilike.%{search}%,description.ilike.%{search}%")
+        if status and is_owner:
+            q = q.eq("status", status)
         return q.range(offset, offset + limit - 1).order("created_at", desc=True).execute()
 
     try:

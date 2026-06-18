@@ -6,7 +6,7 @@ from core.authz import ensure_product_owner, ensure_shop_owner
 from core.config import get_settings
 from core.schemas import PaginationParams
 from db.supabase import get_supabase_client
-from core.security import get_current_user_id, get_optional_user_id
+from core.security import get_current_claims, get_current_user_id, get_optional_user_id
 from shop import engagement_service, service as shop_service
 from shop.schemas import (
     ProductCreate,
@@ -94,12 +94,20 @@ async def list_products(
   params: Annotated[PaginationParams, Depends()],
   category: str | None = None,
   search: str | None = None,
+  status: str | None = None,
   user_id: str | None = Depends(get_optional_user_id),
 ):
     is_owner = False
+    if user_id:
+        try:
+            ensure_shop_owner(client, shop_id, user_id)
+            is_owner = True
+        except (LookupError, PermissionError):
+            pass
     return shop_service.list_products(
         client, shop_id, page=params.page, limit=params.limit,
-        category=category, search=search, is_owner=is_owner,
+        category=category, search=search, status=status,
+        is_owner=is_owner,
     )
 
 
@@ -308,14 +316,17 @@ async def update_product(
 async def delete_product(
   product_id: str,
   client: Annotated[any, Depends(get_supabase_client)],
-  user_id: str = Depends(get_current_user_id),
+  claims: Annotated[Any, Depends(get_current_claims)],
 ):
-    try:
-        ensure_product_owner(client, product_id, user_id)
-    except LookupError:
-        raise HTTPException(status_code=404, detail="Product not found")
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+    user_id = claims.sub
+    is_admin = (claims.role or "").lower() == "admin"
+    if not is_admin:
+        try:
+            ensure_product_owner(client, product_id, user_id)
+        except LookupError:
+            raise HTTPException(status_code=404, detail="Product not found")
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e))
 
     ok = shop_service.delete_product(client, product_id)
     if not ok:
