@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi_cache.decorator import cache
 
 from db.supabase import get_supabase_admin, get_supabase_client
@@ -71,6 +71,44 @@ async def record_shop_view(
         return ViewCountResponse(view_count=n)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/{shop_id}/events")
+async def record_shop_event(
+    shop_id: str,
+    event_type: str = Query(..., description="Event type: whatsapp_clicked, messaged"),
+    current_user_id: str | None = Depends(get_optional_user_id),
+):
+    """Record a shop-level event (whatsapp click, message, etc.)."""
+    valid_types = {"whatsapp_clicked", "messaged"}
+    if event_type not in valid_types:
+        return {"error": f"Invalid event_type. Must be one of: {', '.join(sorted(valid_types))}"}
+
+    admin = get_supabase_admin()
+
+    shop_r = admin.table("shops").select("id,owner_id").eq("id", shop_id).limit(1).execute()
+    if not shop_r.data:
+        return {"error": "Shop not found"}
+    seller_id = str(shop_r.data[0].get("owner_id", ""))
+
+    try:
+        # Find a product from this shop to use as listing_id reference
+        prod_r = admin.table("products").select("id").eq("shop_id", shop_id).limit(1).execute()
+        listing_id = str(prod_r.data[0]["id"]) if prod_r.data else None
+
+        payload = {
+            "listing_id": listing_id,
+            "seller_id": seller_id,
+            "buyer_id": current_user_id,
+            "event_type": event_type,
+            "metadata": {"source": "shop_page"},
+        }
+        admin.table("listing_events").insert(payload).execute()
+    except Exception as exc:
+        logger.warning("record_shop_event(%s, %s) failed: %s", shop_id, event_type, exc)
+        return {"error": "Failed to record event"}
+
+    return {"status": "recorded"}
 
 
 @router.delete("/{shop_id}/like", response_model=ShopEngagementState)

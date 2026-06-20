@@ -28,7 +28,7 @@ async def admin_list_listings(
     q = (
         admin.table("products")
         .select(
-            "id, shop_id, title, description, price_ugx, image_urls, category, "
+            "id, shop_id, title, description, price_ugx, discount_price, discount_expires_at, image_urls, category, "
             "item_type, status, listing_score, location_name, is_published, "
             "view_count, created_at, reviewed_by, reviewed_at, review_notes",
             count="exact",

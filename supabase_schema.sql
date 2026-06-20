@@ -138,6 +138,8 @@ CREATE TABLE IF NOT EXISTS public.products (
     title           TEXT NOT NULL,
     description     TEXT,
     price_ugx       NUMERIC(12,2) NOT NULL,
+    discount_price  NUMERIC(12,2) DEFAULT NULL,
+    discount_expires_at TIMESTAMPTZ DEFAULT NULL,
     stock_quantity  INTEGER DEFAULT 0,
     image_urls      TEXT[] DEFAULT '{}'::text[],
     category        TEXT,
@@ -733,3 +735,10 @@ CREATE POLICY "profiles_own" ON public.profiles FOR ALL USING (id = auth.uid());
 
 DROP POLICY IF EXISTS "users_own" ON public.users;
 CREATE POLICY "users_own" ON public.users FOR ALL USING (id = auth.uid());
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- DISCOUNT MIGRATION
+-- ═══════════════════════════════════════════════════════════════════════════
+
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS discount_price NUMERIC(12,2) DEFAULT NULL;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS discount_expires_at TIMESTAMPTZ DEFAULT NULL;

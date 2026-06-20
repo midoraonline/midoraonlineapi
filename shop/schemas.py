@@ -7,6 +7,8 @@ class ProductCreate(BaseModel):
     title: str
     description: str | None = None
     price_ugx: float
+    discount_price: float | None = None
+    discount_expires_at: str | None = None
     stock_quantity: int = 0
     image_urls: list[str] | str | None = None
     category: str | None = None
@@ -33,6 +35,8 @@ class ProductUpdate(BaseModel):
     title: str | None = None
     description: str | None = None
     price_ugx: float | None = None
+    discount_price: float | None = None
+    discount_expires_at: str | None = None
     stock_quantity: int | None = None
     image_urls: list[str] | str | None = None
 
@@ -65,6 +69,8 @@ class ProductResponse(BaseModel):
     title: str
     description: str | None
     price_ugx: float
+    discount_price: float | None = None
+    discount_expires_at: str | None = None
     stock_quantity: int
     image_urls: list[str] | None
     category: str | None
@@ -85,6 +91,8 @@ class ProductListItem(BaseModel):
     title: str
     description: str | None = None
     price_ugx: float
+    discount_price: float | None = None
+    discount_expires_at: str | None = None
     image_urls: list[str] | None = None
     category: str | None
     is_published: bool
@@ -174,6 +182,8 @@ class ProductDetailResponse(BaseModel):
     title: str
     description: str | None
     price_ugx: float
+    discount_price: float | None = None
+    discount_expires_at: str | None = None
     stock_quantity: int
     image_urls: list[str]
     category: str | None
@@ -198,3 +208,8 @@ class ProductDetailResponse(BaseModel):
 
     # Embedded shop snapshot — eliminates a separate shop fetch on the frontend
     shop: ShopSummary | None = None
+
+
+class DiscountSet(BaseModel):
+    discount_price: float | None = None
+    discount_expires_at: str | None = None

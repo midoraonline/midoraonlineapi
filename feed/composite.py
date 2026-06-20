@@ -69,7 +69,7 @@ def get_home_feed(
     try:
         trending_r = (
             admin.table("products")
-            .select("id,shop_id,title,description,price_ugx,image_urls,category,"
+            .select("id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,"
                     "item_type,is_published,status,listing_score,location_name,"
                     "created_at,view_count,stock_quantity")
             .eq("is_published", True)
@@ -87,7 +87,7 @@ def get_home_feed(
     try:
         premium_r = (
             admin.table("products")
-            .select("id,shop_id,title,description,price_ugx,image_urls,category,"
+            .select("id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,"
                     "item_type,is_published,status,listing_score,location_name,"
                     "created_at,view_count,stock_quantity")
             .eq("is_published", True)
@@ -210,6 +210,8 @@ def get_home_feed(
                 "title": p.title,
                 "slug": "",  # frontend computes from title+id
                 "price_ugx": _safe_float(p.price_ugx),
+                "discount_price": _safe_float(p.discount_price) if getattr(p, "discount_price", None) is not None else None,
+                "discount_expires_at": getattr(p, "discount_expires_at", None),
                 "image_urls": imgs,
                 "primary_image": imgs[0] if imgs else None,
                 "category": p.category,
@@ -220,6 +222,7 @@ def get_home_feed(
                 "listing_score": _safe_int(p.listing_score),
                 "location_name": p.location_name,
                 "created_at": p.created_at,
+                "stock_quantity": int(getattr(p, "stock_quantity", 0) or 0),
                 "updated_at": getattr(p, "updated_at", None),
                 "shop": shop,
                 "boosted": str(p.id) in boosted_ids,

@@ -10,6 +10,7 @@ from core.security import get_current_claims, get_current_user_id, get_optional_
 from ranking.service import calculate_listing_score
 from shop import engagement_service, service as shop_service
 from shop.schemas import (
+    DiscountSet,
     ProductCreate,
     ProductDetailResponse,
     ProductEngagementState,
@@ -143,13 +144,29 @@ async def my_liked_products(
     pr = (
         admin.table("products")
         .select(
-            "id,shop_id,title,description,price_ugx,image_urls,category,item_type,"
+            "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
             "status,listing_score,location_name,is_published,view_count,created_at"
         )
         .in_("id", page_ids)
         .execute()
     )
     by_id = {str(r["id"]): r for r in (pr.data or []) if r.get("id")}
+
+    shop_ids = list({str(r["shop_id"]) for r in (pr.data or []) if r.get("shop_id")})
+    shops_map: dict[str, dict] = {}
+    if shop_ids:
+        try:
+            sr = (
+                admin.table("shops")
+                .select("id, name, slug, whatsapp_number, owner_id")
+                .in_("id", shop_ids)
+                .execute()
+            )
+            for s in sr.data or []:
+                shops_map[str(s["id"])] = s
+        except Exception:
+            pass
+
     items = []
     for pid in page_ids:
         row = by_id.get(pid)
@@ -166,6 +183,8 @@ async def my_liked_products(
             "title": row.get("title", ""),
             "description": row.get("description"),
             "price_ugx": float(row.get("price_ugx", 0)),
+            "discount_price": float(row["discount_price"]) if row.get("discount_price") is not None else None,
+            "discount_expires_at": str(row["discount_expires_at"]) if row.get("discount_expires_at") else None,
             "image_urls": imgs[:1] if imgs else None,
             "category": row.get("category"),
             "item_type": row.get("item_type", "product"),
@@ -175,6 +194,10 @@ async def my_liked_products(
             "is_published": bool(row.get("is_published", True)),
             "view_count": int(row.get("view_count") or 0),
             "created_at": str(row["created_at"]) if row.get("created_at") else None,
+            "shop_name": shops_map.get(str(row["shop_id"]), {}).get("name"),
+            "shop_slug": shops_map.get(str(row["shop_id"]), {}).get("slug"),
+            "shop_whatsapp": shops_map.get(str(row["shop_id"]), {}).get("whatsapp_number") or None,
+            "owner_id": str(shops_map.get(str(row["shop_id"]), {}).get("owner_id")) if shops_map.get(str(row["shop_id"]), {}).get("owner_id") else None,
         })
     return {"items": items, "total": total, "page": page, "limit": limit}
 
@@ -237,7 +260,7 @@ async def get_premium_products(
     """Return premium (high-scoring boosted) products for the premium carousel."""
     r = (
         client.table("products")
-        .select("id, shop_id, title, price_ugx, image_urls, category, view_count, listing_score, created_at")
+        .select("id, shop_id, title, price_ugx, discount_price, discount_expires_at, image_urls, category, view_count, listing_score, created_at")
         .eq("is_published", True)
         .eq("status", "active")
         .order("listing_score", desc=True)
@@ -266,6 +289,8 @@ async def get_premium_products(
             "shop_id": sid,
             "title": p.get("title", ""),
             "price_ugx": float(p.get("price_ugx", 0)),
+            "discount_price": float(p["discount_price"]) if p.get("discount_price") is not None else None,
+            "discount_expires_at": str(p["discount_expires_at"]) if p.get("discount_expires_at") else None,
             "image_urls": ([str(x).strip() for x in p.get("image_urls", []) if x] if isinstance(p.get("image_urls"), list) else []),
             "category": p.get("category"),
             "view_count": int(p.get("view_count") or 0),
@@ -285,7 +310,7 @@ async def get_trending_products(
     """Return trending products (highest view count) for the trending carousel."""
     r = (
         client.table("products")
-        .select("id, shop_id, title, price_ugx, image_urls, category, view_count, listing_score, created_at")
+        .select("id, shop_id, title, price_ugx, discount_price, discount_expires_at, image_urls, category, view_count, listing_score, created_at")
         .eq("is_published", True)
         .eq("status", "active")
         .order("view_count", desc=True)
@@ -314,6 +339,8 @@ async def get_trending_products(
             "shop_id": sid,
             "title": p.get("title", ""),
             "price_ugx": float(p.get("price_ugx", 0)),
+            "discount_price": float(p["discount_price"]) if p.get("discount_price") is not None else None,
+            "discount_expires_at": str(p["discount_expires_at"]) if p.get("discount_expires_at") else None,
             "image_urls": ([str(x).strip() for x in p.get("image_urls", []) if x] if isinstance(p.get("image_urls"), list) else []),
             "category": p.get("category"),
             "view_count": int(p.get("view_count") or 0),
@@ -424,6 +451,72 @@ async def repost_product(
         return updated
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
+
+
+@router_products.post("/{product_id}/discount", response_model=ProductResponse)
+async def set_product_discount(
+    product_id: str,
+    body: DiscountSet,
+    client: Annotated[any, Depends(get_supabase_client)],
+    user_id: str = Depends(get_current_user_id),
+):
+    """Set or remove a discount on a product. Pass discount_price=null to remove discount."""
+    try:
+        ensure_product_owner(client, product_id, user_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Product not found")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    payload: dict[str, object] = {"discount_price": body.discount_price}
+    if body.discount_expires_at is not None:
+        payload["discount_expires_at"] = body.discount_expires_at
+    elif body.discount_price is not None:
+        payload["discount_expires_at"] = None
+
+    r = client.table("products").update(payload).eq("id", product_id).execute()
+    if not r.data:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    from ranking.service import calculate_listing_score
+    calculate_listing_score(product_id)
+
+    out = shop_service.get_product(client, product_id, viewer_id=user_id)
+    if not out:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return out
+
+
+@router_products.post("/{product_id}/toggle-availability", response_model=ProductResponse)
+async def toggle_product_availability(
+    product_id: str,
+    client: Annotated[any, Depends(get_supabase_client)],
+    user_id: str = Depends(get_current_user_id),
+):
+    """Toggle whether a product is published/available on the storefront."""
+    try:
+        ensure_product_owner(client, product_id, user_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Product not found")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    current = client.table("products").select("is_published").eq("id", product_id).limit(1).execute()
+    if not current.data:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    new_val = not bool(current.data[0].get("is_published", True))
+    r = client.table("products").update({"is_published": new_val}).eq("id", product_id).execute()
+    if not r.data:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    from ranking.service import calculate_listing_score
+    calculate_listing_score(product_id)
+
+    out = shop_service.get_product(client, product_id, viewer_id=user_id)
+    if not out:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return out
 
 
 

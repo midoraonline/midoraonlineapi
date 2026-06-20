@@ -19,7 +19,7 @@ MAX_SEARCH_POOL = 2000
 SEARCH_BATCH = 500
 
 _PRODUCT_FIELDS = (
-    "id,shop_id,title,description,category,item_type,price_ugx,image_urls,"
+    "id,shop_id,title,description,category,item_type,price_ugx,discount_price,discount_expires_at,image_urls,"
     "listing_score,location_name,view_count,created_at,embedding"
 )
 
@@ -293,6 +293,8 @@ def _attach_shops(client: Any, products: list[dict[str, Any]]) -> list[dict[str,
                 "title": product.get("title", ""),
                 "description": product.get("description"),
                 "price_ugx": float(product.get("price_ugx") or 0),
+                "discount_price": float(product["discount_price"]) if product.get("discount_price") is not None else None,
+                "discount_expires_at": str(product["discount_expires_at"]) if product.get("discount_expires_at") else None,
                 "category": product.get("category"),
                 "item_type": product.get("item_type"),
                 "image_urls": imgs,

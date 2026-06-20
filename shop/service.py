@@ -19,11 +19,11 @@ from shop.schemas import (
 
 
 _PRODUCT_LIST_COLS_WITH_VIEWS = (
-    "id,shop_id,title,description,price_ugx,image_urls,category,item_type,status,"
+    "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,status,"
     "listing_score,location_name,is_published,created_at,view_count"
 )
 _PRODUCT_LIST_COLS_BASE = (
-    "id,shop_id,title,description,price_ugx,image_urls,category,item_type,"
+    "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
     "is_published,created_at"
 )
 
@@ -80,6 +80,8 @@ def list_products(
                 title=row.get("title", ""),
                 description=row.get("description"),
                 price_ugx=float(row.get("price_ugx", 0)),
+                discount_price=float(row["discount_price"]) if row.get("discount_price") is not None else None,
+                discount_expires_at=str(row["discount_expires_at"]) if row.get("discount_expires_at") else None,
                 image_urls=image_urls[:1] if image_urls else None,
                 category=row.get("category"),
                 is_published=row.get("is_published", True),
@@ -107,6 +109,8 @@ def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
         "title": data.title,
         "description": data.description,
         "price_ugx": data.price_ugx,
+        "discount_price": data.discount_price,
+        "discount_expires_at": data.discount_expires_at,
         "stock_quantity": data.stock_quantity,
         "category": data.category,
         "is_published": data.is_published,
@@ -136,7 +140,7 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
     try:
         r = (
             client.table("products")
-            .select("id,shop_id,title,price_ugx,image_urls,category,item_type,"
+            .select("id,shop_id,title,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
                     "listing_score,location_name,is_published,created_at,view_count")
             .eq("category", product["category"])
             .eq("is_published", True)
@@ -150,7 +154,7 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
     except Exception:
         r = (
             client.table("products")
-            .select("id,shop_id,title,price_ugx,image_urls,category,item_type,"
+            .select("id,shop_id,title,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
                     "is_published,created_at")
             .eq("category", product["category"])
             .eq("is_published", True)
@@ -165,7 +169,7 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
     shops_map: dict[str, dict] = {}
     if shop_ids:
         try:
-            sr = client.table("shops").select("id, name, slug").in_("id", shop_ids).execute()
+            sr = client.table("shops").select("id, name, slug, whatsapp_number, owner_id").in_("id", shop_ids).execute()
             for s in sr.data or []:
                 shops_map[str(s["id"])] = s
         except Exception:
@@ -181,6 +185,8 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             "shop_id": sid,
             "title": row.get("title", ""),
             "price_ugx": float(row.get("price_ugx", 0)),
+            "discount_price": float(row["discount_price"]) if row.get("discount_price") is not None else None,
+            "discount_expires_at": str(row["discount_expires_at"]) if row.get("discount_expires_at") else None,
             "image_urls": imgs[:1] if imgs else None,
             "category": row.get("category"),
             "item_type": row.get("item_type"),
@@ -191,6 +197,7 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             "shop_name": s.get("name"),
             "shop_slug": s.get("slug"),
             "owner_id": str(s.get("owner_id")) if s.get("owner_id") else None,
+            "shop_whatsapp": s.get("whatsapp_number") or None,
         })
     return out
 
@@ -202,7 +209,7 @@ def get_product(client: Any, product_id: str, viewer_id: str | None = None) -> d
     row = r.data[0]
     shop_id = row.get("shop_id", "")
     is_owner = bool(viewer_id and shop_id and bool(
-        client.table("shops").select("user_id").eq("id", shop_id).eq("user_id", viewer_id).limit(1).execute().data
+        client.table("shops").select("owner_id").eq("id", shop_id).eq("owner_id", viewer_id).limit(1).execute().data
     ))
     if not is_owner and (row.get("status") != "active" or not row.get("is_published")):
         return None
@@ -236,7 +243,7 @@ def get_product_detail(
     prod_r = (
         client.table("products")
         .select(
-            "id,shop_id,title,description,price_ugx,stock_quantity,image_urls,"
+            "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,stock_quantity,image_urls,"
             "category,item_type,status,is_published,listing_score,location_name,"
             "ai_seo_tags,ai_generated_desc,created_at,view_count"
         )
@@ -367,6 +374,8 @@ def get_product_detail(
         title=row.get("title", ""),
         description=row.get("description"),
         price_ugx=float(row.get("price_ugx", 0)),
+        discount_price=float(row["discount_price"]) if row.get("discount_price") is not None else None,
+        discount_expires_at=str(row["discount_expires_at"]) if row.get("discount_expires_at") else None,
         stock_quantity=int(row.get("stock_quantity") or 0),
         image_urls=image_urls,
         category=row.get("category"),
@@ -447,6 +456,8 @@ def _row_to_product_response(row: dict) -> dict:
         "title": row.get("title", ""),
         "description": row.get("description"),
         "price_ugx": float(row.get("price_ugx", 0)),
+        "discount_price": float(row["discount_price"]) if row.get("discount_price") is not None else None,
+        "discount_expires_at": str(row["discount_expires_at"]) if row.get("discount_expires_at") else None,
         "stock_quantity": row.get("stock_quantity") or 0,
         "image_urls": image_urls,
         "category": row.get("category"),

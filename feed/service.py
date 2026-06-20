@@ -62,7 +62,7 @@ DIVERSITY_PENALTY_THRESHOLD = 4   # more than N products from same shop triggers
 DIVERSITY_PENALTY_PER_EXTRA = 3.0
 
 _PRODUCT_SELECT = (
-    "id,shop_id,title,description,category,item_type,price_ugx,stock_quantity,"
+    "id,shop_id,title,description,category,item_type,price_ugx,discount_price,discount_expires_at,stock_quantity,"
     "image_urls,is_published,status,listing_score,location_name,created_at,"
     "view_count,embedding,embedding_source_hash"
 )

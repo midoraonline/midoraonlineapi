@@ -106,3 +106,32 @@ async def generate_shop_logo(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     return {"logo_url": ""}
+
+
+@router.post("/{shop_id}/toggle-availability", response_model=ShopResponse)
+async def toggle_shop_availability(
+    shop_id: str,
+    client: Annotated[any, Depends(get_supabase_client)],
+    user_id: str = Depends(get_current_user_id),
+):
+    """Toggle whether the shop shows as 'Available now'. Owner only."""
+    try:
+        ensure_shop_owner(client, shop_id, user_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    current = client.table("shops").select("available_now").eq("id", shop_id).limit(1).execute()
+    if not current.data:
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    new_val = not bool(current.data[0].get("available_now", False))
+    r = client.table("shops").update({"available_now": new_val}).eq("id", shop_id).execute()
+    if not r.data:
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    shop = tenants_service.get_shop(client, shop_id, viewer_id=user_id)
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    return shop

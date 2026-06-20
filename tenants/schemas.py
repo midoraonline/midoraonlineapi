@@ -60,6 +60,7 @@ class ShopUpdate(BaseModel):
     shop_type: ShopType | None = None
     category: str | None = None
     is_active: bool | None = None
+    available_now: bool | None = None
 
     @field_validator("category", mode="before")
     @classmethod
