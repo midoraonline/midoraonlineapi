@@ -112,7 +112,9 @@ async def admin_update_listing_status(
     if not r.data:
         return {"error": "Listing not found"}
     from feed.embeddings import refresh_product_embedding
+    from ranking.service import calculate_listing_score
     refresh_product_embedding(listing_id)
+    calculate_listing_score(listing_id)
     return r.data[0]
 
 
@@ -145,7 +147,9 @@ async def admin_review_listing(
     if not r.data:
         return {"error": "Listing not found"}
     from feed.embeddings import refresh_product_embedding
+    from ranking.service import calculate_listing_score
     refresh_product_embedding(listing_id)
+    calculate_listing_score(listing_id)
     return r.data[0]
 
 

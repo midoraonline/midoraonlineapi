@@ -1,12 +1,13 @@
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from core.authz import ensure_product_owner, ensure_shop_owner
 from core.config import get_settings
 from core.schemas import PaginationParams
-from db.supabase import get_supabase_client
+from db.supabase import get_supabase_admin, get_supabase_client
 from core.security import get_current_claims, get_current_user_id, get_optional_user_id
+from ranking.service import calculate_listing_score
 from shop import engagement_service, service as shop_service
 from shop.schemas import (
     ProductCreate,
@@ -114,6 +115,70 @@ async def list_products(
 router_products = APIRouter()
 
 
+@router_products.get("/me/liked")
+async def my_liked_products(
+    client: Annotated[any, Depends(get_supabase_client)],
+    user_id: str = Depends(get_current_user_id),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Return all products the authenticated user has liked."""
+    admin = get_supabase_admin()
+    offset = (page - 1) * limit
+
+    lr = (
+        admin.table("product_likes")
+        .select("product_id, created_at")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    product_ids = [str(r["product_id"]) for r in (lr.data or []) if r.get("product_id")]
+    total = len(product_ids)
+    page_ids = product_ids[offset:offset + limit]
+
+    if not page_ids:
+        return {"items": [], "total": 0, "page": page, "limit": limit}
+
+    pr = (
+        admin.table("products")
+        .select(
+            "id,shop_id,title,description,price_ugx,image_urls,category,item_type,"
+            "status,listing_score,location_name,is_published,view_count,created_at"
+        )
+        .in_("id", page_ids)
+        .execute()
+    )
+    by_id = {str(r["id"]): r for r in (pr.data or []) if r.get("id")}
+    items = []
+    for pid in page_ids:
+        row = by_id.get(pid)
+        if not row:
+            continue
+        imgs = row.get("image_urls")
+        if isinstance(imgs, str):
+            imgs = [s.strip() for s in imgs.split(",") if s.strip()]
+        elif not isinstance(imgs, list):
+            imgs = []
+        items.append({
+            "id": str(row["id"]),
+            "shop_id": str(row["shop_id"]),
+            "title": row.get("title", ""),
+            "description": row.get("description"),
+            "price_ugx": float(row.get("price_ugx", 0)),
+            "image_urls": imgs[:1] if imgs else None,
+            "category": row.get("category"),
+            "item_type": row.get("item_type", "product"),
+            "status": row.get("status", "active"),
+            "listing_score": int(row.get("listing_score") or 0),
+            "location_name": row.get("location_name"),
+            "is_published": bool(row.get("is_published", True)),
+            "view_count": int(row.get("view_count") or 0),
+            "created_at": str(row["created_at"]) if row.get("created_at") else None,
+        })
+    return {"items": items, "total": total, "page": page, "limit": limit}
+
+
 @router_products.get("/{product_id}/engagement", response_model=ProductEngagementState)
 async def get_product_engagement(
     product_id: str,
@@ -132,7 +197,9 @@ async def like_product(
     user_id: str = Depends(get_current_user_id),
 ):
     try:
-        return engagement_service.like_product(client, user_id, product_id)
+        result = engagement_service.like_product(client, user_id, product_id)
+        calculate_listing_score(product_id)
+        return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -143,7 +210,9 @@ async def unlike_product(
     client: Annotated[any, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
-    return engagement_service.unlike_product(client, user_id, product_id)
+    result = engagement_service.unlike_product(client, user_id, product_id)
+    calculate_listing_score(product_id)
+    return result
 
 
 @router_products.post("/{product_id}/views", response_model=ViewCountResponse)
@@ -151,9 +220,10 @@ async def record_product_view(
     product_id: str,
     client: Annotated[any, Depends(get_supabase_client)],
 ):
-    """Increment product/service detail view (click) count. Call when a customer opens the product page."""
+    """Increment product/service detail view count. Call when a customer opens the product page."""
     try:
         n = engagement_service.record_product_view(client, product_id)
+        calculate_listing_score(product_id)
         return ViewCountResponse(view_count=n)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

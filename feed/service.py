@@ -7,7 +7,7 @@ Algorithm feed scores each product using:
   - Search match         — recent queries in title/description (fallback)
   - Category match       — preferred categories (fallback when no vectors)
   - Freshness            — created within last 7 days
-  - Engagement           — listing_score from DB
+  - Engagement           — listing_score from DB (capped)
   - Boosted              — active boost (Tier 1, pinned to top of feed)
 
 Ranking architecture — Tiered Personalization (Pinned Ranking):
@@ -18,17 +18,14 @@ Ranking architecture — Tiered Personalization (Pinned Ranking):
 
   Final Feed Pool = [Sorted Tier 1 (Boosted)] + [Sorted Tier 2 (Organic)]
 
-In-memory pagination cache:
-  The full ranked ID list is cached per user (TTL = CACHE_TTL_SECONDS).
-  Subsequent page requests are O(1) slice lookups — no re-scoring.
+Every page load re-scores the entire pool from live user signals so
+interactions (likes, views, follows) are reflected immediately.
 """
 
 from __future__ import annotations
 
 import logging
 import math
-import threading
-import time
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
@@ -43,62 +40,32 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 FRESHNESS_DAYS = 7
 CANDIDATE_POOL_MAX = 500
-CACHE_TTL_SECONDS = 300          # 5 minutes per-user feed cache
 
-# Implicit-feedback weights (Phase 1 heuristic)
+# Implicit-feedback weights
 W_LIKE = 5.0
 W_VIEW = 1.0
+W_SAVE = 4.0
+W_WHATSAPP = 3.0
+W_MESSAGE = 4.0
 DECAY_LAMBDA_PER_DAY = 0.01
 
 # Score bonuses
-VECTOR_SCORE_SCALE = 40.0
+VECTOR_SCORE_SCALE = 80.0
 CATEGORY_MATCH_BOOST = 30.0
 SEARCH_MATCH_BOOST = 20.0
-FRESHNESS_BOOST = 10.0
-FOLLOWED_SHOP_BOOST = 25.0
-SEEN_DEMOTION = 5.0
+SEARCH_MATCH_MAX = 2       # cap search-term matches to prevent score explosion
+FRESHNESS_BOOST = 5.0
+FOLLOWED_SHOP_BOOST = 50.0
+SEEN_DEMOTION = 50.0       # aggressively de-prioritise seen items
+LISTING_SCORE_CAP = 60.0   # prevent global engagement from overwhelming personal signals
+DIVERSITY_PENALTY_THRESHOLD = 4   # more than N products from same shop triggers penalty
+DIVERSITY_PENALTY_PER_EXTRA = 3.0
 
 _PRODUCT_SELECT = (
     "id,shop_id,title,description,category,item_type,price_ugx,stock_quantity,"
     "image_urls,is_published,status,listing_score,location_name,created_at,"
     "view_count,embedding,embedding_source_hash"
 )
-
-
-# ---------------------------------------------------------------------------
-# Lightweight in-process TTL cache (no extra dependencies)
-# ---------------------------------------------------------------------------
-
-class _TTLCache:
-    """Thread-safe dict-based TTL store for per-user feed ID lists."""
-
-    def __init__(self, ttl: int = CACHE_TTL_SECONDS) -> None:
-        self._store: dict[str, tuple[list[str], float]] = {}
-        self._lock = threading.Lock()
-        self._ttl = ttl
-
-    def get(self, key: str) -> list[str] | None:
-        with self._lock:
-            entry = self._store.get(key)
-            if entry is None:
-                return None
-            ids, expires_at = entry
-            if time.monotonic() > expires_at:
-                del self._store[key]
-                return None
-            return ids
-
-    def set(self, key: str, ids: list[str]) -> None:
-        with self._lock:
-            self._store[key] = (ids, time.monotonic() + self._ttl)
-
-    def delete(self, key: str) -> None:
-        with self._lock:
-            self._store.pop(key, None)
-
-
-# Module-level singleton — shared across all requests within the same worker
-feed_cache = _TTLCache()
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +140,7 @@ def _collect_user_signals(client: Client, user_id: str | None) -> dict[str, Any]
         "search_terms": [],
         "liked_product_ids": set(),
         "viewed_product_ids": set(),
+        "saved_product_ids": set(),
         "followed_shop_ids": set(),
         "interactions": [],
     }
@@ -182,6 +150,23 @@ def _collect_user_signals(client: Client, user_id: str | None) -> dict[str, Any]
 
     now = datetime.now(timezone.utc)
 
+    def _add_categories(product_ids: list[str]) -> None:
+        if not product_ids:
+            return
+        try:
+            cat_resp = (
+                client.table("products")
+                .select("category")
+                .in_("id", product_ids)
+                .execute()
+            )
+            for p in cat_resp.data or []:
+                if p.get("category"):
+                    signals["categories"].add(p["category"])
+        except Exception:
+            pass
+
+    # --- Likes ---
     try:
         likes_resp = (
             client.table("product_likes")
@@ -203,19 +188,11 @@ def _collect_user_signals(client: Client, user_id: str | None) -> dict[str, Any]
                     "weight": W_LIKE * _time_decay(item.get("created_at"), now),
                 }
             )
-        if liked_ids:
-            cat_resp = (
-                client.table("products")
-                .select("category")
-                .in_("id", liked_ids)
-                .execute()
-            )
-            for p in cat_resp.data or []:
-                if p.get("category"):
-                    signals["categories"].add(p["category"])
+        _add_categories(liked_ids)
     except Exception as exc:
         logger.warning("Failed to collect likes: %s", exc)
 
+    # --- Views ---
     try:
         viewed_resp = (
             client.table("listing_events")
@@ -238,19 +215,84 @@ def _collect_user_signals(client: Client, user_id: str | None) -> dict[str, Any]
                     "weight": W_VIEW * _time_decay(item.get("created_at"), now),
                 }
             )
-        if viewed_ids:
-            cat_resp = (
-                client.table("products")
-                .select("category")
-                .in_("id", viewed_ids)
-                .execute()
-            )
-            for p in cat_resp.data or []:
-                if p.get("category"):
-                    signals["categories"].add(p["category"])
+        _add_categories(viewed_ids)
     except Exception as exc:
         logger.warning("Failed to collect views: %s", exc)
 
+    # --- Saves ---
+    try:
+        saved_resp = (
+            client.table("listing_events")
+            .select("listing_id,created_at")
+            .eq("buyer_id", user_id)
+            .eq("event_type", "saved")
+            .order("created_at", desc=True)
+            .limit(30)
+            .execute()
+        )
+        saved_ids: list[str] = []
+        for item in saved_resp.data or []:
+            pid = str(item["listing_id"])
+            saved_ids.append(pid)
+            signals["saved_product_ids"].add(pid)
+            signals["interactions"].append(
+                {
+                    "product_id": pid,
+                    "type": "save",
+                    "weight": W_SAVE * _time_decay(item.get("created_at"), now),
+                }
+            )
+        _add_categories(saved_ids)
+    except Exception as exc:
+        logger.warning("Failed to collect saves: %s", exc)
+
+    # --- WhatsApp clicks ---
+    try:
+        wa_resp = (
+            client.table("listing_events")
+            .select("listing_id,created_at")
+            .eq("buyer_id", user_id)
+            .eq("event_type", "whatsapp_clicked")
+            .order("created_at", desc=True)
+            .limit(30)
+            .execute()
+        )
+        for item in wa_resp.data or []:
+            pid = str(item["listing_id"])
+            signals["interactions"].append(
+                {
+                    "product_id": pid,
+                    "type": "whatsapp",
+                    "weight": W_WHATSAPP * _time_decay(item.get("created_at"), now),
+                }
+            )
+    except Exception as exc:
+        logger.warning("Failed to collect whatsapp clicks: %s", exc)
+
+    # --- Messages ---
+    try:
+        msg_resp = (
+            client.table("listing_events")
+            .select("listing_id,created_at")
+            .eq("buyer_id", user_id)
+            .eq("event_type", "messaged")
+            .order("created_at", desc=True)
+            .limit(30)
+            .execute()
+        )
+        for item in msg_resp.data or []:
+            pid = str(item["listing_id"])
+            signals["interactions"].append(
+                {
+                    "product_id": pid,
+                    "type": "message",
+                    "weight": W_MESSAGE * _time_decay(item.get("created_at"), now),
+                }
+            )
+    except Exception as exc:
+        logger.warning("Failed to collect messages: %s", exc)
+
+    # --- Followed shops ---
     try:
         follow_resp = (
             client.table("shop_follows")
@@ -266,6 +308,7 @@ def _collect_user_signals(client: Client, user_id: str | None) -> dict[str, Any]
     except Exception as exc:
         logger.warning("Failed to collect shop follows: %s", exc)
 
+    # --- Search history ---
     try:
         search_resp = (
             client.table("search_history")
@@ -421,17 +464,19 @@ def _product_score(
     signals: dict[str, Any],
     cutoff: datetime,
     user_vector: list[float] | None,
+    shop_candidate_counts: dict[str, int] | None = None,
 ) -> float:
     """Compute the personalization score for a single product.
 
     Formula:
         S = (cosine_similarity × VECTOR_SCORE_SCALE)
             + category_match_bonus
-            + search_match_bonus
+            + search_match_bonus (capped at SEARCH_MATCH_MAX matches)
             + followed_shop_bonus
             + freshness_bonus
-            + listing_score
+            + min(listing_score, LISTING_SCORE_CAP)
             - seen_demotion
+            - shop_diversity_penalty  (if same shop has many candidates)
 
     The boosted/organic split is done externally — this function is
     intentionally boost-agnostic so the same formula applies to both tiers.
@@ -451,12 +496,14 @@ def _product_score(
         # Fallback: category affinity when no embedding is available
         score += CATEGORY_MATCH_BOOST
 
-    # --- Search-term match bonus ---
+    # --- Search-term match bonus (capped) ---
     title = (product.get("title") or "").lower()
     desc = (product.get("description") or "").lower()
+    search_matches = 0
     for term in signals["search_terms"]:
         if term in title or term in desc:
-            score += SEARCH_MATCH_BOOST
+            search_matches += 1
+    score += min(search_matches, SEARCH_MATCH_MAX) * SEARCH_MATCH_BOOST
 
     # --- Followed shop boost ---
     if shop_id and shop_id in signals["followed_shop_ids"]:
@@ -469,12 +516,22 @@ def _product_score(
         if created and created >= cutoff:
             score += FRESHNESS_BOOST
 
-    # --- Engagement signal ---
-    score += float(product.get("listing_score") or 0)
+    # --- Engagement signal (capped so global popularity doesn't overwhelm taste) ---
+    score += min(float(product.get("listing_score") or 0), LISTING_SCORE_CAP)
 
     # --- Already-seen demotion ---
-    if pid in signals["liked_product_ids"] or pid in signals["viewed_product_ids"]:
+    if (
+        pid in signals["liked_product_ids"]
+        or pid in signals["viewed_product_ids"]
+        or pid in signals.get("saved_product_ids", set())
+    ):
         score -= SEEN_DEMOTION
+
+    # --- Shop diversity penalty ---
+    if shop_id and shop_candidate_counts:
+        shop_count = shop_candidate_counts.get(shop_id, 0)
+        if shop_count > DIVERSITY_PENALTY_THRESHOLD:
+            score -= (shop_count - DIVERSITY_PENALTY_THRESHOLD) * DIVERSITY_PENALTY_PER_EXTRA
 
     return score
 
@@ -501,8 +558,8 @@ def get_algorithm_feed(
       Final Feed Pool = [Sorted Tier 1 (Boosted)] + [Sorted Tier 2 (Organic)]
 
     Pagination:
-      The full ranked ID list is cached in-process per user (TTL=5 min).
-      Pages 2+ are O(1) slice lookups — no DB re-scoring.
+      Every page recomputes the full ranking from live user signals so
+      interactions (likes, views, follows) are immediately reflected.
 
     Unauthenticated:
       Falls back to a recency-sorted feed (no personalization).
@@ -510,22 +567,8 @@ def get_algorithm_feed(
     if not user_id:
         return get_latest_feed(client, limit)
 
-    cache_key = f"feed_{user_id}"
     start_idx = (page - 1) * limit
     end_idx = start_idx + limit
-
-    # -----------------------------------------------------------------------
-    # STAGE 0: Fast O(1) cache hit — serve paginated slice from memory
-    # -----------------------------------------------------------------------
-    cached_ids = feed_cache.get(cache_key)
-    if cached_ids:
-        page_ids = cached_ids[start_idx:end_idx]
-        if not page_ids:
-            return []
-        resp = client.table("products").select(_PRODUCT_SELECT).in_("id", page_ids).execute()
-        id_to_product = {str(p["id"]): p for p in (resp.data or [])}
-        ordered = [id_to_product[pid] for pid in page_ids if pid in id_to_product]
-        return [ProductResponse(**p) for p in ordered]
 
     # -----------------------------------------------------------------------
     # STAGE 1: Data gathering — signals, vectors, candidate pool
@@ -543,7 +586,16 @@ def get_algorithm_feed(
         return get_latest_feed(client, limit)
 
     # -----------------------------------------------------------------------
-    # STAGE 1b: Resolve active boost registrations for the candidate pool
+    # STAGE 1b: Shop candidate density — used for diversity penalty
+    # -----------------------------------------------------------------------
+    shop_candidate_counts: dict[str, int] = {}
+    for p in candidates:
+        sid = str(p.get("shop_id", ""))
+        if sid:
+            shop_candidate_counts[sid] = shop_candidate_counts.get(sid, 0) + 1
+
+    # -----------------------------------------------------------------------
+    # STAGE 1c: Resolve active boost registrations for the candidate pool
     # -----------------------------------------------------------------------
     boosted_ids: set[str] = set()
     product_ids = [str(p["id"]) for p in candidates if p.get("id")]
@@ -575,7 +627,10 @@ def get_algorithm_feed(
 
     for product in candidates:
         pid = str(product.get("id", ""))
-        score = _product_score(product, signals, cutoff, user_vector)
+        score = _product_score(
+            product, signals, cutoff, user_vector,
+            shop_candidate_counts=shop_candidate_counts,
+        )
 
         payload = {"product": product, "score": score}
         if pid in boosted_ids:
@@ -595,10 +650,6 @@ def get_algorithm_feed(
 
     # Pinned concatenation — Tier 1 takes absolute top-of-feed precedence
     combined_feed = boosted_tier + organic_tier
-
-    # Cache the full ordered ID list for pagination continuity
-    all_sorted_ids = [str(item["product"]["id"]) for item in combined_feed]
-    feed_cache.set(cache_key, all_sorted_ids)
 
     # -----------------------------------------------------------------------
     # STAGE 4: Hydrate and return the requested page slice

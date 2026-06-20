@@ -400,7 +400,9 @@ def update_product(client: Any, product_id: str, data: ProductUpdate) -> dict | 
     if not r.data or len(r.data) == 0:
         return None
     from feed.embeddings import refresh_product_embedding
+    from ranking.service import calculate_listing_score
     refresh_product_embedding(product_id)
+    calculate_listing_score(product_id)
     return _row_to_product_response(r.data[0])
 
 
@@ -426,6 +428,8 @@ def repost_product(client: Any, product_id: str) -> dict | None:
     
     if not r.data or len(r.data) == 0:
         return None
+    from ranking.service import calculate_listing_score
+    calculate_listing_score(product_id)
     return _row_to_product_response(r.data[0])
 
 

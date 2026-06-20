@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 from db.supabase import get_supabase_admin
+from shop.schemas import ProductResponse
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ def get_home_feed(
     client = get_supabase_client(None)
 
     offset = (page - 1) * limit
-    pool_size = limit * page + 24  # fetch extra for trending/premium/fresh
+    pool_size = limit * page + 24  # fetch extra for the algorithm pool
     pool_size = min(pool_size, MAX_CARDS * 3)
 
     algorithm_raw = get_algorithm_feed(client, user_id=user_id, page=1, limit=pool_size)
@@ -62,9 +63,44 @@ def get_home_feed(
 
     # Paginate the scored pool for the main algorithm feed
     algorithm_paged = algorithm_raw[offset:offset + limit] if offset < len(algorithm_raw) else []
-    # Reuse the ranked list for sub-feeds — boosted items naturally lead
-    trending_raw = algorithm_raw[:8]
-    premium_raw = algorithm_raw[:8]
+
+    # Independent sub-feeds — sorted by their own metrics, not just algorithm top-N
+    _SUB_FEED_LIMIT = 8
+    try:
+        trending_r = (
+            admin.table("products")
+            .select("id,shop_id,title,description,price_ugx,image_urls,category,"
+                    "item_type,is_published,status,listing_score,location_name,"
+                    "created_at,view_count,stock_quantity")
+            .eq("is_published", True)
+            .eq("status", "active")
+            .order("view_count", desc=True)
+            .order("created_at", desc=True)
+            .limit(_SUB_FEED_LIMIT)
+            .execute()
+        )
+        trending_raw = [ProductResponse(**item) for item in (trending_r.data or [])]
+    except Exception as exc:
+        logger.warning("Trending feed query failed: %s", exc)
+        trending_raw = algorithm_raw[:_SUB_FEED_LIMIT]
+
+    try:
+        premium_r = (
+            admin.table("products")
+            .select("id,shop_id,title,description,price_ugx,image_urls,category,"
+                    "item_type,is_published,status,listing_score,location_name,"
+                    "created_at,view_count,stock_quantity")
+            .eq("is_published", True)
+            .eq("status", "active")
+            .order("listing_score", desc=True)
+            .order("created_at", desc=True)
+            .limit(_SUB_FEED_LIMIT)
+            .execute()
+        )
+        premium_raw = [ProductResponse(**item) for item in (premium_r.data or [])]
+    except Exception as exc:
+        logger.warning("Premium feed query failed: %s", exc)
+        premium_raw = algorithm_raw[:_SUB_FEED_LIMIT]
 
     # Collect unique shop IDs from all feeds
     all_products = algorithm_paged + trending_raw + premium_raw + fresh_raw
