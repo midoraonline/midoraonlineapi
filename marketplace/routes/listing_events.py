@@ -49,9 +49,12 @@ async def record_listing_event(
     }
     r = admin.table("listing_events").insert(payload).execute()
 
-    if r.data and event_type in ("whatsapp_clicked", "saved", "shared", "messaged", "call_clicked"):
+    if r.data:
         from ranking.service import calculate_listing_score
         calculate_listing_score(product_id)
+
+        if event_type == "viewed":
+            admin.rpc("increment_product_view_count", {"p_product_id": product_id}).execute()
 
     return r.data[0] if r.data else {"status": "recorded"}
 

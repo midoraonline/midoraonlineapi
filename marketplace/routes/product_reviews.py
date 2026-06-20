@@ -15,7 +15,7 @@ from reviews.product_service import (
 router = APIRouter()
 
 
-@router.get("/products/{product_id}/reviews")
+@router.get("/{product_id}/reviews")
 async def get_product_reviews_endpoint(
     product_id: str,
     page: int = Query(1, ge=1),
@@ -25,7 +25,7 @@ async def get_product_reviews_endpoint(
     return list_product_reviews(product_id, page=page, limit=limit)
 
 
-@router.get("/products/{product_id}/reviews/mine")
+@router.get("/{product_id}/reviews/mine")
 async def get_my_product_review(
     product_id: str,
     current_user_id: str = Depends(get_current_user_id),
@@ -34,7 +34,7 @@ async def get_my_product_review(
     return get_user_product_review(product_id, current_user_id)
 
 
-@router.post("/products/{product_id}/reviews")
+@router.post("/{product_id}/reviews")
 async def create_product_review_endpoint(
     product_id: str,
     rating: int = Query(..., ge=1, le=5),
@@ -56,7 +56,7 @@ async def create_product_review_endpoint(
         return {"error": str(e)}
 
 
-@router.get("/products/{product_id}/reviews/stats")
+@router.get("/{product_id}/reviews/stats")
 async def get_product_review_stats_endpoint(
     product_id: str,
 ) -> dict[str, Any]:

@@ -138,7 +138,6 @@ def get_home_feed(
         except Exception as exc:
             logger.warning("home feed batch shop fetch failed: %s", exc)
 
-    # Batch-fetch boost status (1 query instead of N)
     product_ids = [str(p.id) for p in all_products if p.id]
     boosted_ids: set[str] = set()
 
@@ -174,6 +173,32 @@ def get_home_feed(
         except Exception as exc:
             logger.warning("home feed batch boost fetch failed: %s", exc)
 
+    # Batch-fetch product review averages (1 query instead of N)
+    avg_ratings: dict[str, float] = {}
+    if product_ids:
+        try:
+            rev_r = (
+                admin.table("product_reviews")
+                .select("product_id,rating")
+                .in_("product_id", product_ids)
+                .execute()
+            )
+            sums: dict[str, float] = {}
+            counts: dict[str, int] = {}
+            for row in rev_r.data or []:
+                pid = str(row.get("product_id"))
+                r = row.get("rating")
+                if pid and r:
+                    sums[pid] = sums.get(pid, 0) + float(r)
+                    counts[pid] = counts.get(pid, 0) + 1
+            for pid in product_ids:
+                if counts.get(pid, 0) > 0:
+                    avg_ratings[pid] = round(sums[pid] / counts[pid], 2)
+                else:
+                    avg_ratings[pid] = 0.0
+        except Exception as exc:
+            logger.warning("home feed batch rating fetch failed: %s", exc)
+
     def _embed(products: list) -> list[dict[str, Any]]:
         out = []
         for p in products:
@@ -198,6 +223,7 @@ def get_home_feed(
                 "updated_at": getattr(p, "updated_at", None),
                 "shop": shop,
                 "boosted": str(p.id) in boosted_ids,
+                "average_rating": avg_ratings.get(str(p.id), 0.0),
             })
         return out
 

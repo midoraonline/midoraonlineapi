@@ -32,6 +32,8 @@ def purchase_boost(
     payment_reference: str | None = None,
 ) -> dict | None:
     """Purchase a boost for a listing. Returns the created boost record or None."""
+    expire_stale_boosts()
+
     admin = get_supabase_admin()
 
     plan_r = admin.table("boost_plans").select("*").eq("id", boost_plan_id).execute()
