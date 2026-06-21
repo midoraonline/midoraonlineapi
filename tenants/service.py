@@ -209,12 +209,10 @@ def create_shop(client: Any, owner_id: str, data: ShopCreate) -> dict:
                 )
 
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(_fire_emails())
-            else:
-                loop.run_until_complete(_fire_emails())
+            loop = asyncio.get_running_loop()
+            loop.create_task(_fire_emails())
         except RuntimeError:
+            # No running loop (e.g. called from a sync test context) — skip emails.
             pass
     except Exception:
         pass  # never fail shop creation due to email
