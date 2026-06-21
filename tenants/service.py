@@ -8,10 +8,10 @@ from tenants.schemas import ShopCreate, ShopListItem, ShopResponse, ShopUpdate, 
 
 # When optional columns are missing (no migration yet), try narrower selects — see list_shops().
 _SHOP_LIST_COLS_TIERS: tuple[str, ...] = (
-    "id,name,slug,description,logo_url,shop_type,category,location,is_active,created_at,view_count",
-    "id,name,slug,description,logo_url,shop_type,location,is_active,created_at,view_count",
-    "id,name,slug,description,logo_url,shop_type,is_active,created_at,view_count",
-    "id,name,slug,description,logo_url,shop_type,is_active,created_at",
+    "id,name,slug,description,logo_url,shop_type,category,location,is_active,created_at,view_count,trust_badges",
+    "id,name,slug,description,logo_url,shop_type,location,is_active,created_at,view_count,trust_badges",
+    "id,name,slug,description,logo_url,shop_type,is_active,created_at,view_count,trust_badges",
+    "id,name,slug,description,logo_url,shop_type,is_active,created_at,trust_badges",
 )
 
 
@@ -77,14 +77,15 @@ def list_shops(
             is_active=row.get("is_active", False),
             created_at=str(row["created_at"]) if row.get("created_at") else None,
             view_count=int(row.get("view_count") or 0),
+            trust_badges=row.get("trust_badges") or ["shop_listed"],
         )
         for row in (r.data or [])
     ]
     return {"items": items, "total": total, "page": page, "limit": limit, "total_pages": total_pages}
 
 
-def list_my_shops(client: Any, page: int = 1, limit: int = 20) -> dict:
-    """List shops owned by current user (RLS filters by owner_id)."""
+def list_my_shops(client: Any, owner_id: str, page: int = 1, limit: int = 20) -> dict:
+    """List shops owned by current user. Explicitly filters by owner_id since RLS is currently bypassed."""
     limit = min(limit, 100)
     offset = (page - 1) * limit
     last_err: APIError | None = None
@@ -94,6 +95,7 @@ def list_my_shops(client: Any, page: int = 1, limit: int = 20) -> dict:
             r = (
                 client.table("shops")
                 .select(select_cols, count="exact")
+                .eq("owner_id", owner_id)
                 .range(offset, offset + limit - 1)
                 .order("created_at", desc=True)
                 .execute()
@@ -120,6 +122,7 @@ def list_my_shops(client: Any, page: int = 1, limit: int = 20) -> dict:
             is_active=row.get("is_active", False),
             created_at=str(row["created_at"]) if row.get("created_at") else None,
             view_count=int(row.get("view_count") or 0),
+            trust_badges=row.get("trust_badges") or ["shop_listed"],
         )
         for row in (r.data or [])
     ]
@@ -167,6 +170,55 @@ def create_shop(client: Any, owner_id: str, data: ShopCreate) -> dict:
     shop["_owner_role"] = new_role
     shop["_role_changed"] = changed
     revalidate_nextjs_cache_tag("shops")
+
+    # Best-effort lifecycle emails — never block shop creation.
+    try:
+        import asyncio
+        from core.config import get_settings
+        from mail.send import send_shop_opened_merchant_email, send_shop_opened_admin_email
+        from mail.queue import get_admin_emails
+
+        settings = get_settings()
+        # Resolve merchant email from user record
+        merchant_email: str | None = None
+        try:
+            ur = client.table("users").select("email").eq("id", owner_id).limit(1).execute()
+            if ur.data:
+                merchant_email = ur.data[0].get("email")
+        except Exception:
+            pass
+
+        shop_id_str = str(row["id"])
+        verification_url = f"{settings.frontend_url}/merchant/shops/{shop_id_str}/verification"
+
+        async def _fire_emails() -> None:
+            if merchant_email:
+                await send_shop_opened_merchant_email(
+                    to=merchant_email,
+                    shop_name=data.name,
+                    shop_id=shop_id_str,
+                    verification_url=verification_url,
+                )
+            admin_emails = get_admin_emails()
+            if admin_emails:
+                await send_shop_opened_admin_email(
+                    admin_recipients=admin_emails,
+                    shop_name=data.name,
+                    shop_id=shop_id_str,
+                    merchant_email=merchant_email,
+                )
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(_fire_emails())
+            else:
+                loop.run_until_complete(_fire_emails())
+        except RuntimeError:
+            pass
+    except Exception:
+        pass  # never fail shop creation due to email
+
     return shop
 
 
@@ -235,6 +287,7 @@ def _row_to_shop_response(row: dict) -> dict:
         "trust_score": float(row.get("trust_score") or 0),
         "seller_score": float(row.get("seller_score") or 0),
         "fraud_score": float(row.get("fraud_score") or 0),
+        "trust_badges": row.get("trust_badges") or ["shop_listed"],
         "available_now": bool(row.get("available_now") or False),
         "last_seen_at": str(row["last_seen_at"]) if row.get("last_seen_at") else None,
     }

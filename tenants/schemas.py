@@ -95,6 +95,7 @@ class ShopResponse(BaseModel):
     trust_score: float = 0.0
     seller_score: float = 0.0
     fraud_score: float = 0.0
+    trust_badges: list[str] = []
     available_now: bool = False
     last_seen_at: str | None = None
     viewer_following: bool | None = None
@@ -113,3 +114,4 @@ class ShopListItem(BaseModel):
     is_active: bool
     created_at: str | None
     view_count: int = 0
+    trust_badges: list[str] = []

@@ -162,6 +162,7 @@ class ShopSummary(BaseModel):
     whatsapp_number: str | None = None
     is_active: bool = True
     trust_score: int = 0
+    trust_badges: list[str] = []
     available_now: bool = False
     location: str | None = None
 

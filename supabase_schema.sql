@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS public.shops (
     seller_score        NUMERIC(6,2) NOT NULL DEFAULT 0.00,
     available_now       BOOLEAN NOT NULL DEFAULT false,
     last_seen_at        TIMESTAMPTZ,
+    trust_badges        TEXT[] DEFAULT ARRAY['shop_listed']::TEXT[],
     created_at          TIMESTAMPTZ DEFAULT now(),
     updated_at          TIMESTAMPTZ DEFAULT now()
 );

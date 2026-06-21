@@ -92,16 +92,12 @@ async def record_shop_event(
     seller_id = str(shop_r.data[0].get("owner_id", ""))
 
     try:
-        # Find a product from this shop to use as listing_id reference
-        prod_r = admin.table("products").select("id").eq("shop_id", shop_id).limit(1).execute()
-        listing_id = str(prod_r.data[0]["id"]) if prod_r.data else None
-
         payload = {
-            "listing_id": listing_id,
+            "listing_id": None,
             "seller_id": seller_id,
             "buyer_id": current_user_id,
             "event_type": event_type,
-            "metadata": {"source": "shop_page"},
+            "metadata": {"source": "shop_page", "shop_id": shop_id},
         }
         admin.table("listing_events").insert(payload).execute()
     except Exception as exc:
@@ -382,6 +378,8 @@ async def my_shops_stats(user_id: str = Depends(get_current_user_id)) -> dict:
 
     total_whatsapp_clicks = 0
     total_messages = 0
+    
+    # 1. Product-level events
     if product_ids:
         try:
             ev_r = (
@@ -396,6 +394,29 @@ async def my_shops_stats(user_id: str = Depends(get_current_user_id)) -> dict:
                     total_whatsapp_clicks += 1
                 elif et == "messaged":
                     total_messages += 1
+        except Exception:
+            pass
+            
+    # 2. Shop-level events
+    if shop_ids:
+        try:
+            # We must fetch the rows because we can't easily do a jsonb IN filter
+            sev_r = (
+                admin.table("listing_events")
+                .select("event_type, metadata")
+                .is_("listing_id", "null")
+                .in_("event_type", ["whatsapp_clicked", "messaged"])
+                .eq("seller_id", user_id)
+                .execute()
+            )
+            for ev in (sev_r.data or []):
+                meta = ev.get("metadata") or {}
+                if meta.get("shop_id") in shop_ids:
+                    et = ev.get("event_type", "")
+                    if et == "whatsapp_clicked":
+                        total_whatsapp_clicks += 1
+                    elif et == "messaged":
+                        total_messages += 1
         except Exception:
             pass
 

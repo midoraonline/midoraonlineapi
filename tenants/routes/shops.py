@@ -20,7 +20,7 @@ async def list_my_shops(
     params: Annotated[PaginationParams, Depends()],
     user_id: str = Depends(get_current_user_id),
 ):
-    result = tenants_service.list_my_shops(client, page=params.page, limit=params.limit)
+    result = tenants_service.list_my_shops(client, owner_id=user_id, page=params.page, limit=params.limit)
     return result
 
 

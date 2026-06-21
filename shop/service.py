@@ -20,11 +20,13 @@ from shop.schemas import (
 
 _PRODUCT_LIST_COLS_WITH_VIEWS = (
     "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,status,"
-    "listing_score,location_name,is_published,created_at,view_count"
+    "listing_score,location_name,is_published,created_at,view_count,"
+    "shops(id,name,slug,logo_url,whatsapp_number,is_active,trust_score,available_now,location,trust_badges)"
 )
 _PRODUCT_LIST_COLS_BASE = (
     "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
-    "is_published,created_at"
+    "is_published,created_at,"
+    "shops(id,name,slug,logo_url,whatsapp_number,is_active,trust_score,available_now,location,trust_badges)"
 )
 
 
@@ -268,7 +270,7 @@ def get_product_detail(
                 client.table("shops")
                 .select(
                     "id,name,slug,logo_url,owner_id,whatsapp_number,"
-                    "is_active,trust_score,available_now,location"
+                    "is_active,trust_score,available_now,location,trust_badges"
                 )
                 .eq("id", shop_id)
                 .limit(1)
@@ -287,6 +289,7 @@ def get_product_detail(
                     whatsapp_number=s.get("whatsapp_number"),
                     is_active=bool(s.get("is_active", True)),
                     trust_score=int(s.get("trust_score") or 0),
+                    trust_badges=s.get("trust_badges") or ["shop_listed"],
                     available_now=bool(s.get("available_now", False)),
                     location=location_str,
                 )

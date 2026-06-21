@@ -68,19 +68,37 @@ def product_exists(client: Any, product_id: str) -> bool:
 
 def _count_shop_listing_events(client: Any, shop_id: str, event_type: str) -> int:
     try:
+        count = 0
+        
+        # 1. Product events
         pr = client.table("products").select("id").eq("shop_id", shop_id).execute()
         product_ids = [str(r["id"]) for r in (pr.data or [])]
-        if not product_ids:
-            return 0
-        r = (
-            client.table("listing_events")
-            .select("id", count="exact")
-            .in_("listing_id", product_ids)
-            .eq("event_type", event_type)
-            .limit(1)
-            .execute()
-        )
-        return int(r.count or 0)
+        if product_ids:
+            r1 = (
+                client.table("listing_events")
+                .select("id", count="exact")
+                .in_("listing_id", product_ids)
+                .eq("event_type", event_type)
+                .execute()
+            )
+            count += int(r1.count or 0)
+            
+        # 2. Shop events
+        shop_r = client.table("shops").select("owner_id").eq("id", shop_id).limit(1).execute()
+        if shop_r.data:
+            seller_id = shop_r.data[0]["owner_id"]
+            r2 = (
+                client.table("listing_events")
+                .select("id", count="exact")
+                .eq("seller_id", seller_id)
+                .is_("listing_id", "null")
+                .eq("event_type", event_type)
+                .filter("metadata->>shop_id", "eq", shop_id)
+                .execute()
+            )
+            count += int(r2.count or 0)
+            
+        return count
     except Exception:
         return 0
 

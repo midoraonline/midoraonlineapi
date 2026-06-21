@@ -180,6 +180,134 @@ async def send_shop_submission_received_email(
     await _enqueue(to, "We received your shop verification request", _html_shell("Verification request received", inner))
 
 
+async def send_shop_opened_merchant_email(
+    to: str, shop_name: str, shop_id: str, verification_url: str
+) -> None:
+    """Welcome a new merchant and guide them to the verification journey."""
+    inner = f"""
+      <p>Congratulations — <strong>{shop_name}</strong> is now on Midora! 🎉</p>
+      <p>Your shop has automatically earned the <strong>Shop Listed</strong> badge. Here's what to do next:</p>
+      <ol style="padding-left:20px;color:#1f2937;line-height:1.8;">
+        <li><strong>Complete your identity verification</strong> — upload your NIN/ID documents so customers can trust you.</li>
+        <li><strong>Add your first product or service</strong> — start listing what you sell.</li>
+        <li><strong>Verify your business</strong> — share your physical shop details for the highest trust badge.</li>
+      </ol>
+      <p style="margin:24px 0;">
+        <a href="{verification_url}" style="display:inline-block;padding:12px 20px;background:#D4653C;color:#ffffff;text-decoration:none;border-radius:10px;font-weight:600;">Start verification →</a>
+      </p>
+      <p style="color:#64748b;font-size:13px;">Each verification stage unlocks a new trust badge that shows customers your shop is legitimate.</p>
+    """
+    await _enqueue(to, f"Welcome to Midora — {shop_name} is live!", _html_shell("Your shop is live 🎉", inner))
+
+
+async def send_shop_opened_admin_email(
+    *,
+    admin_recipients: Iterable[str],
+    shop_name: str,
+    shop_id: str,
+    merchant_email: str | None,
+) -> None:
+    """Internal notification to the Midora team when a new shop is created."""
+    recipients = [r for r in admin_recipients if r]
+    if not recipients:
+        return
+    merchant_html = (
+        f"<li><strong>Merchant:</strong> {merchant_email}</li>" if merchant_email else ""
+    )
+    inner = f"""
+      <p>A new shop has just been opened on Midora.</p>
+      <ul style="padding-left:20px;color:#1f2937;">
+        <li><strong>Shop:</strong> {shop_name}</li>
+        <li><strong>Shop ID:</strong> {shop_id}</li>
+        {merchant_html}
+      </ul>
+      <p style="margin-top:24px;">The merchant has been guided to the verification flow. You may review the shop in the admin dashboard.</p>
+    """
+    for recipient in recipients:
+        await _enqueue(recipient, f"[Midora] New shop opened: {shop_name}", _html_shell("New shop opened", inner))
+
+
+async def send_stage_submission_merchant_email(
+    to: str, shop_name: str, stage: int
+) -> None:
+    """Confirm to the merchant that their stage submission was received."""
+    stage_names = {2: "Identity Verification", 3: "Business Verification"}
+    stage_name = stage_names.get(stage, f"Stage {stage}")
+    inner = f"""
+      <p>We've received your <strong>{stage_name}</strong> submission for <strong>{shop_name}</strong>.</p>
+      <p>Our team typically reviews submissions within one business day. We'll email you as soon as a decision is made.</p>
+      <p style="color:#64748b;font-size:13px;">In the meantime, you can keep adding products to your shop.</p>
+    """
+    await _enqueue(to, f"Verification submission received — {shop_name}", _html_shell(f"{stage_name} received", inner))
+
+
+async def send_stage_submission_admin_email(
+    *,
+    admin_recipients: Iterable[str],
+    shop_name: str,
+    shop_id: str,
+    stage: int,
+    merchant_email: str | None,
+) -> None:
+    """Internal notification when a merchant submits a verification stage."""
+    recipients = [r for r in admin_recipients if r]
+    if not recipients:
+        return
+    stage_names = {2: "Identity Verification", 3: "Business Verification"}
+    stage_name = stage_names.get(stage, f"Stage {stage}")
+    merchant_html = (
+        f"<li><strong>Merchant:</strong> {merchant_email}</li>" if merchant_email else ""
+    )
+    inner = f"""
+      <p>A merchant has submitted <strong>{stage_name}</strong> for review.</p>
+      <ul style="padding-left:20px;color:#1f2937;">
+        <li><strong>Shop:</strong> {shop_name}</li>
+        <li><strong>Shop ID:</strong> {shop_id}</li>
+        <li><strong>Stage:</strong> {stage_name}</li>
+        {merchant_html}
+      </ul>
+      <p style="margin-top:24px;">Head to the admin dashboard to approve or reject this submission.</p>
+    """
+    for recipient in recipients:
+        await _enqueue(recipient, f"[Midora] {stage_name} submission: {shop_name}", _html_shell(f"New {stage_name} submission", inner))
+
+
+async def send_stage_approved_email(
+    to: str, shop_name: str, stage: int
+) -> None:
+    """Notify the merchant that a verification stage was approved and they earned a badge."""
+    badge_names = {2: ("Identity Verified", "🪪"), 3: ("Business Verified", "🏢")}
+    badge_name, emoji = badge_names.get(stage, (f"Stage {stage} Verified", "✅"))
+    next_step = ""
+    if stage == 2:
+        next_step = "<p>You can now proceed to <strong>Business Verification</strong> (Stage 3) to earn the highest trust badge on Midora.</p>"
+    inner = f"""
+      <p>Great news — your <strong>{badge_name}</strong> {emoji} badge has been approved for <strong>{shop_name}</strong>!</p>
+      <p>This badge now appears on your public shop page, helping customers trust your shop.</p>
+      {next_step}
+      <p style="color:#64748b;font-size:13px;">Thank you for helping make Midora a trusted marketplace.</p>
+    """
+    await _enqueue(to, f"{emoji} {badge_name} badge earned — {shop_name}", _html_shell(f"{badge_name} badge earned!", inner))
+
+
+async def send_stage_rejected_email(
+    to: str, shop_name: str, stage: int, notes: str | None = None
+) -> None:
+    """Notify the merchant that a verification stage was rejected with reviewer notes."""
+    stage_names = {2: "Identity Verification", 3: "Business Verification"}
+    stage_name = stage_names.get(stage, f"Stage {stage}")
+    notes_html = (
+        f'<div style="margin-top:20px;padding:14px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;color:#334155;"><strong>Notes from our team:</strong><br/>{notes}</div>'
+        if notes else ""
+    )
+    inner = f"""
+      <p>We've reviewed your <strong>{stage_name}</strong> submission for <strong>{shop_name}</strong> and need some changes before we can approve it.</p>
+      {notes_html}
+      <p>Please address the feedback above and resubmit from your merchant dashboard.</p>
+    """
+    await _enqueue(to, f"Update on your {stage_name} — {shop_name}", _html_shell("Verification update", inner))
+
+
 async def send_new_shop_submission_admin_email(
     *,
     admin_recipients: Iterable[str],
