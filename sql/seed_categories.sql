@@ -1,1 +1,0 @@
--- Canonical categories — run db/migrations/003_categories.sql in Supabase SQL Editor.
