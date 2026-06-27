@@ -185,13 +185,43 @@ def record_shop_view(client: Any, shop_id: str) -> int:
     return v
 
 
-def record_product_view(client: Any, product_id: str) -> int:
+def _record_buyer_listing_event(product_id: str, buyer_id: str, event_type: str) -> None:
+    """Persist a per-user listing event for feed personalization (best-effort)."""
+    from db.supabase import get_supabase_admin
+
+    admin = get_supabase_admin()
+    try:
+        product_r = admin.table("products").select("shop_id").eq("id", product_id).execute()
+        if not product_r.data:
+            return
+        shop_id = str(product_r.data[0].get("shop_id", ""))
+        seller_id: str | None = None
+        if shop_id:
+            shop_r = admin.table("shops").select("owner_id").eq("id", shop_id).limit(1).execute()
+            if shop_r.data:
+                seller_id = str(shop_r.data[0]["owner_id"])
+        admin.table("listing_events").insert(
+            {
+                "listing_id": product_id,
+                "seller_id": seller_id,
+                "buyer_id": buyer_id,
+                "event_type": event_type,
+                "metadata": {},
+            }
+        ).execute()
+    except Exception:
+        pass
+
+
+def record_product_view(client: Any, product_id: str, buyer_id: str | None = None) -> int:
     if not product_exists(client, product_id):
         raise ValueError("Product not found")
     r = client.rpc("increment_product_view_count", {"p_product_id": product_id}).execute()
     v = _parse_rpc_int(r.data)
     if v is None:
         raise ValueError("Failed to record product view (apply migration 20260213_shop_view_counts.sql)")
+    if buyer_id:
+        _record_buyer_listing_event(product_id, buyer_id, "viewed")
     return v
 
 

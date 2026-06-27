@@ -64,8 +64,8 @@ async def get_algorithm_feed(
     ordered by the user's personal preference vector. Organic products
     follow immediately after (Tier 2), also ordered by personal score.
 
-    The full ranked list is cached per user for 5 minutes — subsequent
-    page requests are O(1) slice lookups with no re-scoring.
+    Re-scored on every request from live user signals (likes, views,
+    saves, follows, search history). Not cached.
     """
     return feed_service.get_algorithm_feed(
         client, user_id=user_id, page=page, limit=params.limit

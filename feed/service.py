@@ -577,8 +577,14 @@ def get_algorithm_feed(
     user_vector = _build_user_preference_vector(client, signals)
     cutoff = datetime.now(timezone.utc) - timedelta(days=FRESHNESS_DAYS)
 
-    if not user_vector and not signals["categories"] and not signals["followed_shop_ids"]:
-        # No meaningful signals yet — return latest feed for new users
+    has_personal_signals = bool(
+        user_vector
+        or signals["categories"]
+        or signals["followed_shop_ids"]
+        or signals["search_terms"]
+        or signals["interactions"]
+    )
+    if not has_personal_signals:
         return get_latest_feed(client, limit)
 
     candidates = _fetch_candidate_products(client, signals, pool_limit=CANDIDATE_POOL_MAX)

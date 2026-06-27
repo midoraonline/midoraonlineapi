@@ -242,10 +242,11 @@ async def unlike_product(
 async def record_product_view(
     product_id: str,
     client: Annotated[any, Depends(get_supabase_client)],
+    user_id: str | None = Depends(get_optional_user_id),
 ):
-    """Increment product/service detail view count. Call when a customer opens the product page."""
+    """Increment product view count and record a per-user viewed event when authenticated."""
     try:
-        n = engagement_service.record_product_view(client, product_id)
+        n = engagement_service.record_product_view(client, product_id, buyer_id=user_id)
         calculate_listing_score(product_id)
         return ViewCountResponse(view_count=n)
     except ValueError as e:
