@@ -186,17 +186,13 @@ def vectorize_product(client: Any, product_id: str) -> bool:
 
 
 def schedule_vectorize_product(product_id: str) -> None:
-    """Fire-and-forget embedding refresh so API handlers stay fast."""
+    """Synchronous embedding refresh to ensure completion in serverless environments (e.g. Vercel)."""
+    try:
+        from db.supabase import get_supabase_admin
 
-    def _run() -> None:
-        try:
-            from db.supabase import get_supabase_admin
-
-            vectorize_product(get_supabase_admin(), product_id)
-        except Exception as exc:
-            logger.warning("background vectorize failed (%s): %s", product_id, exc)
-
-    threading.Thread(target=_run, daemon=True).start()
+        vectorize_product(get_supabase_admin(), product_id)
+    except Exception as exc:
+        logger.warning("sync vectorize failed (%s): %s", product_id, exc)
 
 
 def refresh_product_embedding(product_id: str) -> None:
