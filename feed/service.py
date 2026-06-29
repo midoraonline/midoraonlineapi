@@ -339,13 +339,17 @@ def _fetch_product_embeddings(
     client: Client,
     product_ids: list[str],
 ) -> dict[str, list[float]]:
-    if not product_ids:
+    # Filter out None / non-string values before sending to PostgREST
+    # (None gets serialised as the literal string "None" which causes
+    # `invalid input syntax for type uuid` → HTTP 400 → no embeddings)
+    valid_ids = [pid for pid in product_ids if pid and isinstance(pid, str) and pid != "None"]
+    if not valid_ids:
         return {}
     try:
         resp = (
             client.table("products")
             .select("id,embedding")
-            .in_("id", product_ids)
+            .in_("id", valid_ids)
             .execute()
         )
     except Exception as exc:
@@ -360,26 +364,49 @@ def _fetch_product_embeddings(
     return out
 
 
-def _build_user_preference_vector(
-    client: Client,
+def _build_user_preference_vector_from_map(
     signals: dict[str, Any],
+    embeddings_map: dict[str, list[float]],
 ) -> list[float] | None:
-    """Weighted average of embeddings from liked/viewed products."""
-    interaction_ids = list(
-        {i["product_id"] for i in signals["interactions"] if i.get("product_id")}
-    )
-    embeddings_map = _fetch_product_embeddings(client, interaction_ids)
+    """Weighted average of embeddings using a pre-fetched map (no extra DB query).
 
+    This version avoids the extra round-trip to fetch embeddings for
+    interaction products — instead it reuses the inline embeddings that
+    are already present in the candidate pool rows fetched by
+    _fetch_candidate_products (which selects the `embedding` column).
+    """
     weighted: list[tuple[list[float], float]] = []
     for interaction in signals["interactions"]:
-        embedding = embeddings_map.get(interaction["product_id"])
+        pid = interaction.get("product_id")
+        if not pid or pid == "None":
+            continue
+        embedding = embeddings_map.get(pid)
         if not embedding:
             continue
         weight = float(interaction.get("weight") or 0.0)
         if weight > 0:
             weighted.append((embedding, weight))
-
     return weighted_average(weighted)
+
+
+def _build_user_preference_vector(
+    client: Client,
+    signals: dict[str, Any],
+) -> list[float] | None:
+    """Weighted average of embeddings from liked/viewed products (standalone).
+
+    Falls back to a targeted DB fetch when no candidate pool is available
+    (e.g., called directly from unit tests or the /algorithm endpoint).
+    """
+    interaction_ids = [
+        i["product_id"]
+        for i in signals["interactions"]
+        if i.get("product_id") and str(i["product_id"]) != "None"
+    ]
+    # Deduplicate
+    interaction_ids = list(dict.fromkeys(interaction_ids))
+    embeddings_map = _fetch_product_embeddings(client, interaction_ids)
+    return _build_user_preference_vector_from_map(signals, embeddings_map)
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +584,13 @@ def get_algorithm_feed(
 
       Final Feed Pool = [Sorted Tier 1 (Boosted)] + [Sorted Tier 2 (Organic)]
 
+    Optimization — No extra embedding query:
+      Candidate products are fetched with their `embedding` column included.
+      We build an in-memory map from those rows and compute the user preference
+      vector directly from it — completely eliminating the secondary
+      `SELECT id,embedding FROM products WHERE id IN (...)` query that was
+      previously failing with HTTP 400 due to `None` UUID values.
+
     Pagination:
       Every page recomputes the full ranking from live user signals so
       interactions (likes, views, follows) are immediately reflected.
@@ -571,15 +605,13 @@ def get_algorithm_feed(
     end_idx = start_idx + limit
 
     # -----------------------------------------------------------------------
-    # STAGE 1: Data gathering — signals, vectors, candidate pool
+    # STAGE 1: Collect user signals (likes, views, follows, search)
     # -----------------------------------------------------------------------
     signals = _collect_user_signals(client, user_id)
-    user_vector = _build_user_preference_vector(client, signals)
     cutoff = datetime.now(timezone.utc) - timedelta(days=FRESHNESS_DAYS)
 
     has_personal_signals = bool(
-        user_vector
-        or signals["categories"]
+        signals["categories"]
         or signals["followed_shop_ids"]
         or signals["search_terms"]
         or signals["interactions"]
@@ -587,12 +619,35 @@ def get_algorithm_feed(
     if not has_personal_signals:
         return get_latest_feed(client, limit)
 
+    # -----------------------------------------------------------------------
+    # STAGE 1b: Build candidate pool (includes `embedding` column inline)
+    # -----------------------------------------------------------------------
     candidates = _fetch_candidate_products(client, signals, pool_limit=CANDIDATE_POOL_MAX)
     if not candidates:
         return get_latest_feed(client, limit)
 
+    # Build an embedding map from the candidates we already have in memory.
+    # This avoids the second SELECT that was sending None UUIDs to PostgREST.
+    inline_embedding_map: dict[str, list[float]] = {}
+    for c in candidates:
+        pid = str(c.get("id", ""))
+        emb = parse_embedding(c.get("embedding"))
+        if pid and emb:
+            inline_embedding_map[pid] = emb
+
+    # Now build the user preference vector without any extra DB query
+    user_vector = _build_user_preference_vector_from_map(signals, inline_embedding_map)
+
+    logger.info(
+        "Feed scoring: user=%s interactions=%d embedded_products=%d user_vector=%s",
+        user_id,
+        len(signals["interactions"]),
+        len(inline_embedding_map),
+        "yes" if user_vector else "NO — falling back to category/score",
+    )
+
     # -----------------------------------------------------------------------
-    # STAGE 1b: Shop candidate density — used for diversity penalty
+    # STAGE 1c: Shop candidate density — used for diversity penalty
     # -----------------------------------------------------------------------
     shop_candidate_counts: dict[str, int] = {}
     for p in candidates:
