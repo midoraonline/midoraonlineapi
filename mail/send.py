@@ -347,3 +347,30 @@ async def send_new_shop_submission_admin_email(
     """
     for recipient in recipients:
         await _enqueue(recipient, f"[Midora] New shop submission: {shop_name}", _html_shell("New shop awaiting verification", inner))
+
+async def send_feedback_admin_email(
+    *,
+    admin_recipients: Iterable[str],
+    user_email: str | None,
+    feedback_text: str,
+) -> None:
+    """Internal notification when a user submits feedback."""
+    recipients = [r for r in admin_recipients if r]
+    if not recipients:
+        return
+    user_html = (
+        f"<li><strong>User:</strong> {user_email}</li>" if user_email else "<li><strong>User:</strong> Anonymous</li>"
+    )
+    inner = f"""
+      <p>A user has submitted feedback on the platform.</p>
+      <ul style="padding-left:20px;color:#1f2937;">
+        {user_html}
+      </ul>
+      <div style="margin-top:20px;padding:14px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;color:#334155;">
+        <strong>Feedback:</strong><br/>
+        {feedback_text}
+      </div>
+    """
+    for recipient in recipients:
+        await _enqueue(recipient, "[Midora] New User Feedback Received", _html_shell("New User Feedback", inner))
+

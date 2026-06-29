@@ -13,6 +13,7 @@ from admin.routes import settings as admin_settings
 from admin.routes import reports as admin_reports
 from admin.routes import comments_admin as admin_comments
 from admin.routes import chat_admin as admin_chat
+from admin.routes import feedback as admin_feedback
 from tenants.routes import verifications as verif_admin
 
 router = APIRouter(
@@ -32,4 +33,5 @@ router.include_router(admin_settings.router, prefix="", tags=["admin"])
 router.include_router(admin_reports.router, prefix="", tags=["admin"])
 router.include_router(admin_comments.router, prefix="", tags=["admin"])
 router.include_router(admin_chat.router, prefix="", tags=["admin"])
+router.include_router(admin_feedback.router, prefix="", tags=["admin"])
 router.include_router(verif_admin.admin_router, prefix="/shops", tags=["admin"])

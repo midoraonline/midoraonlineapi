@@ -9,6 +9,8 @@ from marketplace.routes import notifications as nt
 from marketplace.routes import comments as cm
 from marketplace.routes import reports as rp
 from marketplace.routes import chat_native as cn
+from marketplace.routes import feedback as fb
+from marketplace.routes import stats as st
 
 router = APIRouter(tags=["marketplace"])
 
@@ -21,3 +23,5 @@ router.include_router(nt.router, prefix="/notifications", tags=["marketplace"])
 router.include_router(cm.router, prefix="", tags=["marketplace"])
 router.include_router(rp.router, prefix="", tags=["marketplace"])
 router.include_router(cn.router, prefix="", tags=["marketplace"])
+router.include_router(fb.router, prefix="", tags=["marketplace"])
+router.include_router(st.router, prefix="", tags=["marketplace"])
