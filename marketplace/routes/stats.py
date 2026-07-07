@@ -5,12 +5,16 @@ import re
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from core.security import get_optional_user_id
 from db.supabase import get_supabase_admin
-from fastapi import Depends
+from marketplace.presence_service import (
+    clear_merchant_shops_if_idle,
+    record_presence,
+    remove_presence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,27 +53,38 @@ async def ping_presence(
     body: PresencePingRequest,
     user_id: str | None = Depends(get_optional_user_id),
 ) -> dict[str, str]:
-    """Heartbeat from a single app instance (browser tab). Upserts by instance_id."""
+    """Heartbeat from an active browser tab. Auth cookie links user_id when signed in."""
     instance_id = body.instance_id.strip()
     if not _valid_instance_id(instance_id):
         raise HTTPException(status_code=400, detail="Invalid instance_id")
 
     admin = get_supabase_admin()
-    now_iso = datetime.now(timezone.utc).isoformat()
-    payload: dict[str, Any] = {
-        "instance_id": instance_id,
-        "last_seen_at": now_iso,
-    }
-    if user_id:
-        payload["user_id"] = user_id
-
     try:
-        admin.table("online_presence").upsert(payload, on_conflict="instance_id").execute()
+        record_presence(admin, instance_id, user_id)
     except Exception as exc:
         logger.warning("presence ping failed (instance=%s): %s", instance_id[:8], exc)
         raise HTTPException(status_code=500, detail="Failed to record presence") from exc
 
     _cleanup_stale_presence(admin)
+    return {"status": "ok"}
+
+
+@router.post("/presence/leave")
+async def leave_presence(
+    body: PresencePingRequest,
+    user_id: str | None = Depends(get_optional_user_id),
+) -> dict[str, str]:
+    """Tab closed or went inactive — remove instance and update merchant availability."""
+    instance_id = body.instance_id.strip()
+    if not _valid_instance_id(instance_id):
+        raise HTTPException(status_code=400, detail="Invalid instance_id")
+
+    admin = get_supabase_admin()
+    stored_user_id = remove_presence(admin, instance_id)
+    effective_user_id = stored_user_id or user_id
+    if effective_user_id:
+        clear_merchant_shops_if_idle(admin, effective_user_id)
+
     return {"status": "ok"}
 
 

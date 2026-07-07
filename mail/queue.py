@@ -24,6 +24,64 @@ _worker_task: asyncio.Task[Any] | None = None
 _wake_event: asyncio.Event | None = None
 POLL_INTERVAL_SECONDS = 2
 DEDUP_WINDOW_SECONDS = 120
+_MAX_BACKOFF_SECONDS = 60
+
+_db_backoff_seconds = POLL_INTERVAL_SECONDS
+_last_db_error_logged_at = 0.0
+
+
+def _is_transient_network_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    if any(
+        needle in text
+        for needle in (
+            "name resolution",
+            "temporary failure",
+            "connection refused",
+            "connection reset",
+            "network is unreachable",
+            "timed out",
+            "could not resolve",
+            "getaddrinfo failed",
+        )
+    ):
+        return True
+    cause: BaseException | None = exc
+    while cause is not None:
+        if isinstance(cause, OSError) and cause.errno in (-2, -3, 110, 111, 113):
+            return True
+        cause = cause.__cause__ or cause.__context__
+    return False
+
+
+def _note_db_success() -> None:
+    global _db_backoff_seconds
+    _db_backoff_seconds = POLL_INTERVAL_SECONDS
+
+
+def _note_db_failure(exc: BaseException) -> int:
+    """Increase backoff and log at most once per 30s for transient outages."""
+    global _db_backoff_seconds, _last_db_error_logged_at
+    import time
+
+    if _db_backoff_seconds <= POLL_INTERVAL_SECONDS:
+        _db_backoff_seconds = 10
+    else:
+        _db_backoff_seconds = min(_db_backoff_seconds * 2, _MAX_BACKOFF_SECONDS)
+
+    now = time.monotonic()
+    if now - _last_db_error_logged_at >= 30:
+        logger.warning(
+            "Mail worker: database unreachable (%s); retrying in %ss",
+            exc,
+            _db_backoff_seconds,
+        )
+        _last_db_error_logged_at = now
+    return _db_backoff_seconds
+
+
+def _current_poll_interval() -> float:
+    return float(_db_backoff_seconds)
 
 
 # ---------------------------------------------------------------------------
@@ -142,10 +200,14 @@ def _claim_next() -> dict[str, Any] | None:
     admin = get_supabase_admin()
     try:
         r = admin.rpc("claim_next_mail_queue_item", {}).execute()
+        _note_db_success()
         if r.data:
             return r.data[0] if isinstance(r.data, list) else r.data
         return None
     except Exception as exc:
+        if _is_transient_network_error(exc):
+            _note_db_failure(exc)
+            return None
         logger.warning("claim_next_mail_queue_item RPC failed: %s", exc)
         return _claim_next_fallback()
 
@@ -163,6 +225,7 @@ def _claim_next_fallback() -> dict[str, Any] | None:
             .execute()
         )
         if not r.data:
+            _note_db_success()
             return None
         row = r.data[0]
         upd = (
@@ -173,9 +236,13 @@ def _claim_next_fallback() -> dict[str, Any] | None:
             .execute()
         )
         if upd.data:
+            _note_db_success()
             return row
     except Exception as exc:
-        logger.warning("mail claim fallback failed: %s", exc)
+        if _is_transient_network_error(exc):
+            _note_db_failure(exc)
+        else:
+            logger.warning("mail claim fallback failed: %s", exc)
     return None
 
 
@@ -230,15 +297,21 @@ async def worker_loop() -> None:
 
             _wake_event.clear()
             try:
-                await asyncio.wait_for(_wake_event.wait(), timeout=POLL_INTERVAL_SECONDS)
+                await asyncio.wait_for(
+                    _wake_event.wait(),
+                    timeout=_current_poll_interval(),
+                )
             except asyncio.TimeoutError:
                 pass
         except asyncio.CancelledError:
             logger.info("Mail worker: cancelled, shutting down")
             break
         except Exception as exc:
-            logger.warning("Mail worker: unexpected error: %s", exc)
-            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            if _is_transient_network_error(exc):
+                await asyncio.sleep(_note_db_failure(exc))
+            else:
+                logger.warning("Mail worker: unexpected error: %s", exc)
+                await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 
 # ---------------------------------------------------------------------------
