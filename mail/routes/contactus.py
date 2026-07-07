@@ -59,8 +59,8 @@ async def contact_us(
     )
 
     # Notify admins (best-effort, queued)
-    from mail.queue import get_admin_emails
-    recipients = get_admin_emails()
+    from mail.queue import get_admin_emails, filter_recipients
+    recipients = filter_recipients(get_admin_emails(), email)
     if recipients:
         inner = f"""
         <p>A new contact form submission has been received.</p>

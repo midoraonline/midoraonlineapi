@@ -39,13 +39,19 @@ async def create_product(
         product = shop_service.create_product(client, shop_id, body)
 
         from mail.send import _html_shell
-        from mail.queue import get_admin_emails, enqueue_mail
+        from mail.queue import get_admin_emails, enqueue_mail, filter_recipients
 
-        # Confirmation to the merchant
+        merchant_email: str | None = None
         try:
             user_r = client.table("users").select("email").eq("id", user_id).limit(1).execute()
             if user_r.data and user_r.data[0].get("email"):
                 merchant_email = user_r.data[0]["email"]
+        except Exception:
+            pass
+
+        # Confirmation to the merchant
+        if merchant_email:
+            try:
                 confirm_inner = f"""
                 <p>Your product <strong>{body.title}</strong> has been submitted and is now pending review.</p>
                 <p>Our team will review it shortly. Once approved, it will be visible to customers on Midora.</p>
@@ -56,11 +62,11 @@ async def create_product(
                     subject=f"Product submitted: {body.title} — Midora",
                     body_html=_html_shell("Product submitted for review", confirm_inner),
                 )
-        except Exception:
-            pass
+            except Exception:
+                pass
 
         # Notify admins (best-effort, queued)
-        recipients = get_admin_emails()
+        recipients = filter_recipients(get_admin_emails(), merchant_email)
         if recipients:
             shop_row = client.table("shops").select("name, slug").eq("id", shop_id).limit(1).execute()
             shop_name = shop_row.data[0].get("name", "Unknown") if shop_row.data else "Unknown"

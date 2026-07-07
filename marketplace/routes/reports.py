@@ -86,25 +86,28 @@ async def report_product(
             from ranking.service import calculate_listing_score
             calculate_listing_score(product_id)
 
+            reporter_email: str | None = None
+            product_title = product_id
+            try:
+                pr = admin.table("products").select("title").eq("id", product_id).limit(1).execute()
+                if pr.data:
+                    product_title = pr.data[0].get("title", product_id)
+            except Exception:
+                pass
+
             # Confirmation to the reporter
             try:
                 from mail.send import _html_shell
-                from mail.queue import enqueue_mail
-                product_title = r.data[0].get("product_id", product_id)
-                try:
-                    pr = admin.table("products").select("title").eq("id", product_id).limit(1).execute()
-                    if pr.data:
-                        product_title = pr.data[0].get("title", product_id)
-                except Exception:
-                    pass
+
                 reporter_r = admin.table("users").select("email").eq("id", current_user_id).limit(1).execute()
                 if reporter_r.data and reporter_r.data[0].get("email"):
+                    reporter_email = reporter_r.data[0]["email"]
                     confirm_inner = f"""
                     <p>Thank you for letting us know. We've received your report regarding <strong>{product_title}</strong>.</p>
                     <p>Our team will review it and take appropriate action. We appreciate your help keeping Midora safe.</p>
                     """
                     await enqueue_mail(
-                        to=reporter_r.data[0]["email"],
+                        to=reporter_email,
                         subject="Report received — Midora",
                         body_html=_html_shell("Report received", confirm_inner),
                     )
@@ -114,17 +117,10 @@ async def report_product(
             # Notify admins (best-effort, queued)
             try:
                 from mail.send import _html_shell
-                from mail.queue import get_admin_emails
-                recipients = get_admin_emails()
-                if recipients:
-                    product_title = r.data[0].get("product_id", product_id)
-                    try:
-                        pr = admin.table("products").select("title").eq("id", product_id).limit(1).execute()
-                        if pr.data:
-                            product_title = pr.data[0].get("title", product_id)
-                    except Exception:
-                        pass
+                from mail.queue import get_admin_emails, filter_recipients
 
+                recipients = filter_recipients(get_admin_emails(), reporter_email)
+                if recipients:
                     settings = get_settings()
                     inner = f"""
                     <p>A product has been reported:</p>

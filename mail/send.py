@@ -208,7 +208,9 @@ async def send_shop_opened_admin_email(
     merchant_email: str | None,
 ) -> None:
     """Internal notification to the Midora team when a new shop is created."""
-    recipients = [r for r in admin_recipients if r]
+    from mail.queue import filter_recipients
+
+    recipients = filter_recipients(admin_recipients, merchant_email)
     if not recipients:
         return
     merchant_html = (
@@ -250,7 +252,9 @@ async def send_stage_submission_admin_email(
     merchant_email: str | None,
 ) -> None:
     """Internal notification when a merchant submits a verification stage."""
-    recipients = [r for r in admin_recipients if r]
+    from mail.queue import filter_recipients
+
+    recipients = filter_recipients(admin_recipients, merchant_email)
     if not recipients:
         return
     stage_names = {2: "Identity Verification", 3: "Business Verification"}
@@ -318,7 +322,9 @@ async def send_new_shop_submission_admin_email(
     notes: str | None = None,
 ) -> None:
     """Internal notification to the Midora team when a shop is submitted for review."""
-    recipients = [r for r in admin_recipients if r]
+    from mail.queue import filter_recipients
+
+    recipients = filter_recipients(admin_recipients, merchant_email)
     if not recipients:
         return
 
@@ -355,7 +361,9 @@ async def send_feedback_admin_email(
     feedback_text: str,
 ) -> None:
     """Internal notification when a user submits feedback."""
-    recipients = [r for r in admin_recipients if r]
+    from mail.queue import filter_recipients
+
+    recipients = filter_recipients(admin_recipients, user_email)
     if not recipients:
         return
     user_html = (
