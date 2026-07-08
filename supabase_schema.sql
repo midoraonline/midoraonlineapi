@@ -743,3 +743,4 @@ CREATE POLICY "users_own" ON public.users FOR ALL USING (id = auth.uid());
 
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS discount_price NUMERIC(12,2) DEFAULT NULL;
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS discount_expires_at TIMESTAMPTZ DEFAULT NULL;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS is_negotiable BOOLEAN NOT NULL DEFAULT true;

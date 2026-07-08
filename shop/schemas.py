@@ -13,6 +13,7 @@ class ProductCreate(BaseModel):
     image_urls: list[str] | str | None = None
     category: str | None = None
     is_published: bool = True
+    is_negotiable: bool = True
     item_type: str | None = None
     location_name: str | None = None
 
@@ -52,6 +53,7 @@ class ProductUpdate(BaseModel):
         return v
     category: str | None = None
     is_published: bool | None = None
+    is_negotiable: bool | None = None
     item_type: str | None = None
     status: str | None = None
     location_name: str | None = None
@@ -75,6 +77,7 @@ class ProductResponse(BaseModel):
     image_urls: list[str] | None
     category: str | None
     is_published: bool
+    is_negotiable: bool = True
     item_type: str | None = None
     status: str | None = None
     listing_score: int = 0
@@ -96,6 +99,7 @@ class ProductListItem(BaseModel):
     image_urls: list[str] | None = None
     category: str | None
     is_published: bool
+    is_negotiable: bool = True
     item_type: str | None = None
     status: str | None = None
     listing_score: int = 0

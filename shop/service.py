@@ -116,6 +116,7 @@ def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
         "stock_quantity": data.stock_quantity,
         "category": data.category,
         "is_published": data.is_published,
+        "is_negotiable": data.is_negotiable,
         "item_type": data.item_type or "product",
         "location_name": data.location_name,
         "status": "pending_review",
@@ -143,7 +144,7 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
         r = (
             client.table("products")
             .select("id,shop_id,title,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
-                    "listing_score,location_name,is_published,created_at,view_count")
+                    "listing_score,location_name,is_published,is_negotiable,created_at,view_count")
             .eq("category", product["category"])
             .eq("is_published", True)
             .eq("status", "active")
@@ -171,9 +172,32 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
     shops_map: dict[str, dict] = {}
     if shop_ids:
         try:
-            sr = client.table("shops").select("id, name, slug, whatsapp_number, owner_id").in_("id", shop_ids).execute()
+            sr = client.table("shops").select("id, name, slug, whatsapp_number, owner_id, is_active, trust_badges").in_("id", shop_ids).execute()
             for s in sr.data or []:
                 shops_map[str(s["id"])] = s
+        except Exception:
+            pass
+    product_ids = [str(row["id"]) for row in (r.data or [])]
+    avg_ratings: dict[str, float] = {}
+    review_counts: dict[str, int] = {}
+    if product_ids:
+        try:
+            rev_r = (
+                client.table("product_reviews")
+                .select("product_id,rating")
+                .in_("product_id", product_ids)
+                .execute()
+            )
+            sums: dict[str, float] = {}
+            for rev in rev_r.data or []:
+                pid = str(rev.get("product_id"))
+                rating = rev.get("rating")
+                if pid and rating:
+                    sums[pid] = sums.get(pid, 0) + float(rating)
+                    review_counts[pid] = review_counts.get(pid, 0) + 1
+            for pid in product_ids:
+                if review_counts.get(pid, 0) > 0:
+                    avg_ratings[pid] = round(sums[pid] / review_counts[pid], 2)
         except Exception:
             pass
     for row in (r.data or []):
@@ -182,8 +206,9 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             imgs = [imgs] if imgs else []
         sid = str(row.get("shop_id", ""))
         s = shops_map.get(sid, {})
+        pid = str(row["id"])
         out.append({
-            "id": str(row["id"]),
+            "id": pid,
             "shop_id": sid,
             "title": row.get("title", ""),
             "price_ugx": float(row.get("price_ugx", 0)),
@@ -196,10 +221,15 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             "location_name": row.get("location_name"),
             "created_at": str(row["created_at"]) if row.get("created_at") else None,
             "view_count": int(row.get("view_count") or 0),
+            "is_negotiable": row.get("is_negotiable", True) is not False,
+            "average_rating": avg_ratings.get(pid, 0.0),
+            "review_count": review_counts.get(pid, 0),
             "shop_name": s.get("name"),
             "shop_slug": s.get("slug"),
             "owner_id": str(s.get("owner_id")) if s.get("owner_id") else None,
             "shop_whatsapp": s.get("whatsapp_number") or None,
+            "shop_is_active": bool(s.get("is_active")),
+            "shop_trust_badges": s.get("trust_badges") or [],
         })
     return out
 
@@ -471,6 +501,7 @@ def _row_to_product_response(row: dict) -> dict:
         "ai_seo_tags": row.get("ai_seo_tags"),
         "ai_generated_desc": row.get("ai_generated_desc", False),
         "is_published": row.get("is_published", True),
+        "is_negotiable": row.get("is_negotiable", True) if row.get("is_negotiable") is not False else False,
         "created_at": str(row["created_at"]) if row.get("created_at") else None,
         "like_count": 0,
         "view_count": int(row.get("view_count") or 0),

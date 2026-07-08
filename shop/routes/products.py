@@ -151,7 +151,7 @@ async def my_liked_products(
         admin.table("products")
         .select(
             "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
-            "status,listing_score,location_name,is_published,view_count,created_at"
+            "status,listing_score,location_name,is_published,is_negotiable,view_count,created_at"
         )
         .in_("id", page_ids)
         .execute()
@@ -164,12 +164,35 @@ async def my_liked_products(
         try:
             sr = (
                 admin.table("shops")
-                .select("id, name, slug, whatsapp_number, owner_id")
+                .select("id, name, slug, whatsapp_number, owner_id, is_active, trust_badges")
                 .in_("id", shop_ids)
                 .execute()
             )
             for s in sr.data or []:
                 shops_map[str(s["id"])] = s
+        except Exception:
+            pass
+
+    avg_ratings: dict[str, float] = {}
+    review_counts: dict[str, int] = {}
+    if page_ids:
+        try:
+            rev_r = (
+                admin.table("product_reviews")
+                .select("product_id,rating")
+                .in_("product_id", page_ids)
+                .execute()
+            )
+            sums: dict[str, float] = {}
+            for rev in rev_r.data or []:
+                pid = str(rev.get("product_id"))
+                rating = rev.get("rating")
+                if pid and rating:
+                    sums[pid] = sums.get(pid, 0) + float(rating)
+                    review_counts[pid] = review_counts.get(pid, 0) + 1
+            for pid in page_ids:
+                if review_counts.get(pid, 0) > 0:
+                    avg_ratings[pid] = round(sums[pid] / review_counts[pid], 2)
         except Exception:
             pass
 
@@ -183,9 +206,12 @@ async def my_liked_products(
             imgs = [s.strip() for s in imgs.split(",") if s.strip()]
         elif not isinstance(imgs, list):
             imgs = []
+        sid = str(row["shop_id"])
+        shop = shops_map.get(sid, {})
+        pid = str(row["id"])
         items.append({
-            "id": str(row["id"]),
-            "shop_id": str(row["shop_id"]),
+            "id": pid,
+            "shop_id": sid,
             "title": row.get("title", ""),
             "description": row.get("description"),
             "price_ugx": float(row.get("price_ugx", 0)),
@@ -198,12 +224,17 @@ async def my_liked_products(
             "listing_score": int(row.get("listing_score") or 0),
             "location_name": row.get("location_name"),
             "is_published": bool(row.get("is_published", True)),
+            "is_negotiable": row.get("is_negotiable", True) is not False,
             "view_count": int(row.get("view_count") or 0),
             "created_at": str(row["created_at"]) if row.get("created_at") else None,
-            "shop_name": shops_map.get(str(row["shop_id"]), {}).get("name"),
-            "shop_slug": shops_map.get(str(row["shop_id"]), {}).get("slug"),
-            "shop_whatsapp": shops_map.get(str(row["shop_id"]), {}).get("whatsapp_number") or None,
-            "owner_id": str(shops_map.get(str(row["shop_id"]), {}).get("owner_id")) if shops_map.get(str(row["shop_id"]), {}).get("owner_id") else None,
+            "average_rating": avg_ratings.get(pid, 0.0),
+            "review_count": review_counts.get(pid, 0),
+            "shop_name": shop.get("name"),
+            "shop_slug": shop.get("slug"),
+            "shop_whatsapp": shop.get("whatsapp_number") or None,
+            "owner_id": str(shop.get("owner_id")) if shop.get("owner_id") else None,
+            "shop_is_active": bool(shop.get("is_active")),
+            "shop_trust_badges": shop.get("trust_badges") or [],
         })
     return {"items": items, "total": total, "page": page, "limit": limit}
 

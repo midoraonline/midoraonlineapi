@@ -2,7 +2,7 @@ from typing import Any
 
 from postgrest.exceptions import APIError
 
-from core.categories import CANONICAL_CATEGORIES, seed_rows
+from core.categories import seed_rows
 
 
 def list_categories(client: Any) -> list[dict]:
@@ -10,7 +10,7 @@ def list_categories(client: Any) -> list[dict]:
     try:
         r = (
             client.table("categories")
-            .select("slug,label,sort_order")
+            .select("slug,label,sort_order,parent_slug")
             .order("sort_order")
             .execute()
         )
@@ -20,6 +20,7 @@ def list_categories(client: Any) -> list[dict]:
                     "slug": row["slug"],
                     "label": row["label"],
                     "sort_order": int(row.get("sort_order") or 0),
+                    "parent_slug": row.get("parent_slug"),
                 }
                 for row in r.data
             ]
@@ -30,7 +31,4 @@ def list_categories(client: Any) -> list[dict]:
 
 
 def fallback_categories() -> list[dict]:
-    return [
-        {"slug": c.slug, "label": c.label, "sort_order": c.sort_order}
-        for c in CANONICAL_CATEGORIES
-    ]
+    return seed_rows()

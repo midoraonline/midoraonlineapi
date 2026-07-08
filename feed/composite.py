@@ -175,6 +175,7 @@ def get_home_feed(
 
     # Batch-fetch product review averages (1 query instead of N)
     avg_ratings: dict[str, float] = {}
+    review_counts: dict[str, int] = {}
     if product_ids:
         try:
             rev_r = (
@@ -196,6 +197,7 @@ def get_home_feed(
                     avg_ratings[pid] = round(sums[pid] / counts[pid], 2)
                 else:
                     avg_ratings[pid] = 0.0
+                review_counts[pid] = counts.get(pid, 0)
         except Exception as exc:
             logger.warning("home feed batch rating fetch failed: %s", exc)
 
@@ -227,6 +229,8 @@ def get_home_feed(
                 "shop": shop,
                 "boosted": str(p.id) in boosted_ids,
                 "average_rating": avg_ratings.get(str(p.id), 0.0),
+                "review_count": review_counts.get(str(p.id), 0),
+                "is_negotiable": getattr(p, "is_negotiable", True) is not False,
             })
         return out
 
