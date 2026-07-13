@@ -1,13 +1,11 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException
 
-from auth import service as auth_service
-from auth.cookies import set_auth_cookies
 from core.authz import ensure_shop_owner
 from core.schemas import PaginationParams
 from db.supabase import get_supabase_client
-from tenants.schemas import ShopCreate, ShopListItem, ShopResponse, ShopUpdate
+from tenants.schemas import ShopResponse, ShopUpdate
 from tenants import service as tenants_service
 from core.security import get_current_user_id, get_optional_user_id
 
@@ -22,42 +20,6 @@ async def list_my_shops(
 ):
     result = tenants_service.list_my_shops(client, owner_id=user_id, page=params.page, limit=params.limit)
     return result
-
-
-@router.post("/", response_model=ShopResponse)
-async def create_shop(
-    body: ShopCreate,
-    client: Annotated[any, Depends(get_supabase_client)],
-    request: Request,
-    response: Response,
-    user_id: str = Depends(get_current_user_id),
-):
-    try:
-        shop = tenants_service.create_shop(client, user_id, body)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # The service auto-promotes a `customer` to `merchant`. When that happens
-    # we mint a fresh cookie pair so the JWT role claim matches the DB without
-    # forcing the user to log out and back in.
-    role_changed = bool(shop.pop("_role_changed", False))
-    new_role = str(shop.pop("_owner_role", "")) or None
-    if role_changed and new_role:
-        access, refresh = auth_service.create_access_and_refresh_tokens(
-            user_id,
-            new_role,
-            user_agent=request.headers.get("user-agent"),
-            ip=request.client.host if request.client else None,
-        )
-        set_auth_cookies(
-            response,
-            access_token=access,
-            refresh_token=refresh,
-            access_ttl_seconds=auth_service.access_ttl_seconds(),
-            refresh_ttl_seconds=auth_service.refresh_ttl_seconds(),
-        )
-
-    return shop
 
 
 @router.get("/{shop_id}", response_model=ShopResponse)
