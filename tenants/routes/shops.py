@@ -114,7 +114,7 @@ async def toggle_shop_availability(
     client: Annotated[any, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
-    """Toggle whether the shop shows as 'Available now'. Owner only."""
+    """Refresh shop available_now from the owner's online presence (not a manual toggle)."""
     try:
         ensure_shop_owner(client, shop_id, user_id)
     except LookupError:
@@ -122,14 +122,11 @@ async def toggle_shop_availability(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
-    current = client.table("shops").select("available_now").eq("id", shop_id).limit(1).execute()
-    if not current.data:
-        raise HTTPException(status_code=404, detail="Shop not found")
+    from db.supabase import get_supabase_admin
+    from marketplace.presence_service import sync_shop_availability_from_presence
 
-    new_val = not bool(current.data[0].get("available_now", False))
-    r = client.table("shops").update({"available_now": new_val}).eq("id", shop_id).execute()
-    if not r.data:
-        raise HTTPException(status_code=404, detail="Shop not found")
+    admin = get_supabase_admin()
+    sync_shop_availability_from_presence(admin, user_id)
 
     shop = tenants_service.get_shop(client, shop_id, viewer_id=user_id)
     if not shop:

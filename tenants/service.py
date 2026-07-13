@@ -242,8 +242,12 @@ def get_shop_by_slug(client: Any, slug: str, viewer_id: str | None = None) -> di
 
 
 def update_shop(client: Any, shop_id: str, data: ShopUpdate, viewer_id: str | None = None) -> dict | None:
-    """Update shop (partial). RLS: owner only."""
+    """Update shop (partial). RLS: owner only.
+
+    available_now is presence-derived and cannot be set via this endpoint.
+    """
     payload = data.model_dump(exclude_unset=True)
+    payload.pop("available_now", None)
     if "theme_config" in payload:
         payload["theme_config"] = _theme_config_for_db(data.theme_config)
     if not payload:

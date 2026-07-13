@@ -164,7 +164,7 @@ async def my_liked_products(
         try:
             sr = (
                 admin.table("shops")
-                .select("id, name, slug, whatsapp_number, owner_id, is_active, trust_badges")
+                .select("id, name, slug, whatsapp_number, owner_id, is_active, trust_badges, available_now")
                 .in_("id", shop_ids)
                 .execute()
             )
@@ -235,6 +235,7 @@ async def my_liked_products(
             "owner_id": str(shop.get("owner_id")) if shop.get("owner_id") else None,
             "shop_is_active": bool(shop.get("is_active")),
             "shop_trust_badges": shop.get("trust_badges") or [],
+            "shop_available_now": bool(shop.get("available_now", False)),
         })
     return {"items": items, "total": total, "page": page, "limit": limit}
 

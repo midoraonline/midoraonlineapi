@@ -172,7 +172,9 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
     shops_map: dict[str, dict] = {}
     if shop_ids:
         try:
-            sr = client.table("shops").select("id, name, slug, whatsapp_number, owner_id, is_active, trust_badges").in_("id", shop_ids).execute()
+            sr = client.table("shops").select(
+                "id, name, slug, whatsapp_number, owner_id, is_active, trust_badges, available_now"
+            ).in_("id", shop_ids).execute()
             for s in sr.data or []:
                 shops_map[str(s["id"])] = s
         except Exception:
@@ -230,6 +232,7 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             "shop_whatsapp": s.get("whatsapp_number") or None,
             "shop_is_active": bool(s.get("is_active")),
             "shop_trust_badges": s.get("trust_badges") or [],
+            "shop_available_now": bool(s.get("available_now", False)),
         })
     return out
 

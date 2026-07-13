@@ -261,7 +261,7 @@ def _attach_shops(client: Any, products: list[dict[str, Any]]) -> list[dict[str,
         try:
             resp = (
                 client.table("shops")
-                .select("id,name,slug,logo_url,is_active,category,trust_score,location")
+                .select("id,name,slug,logo_url,is_active,category,trust_score,location,available_now,whatsapp_number,trust_badges")
                 .in_("id", shop_ids)
                 .execute()
             )
@@ -277,6 +277,9 @@ def _attach_shops(client: Any, products: list[dict[str, Any]]) -> list[dict[str,
                     "category": shop.get("category"),
                     "trust_score": int(shop.get("trust_score") or 0),
                     "location": loc.get("display") if isinstance(loc, dict) else loc,
+                    "available_now": bool(shop.get("available_now", False)),
+                    "whatsapp_number": shop.get("whatsapp_number"),
+                    "trust_badges": shop.get("trust_badges") or [],
                 }
         except Exception as exc:
             logger.warning("search shop batch fetch failed: %s", exc)

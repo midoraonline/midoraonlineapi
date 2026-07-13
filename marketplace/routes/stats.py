@@ -12,6 +12,7 @@ from core.security import get_optional_user_id
 from db.supabase import get_supabase_admin
 from marketplace.presence_service import (
     clear_merchant_shops_if_idle,
+    clear_stale_shop_availability,
     record_presence,
     remove_presence,
 )
@@ -66,6 +67,7 @@ async def ping_presence(
         raise HTTPException(status_code=500, detail="Failed to record presence") from exc
 
     _cleanup_stale_presence(admin)
+    clear_stale_shop_availability(admin)
     return {"status": "ok"}
 
 
