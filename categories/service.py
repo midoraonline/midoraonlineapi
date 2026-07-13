@@ -5,8 +5,17 @@ from postgrest.exceptions import APIError
 from core.categories import seed_rows
 
 
+def _has_nested_categories(rows: list[dict]) -> bool:
+    return any(row.get("parent_slug") for row in rows)
+
+
 def list_categories(client: Any) -> list[dict]:
-    """Return seeded categories from DB when available, else in-code catalog."""
+    """Return categories with subcategories.
+
+    Prefer DB rows when they include nested categories. If the table only has
+    top-level parents (migration not applied / incomplete seed), fall back to
+    the in-code catalog so pickers and filters always get subcategories.
+    """
     try:
         r = (
             client.table("categories")
@@ -14,7 +23,7 @@ def list_categories(client: Any) -> list[dict]:
             .order("sort_order")
             .execute()
         )
-        if r.data:
+        if r.data and _has_nested_categories(r.data):
             return [
                 {
                     "slug": row["slug"],
