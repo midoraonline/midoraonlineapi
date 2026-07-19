@@ -51,3 +51,7 @@ class ProfileResponse(BaseModel):
     avatar_url: str | None
     phone_number: str | None
     user_role: str
+    # Short-lived JWT for Supabase Realtime subscriptions. Signed with the
+    # app JWT secret and carries `role: "authenticated"` so Supabase RLS
+    # runs as the current user (see `create_supabase_realtime_jwt`).
+    supabase_realtime_token: str | None = None

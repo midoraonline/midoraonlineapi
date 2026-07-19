@@ -1,26 +1,46 @@
+"""Application lifespan.
+
+Kept intentionally minimal for serverless (Vercel) deployments where the
+lifespan runs on *every* cold start. Anything expensive here directly hurts
+cold-start p95.
+
+The mail queue worker (`start_worker`) launches an asyncio background task
+that survives only while a container is warm. On Vercel it will not reliably
+drain the queue — `enqueue_mail()` still writes to Postgres, but you must
+add a Supabase cron job (or Vercel Cron) that hits a drain endpoint to
+process pending mail rows in production. For local `uvicorn --reload` and
+non-serverless deployments the worker still runs and drains normally.
+"""
+from __future__ import annotations
+
 import logging
+import os
 from contextlib import asynccontextmanager
-from fastapi_cache import FastAPICache
-from fastapi_cache.backends.inmemory import InMemoryBackend
 
 from mail.queue import start_worker, stop_worker
 
 logger = logging.getLogger(__name__)
 
+
+def _is_serverless() -> bool:
+    # Vercel sets these at runtime. Guard with either.
+    return bool(os.getenv("VERCEL") or os.getenv("VERCEL_ENV"))
+
+
 @asynccontextmanager
 async def lifespan(app):
-    # Startup: init caches, start workers, expire stale boosts
-    FastAPICache.init(InMemoryBackend(), prefix="fastapi-cache")
-    start_worker()
-
-    try:
-        from ranking.boost_service import expire_stale_boosts
-        expired = expire_stale_boosts()
-        if expired:
-            logger.info("Expired %d stale boost(s) on startup", expired)
-    except Exception as exc:
-        logger.warning("Failed to expire stale boosts on startup: %s", exc)
+    started = False
+    if not _is_serverless():
+        start_worker()
+        started = True
+    else:
+        logger.info(
+            "Serverless environment detected — skipping in-process mail worker. "
+            "Drain `mail_queue` via a cron job instead."
+        )
 
     yield
-    # Shutdown: cleanup
-    await stop_worker()
+
+    if started:
+        await stop_worker()
+

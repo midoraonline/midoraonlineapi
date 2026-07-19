@@ -135,6 +135,36 @@ def _build_access_claims(user_id: str, role: str) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Supabase Realtime JWT
+# ---------------------------------------------------------------------------
+#
+# Supabase Realtime authorises subscribers via a standard Supabase JWT.
+# The project's `SUPABASE_JWT_SECRET` (Supabase Studio → Project Settings →
+# API keys) must be set to `APP_JWT_SECRET` so Supabase trusts tokens signed
+# by this service. The `role: "authenticated"` claim tells Supabase to run
+# RLS as the `authenticated` role with `auth.uid()` = `sub`.
+#
+# We issue this token separately (never for auth flows) so the FastAPI
+# session role (customer/merchant/admin) is preserved on the app JWT.
+# Callers should refresh it on the same cadence as the app access token
+# (default: every 60 minutes).
+
+SUPABASE_REALTIME_TTL_SECONDS = 60 * 60
+
+
+def create_supabase_realtime_jwt(user_id: str) -> str:
+    """Mint a Supabase-compatible JWT for use with `supabase.realtime.setAuth()`."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": user_id,
+        "role": "authenticated",
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(seconds=SUPABASE_REALTIME_TTL_SECONDS)).timestamp()),
+    }
+    return _encode_jwt(payload)
+
+
 def _build_refresh_claims(user_id: str, role: str, jti: str) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     return {

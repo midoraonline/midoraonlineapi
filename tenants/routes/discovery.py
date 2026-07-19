@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from supabase import Client
 
 from core.security import get_optional_user_id
 from db.supabase import get_supabase_client
@@ -12,7 +13,7 @@ router = APIRouter()
 @router.get("/by-slug/{slug}")
 async def get_shop_by_slug(
     slug: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     viewer_id: str | None = Depends(get_optional_user_id),
 ):
     shop = tenants_service.get_shop_by_slug(client, slug, viewer_id=viewer_id)

@@ -1,0 +1,65 @@
+<mjml>
+  <mj-head>
+    <mj-title>Update on your shop verification</mj-title>
+    <mj-preview>We've reviewed $shop_name — some updates are needed.</mj-preview>
+    <mj-attributes>
+      <mj-all font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" />
+      <mj-text font-size="15px" line-height="1.6" color="#1f2937" />
+      <mj-section padding="0" />
+    </mj-attributes>
+    <mj-style inline="inline">
+      .muted { color: #64748b; font-size: 13px; line-height: 1.55; }
+      .badge-amber {
+        display: inline-block;
+        padding: 4px 12px;
+        background: #fffbeb;
+        color: #b45309;
+        border: 1px solid #fde68a;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .notes-card {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 14px 16px;
+        color: #334155;
+        font-size: 14px;
+      }
+    </mj-style>
+  </mj-head>
+  <mj-body background-color="#f6f7f9">
+    <mj-section padding="24px 20px 8px 20px">
+      <mj-column>
+        <mj-image src="cid:midora_logo" alt="Midora" width="130px" align="center" padding="0" />
+      </mj-column>
+    </mj-section>
+
+    <mj-section background-color="#ffffff" border-radius="18px" padding="32px 36px">
+      <mj-column>
+        <mj-text>
+          <span class="badge-amber">Action needed</span>
+        </mj-text>
+        <mj-text font-size="22px" font-weight="700" color="#0f172a" padding="12px 0 4px 0">
+          Verification update
+        </mj-text>
+        <mj-text padding-bottom="16px">
+          We've reviewed <strong>$shop_name</strong> and unfortunately could not verify it at this time.
+        </mj-text>
+        <mj-text padding-bottom="16px">
+          You can update your details and re-submit for verification from your merchant dashboard.
+        </mj-text>
+        $notes_block
+      </mj-column>
+    </mj-section>
+
+    <mj-section padding="20px">
+      <mj-column>
+        <mj-text align="center" css-class="muted">
+          Need help? Just reply to this email — a real person on our team will respond.
+        </mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

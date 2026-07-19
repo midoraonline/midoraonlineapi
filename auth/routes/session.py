@@ -50,6 +50,7 @@ async def refresh(
 @router.get("/me", response_model=ProfileResponse)
 async def me(user_id: str = Depends(get_current_user_id)):
     from auth.providers.emailpassword import get_profile
+    from auth.service import create_supabase_realtime_jwt
 
     profile = get_profile(user_id)
     if not profile:
@@ -62,6 +63,7 @@ async def me(user_id: str = Depends(get_current_user_id)):
         avatar_url=profile.get("avatar_url"),
         phone_number=profile.get("phone_number"),
         user_role=profile.get("user_role", "customer"),
+        supabase_realtime_token=create_supabase_realtime_jwt(user_id),
     )
 
 

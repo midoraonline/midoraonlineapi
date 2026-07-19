@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from supabase import Client
 
 from core.authz import ensure_shop_owner
 from core.schemas import PaginationParams
@@ -15,7 +16,7 @@ router = APIRouter()
 @router.post("/", response_model=OrderResponse)
 async def create_order(
   body: OrderCreate,
-  client: Annotated[any, Depends(get_supabase_client)],
+  client: Annotated[Client, Depends(get_supabase_client)],
   user_id: str = Depends(get_current_user_id),
 ):
     try:
@@ -26,7 +27,7 @@ async def create_order(
 
 @router.get("/")
 async def list_orders(
-  client: Annotated[any, Depends(get_supabase_client)],
+  client: Annotated[Client, Depends(get_supabase_client)],
   params: Annotated[PaginationParams, Depends()],
   user_id: str = Depends(get_current_user_id),
 ):
@@ -38,7 +39,7 @@ async def list_orders(
 async def update_order(
   order_id: str,
   body: OrderUpdate,
-  client: Annotated[any, Depends(get_supabase_client)],
+  client: Annotated[Client, Depends(get_supabase_client)],
   user_id: str = Depends(get_current_user_id),
 ):
     existing = client.table("orders").select("shop_id").eq("id", order_id).limit(1).execute()

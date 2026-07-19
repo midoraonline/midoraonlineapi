@@ -1,4 +1,6 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
+import logging
+
+from fastapi import APIRouter, HTTPException, Request, Response
 
 from auth.cookies import set_auth_cookies
 from auth.providers.emailpassword import sign_up
@@ -7,13 +9,13 @@ from auth.service import access_ttl_seconds, refresh_ttl_seconds
 from core.config import get_settings
 from mail.send import send_verification_email
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 @router.post("/register", response_model=TokenResponse)
 async def register(
     body: RegisterRequest,
-    background_tasks: BackgroundTasks,
     request: Request,
     response: Response,
 ):
@@ -34,7 +36,15 @@ async def register(
     verification_link = (
         f"{base_url}/api/v1/auth/verify-email?token={result['verification_token']}"
     )
-    background_tasks.add_task(send_verification_email, body.email, verification_link)
+
+    # Send inline (best-effort). On serverless (Vercel) BackgroundTasks that
+    # run after the response can be killed mid-execution, causing silently
+    # dropped verification emails. Sending inline is a few hundred ms more
+    # for the caller but guarantees delivery is attempted.
+    try:
+        await send_verification_email(body.email, verification_link)
+    except Exception as exc:
+        logger.warning("send_verification_email failed for %s: %s", body.email, exc)
 
     set_auth_cookies(
         response,

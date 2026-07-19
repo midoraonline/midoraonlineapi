@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from supabase import Client
 
 from auth import service as auth_service
 from auth.cookies import set_auth_cookies
@@ -17,7 +18,7 @@ router = APIRouter(prefix="/shops", tags=["shops"])
 @router.get("", include_in_schema=True)
 @router.get("/", include_in_schema=False)
 async def list_shops(
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     params: Annotated[PaginationParams, Depends()],
     search: str | None = None,
     shop_type: str | None = None,
@@ -32,7 +33,7 @@ async def list_shops(
 @router.post("/", response_model=ShopResponse, include_in_schema=False)
 async def create_shop(
     body: ShopCreate,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     request: Request,
     response: Response,
     user_id: str = Depends(get_current_user_id),

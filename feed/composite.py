@@ -41,12 +41,16 @@ def get_home_feed(
     limit: int = MAX_CARDS,
     page: int = 1,
     user_id: str | None = None,
+    exclude_ids: list[str] | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Return all 4 home-page feeds in one call with shop + boost data embedded.
 
     Pass `user_id` for personalised per-user feed scoring.
     `limit` controls the main algorithm feed size; sub-feeds are fixed.
     `page` controls which page of the full product pool is scored.
+    `exclude_ids` hides listings the client has already rendered this
+    session; `session_id` enables fatigue suppression for anonymous viewers.
     """
     from feed.service import get_algorithm_feed, get_latest_feed
     from db.supabase import get_supabase_client
@@ -58,11 +62,22 @@ def get_home_feed(
     pool_size = limit * page + 24  # fetch extra for the algorithm pool
     pool_size = min(pool_size, MAX_CARDS * 3)
 
-    algorithm_raw = get_algorithm_feed(client, user_id=user_id, page=1, limit=pool_size)
+    algorithm_raw = get_algorithm_feed(
+        client,
+        user_id=user_id,
+        page=1,
+        limit=pool_size,
+        exclude_ids=exclude_ids,
+        session_id=session_id,
+    )
     fresh_raw = get_latest_feed(client, limit=12)
 
     # Paginate the scored pool for the main algorithm feed
     algorithm_paged = algorithm_raw[offset:offset + limit] if offset < len(algorithm_raw) else []
+
+    # Client-tracked exclusion set — applied to sub-feeds too, so the sidebar
+    # sections don't repeat items the user has already scrolled past.
+    exclude_set = set(exclude_ids or [])
 
     # Independent sub-feeds — sorted by their own metrics, not just algorithm top-N
     _SUB_FEED_LIMIT = 8
@@ -76,10 +91,14 @@ def get_home_feed(
             .eq("status", "active")
             .order("view_count", desc=True)
             .order("created_at", desc=True)
-            .limit(_SUB_FEED_LIMIT)
+            .limit(_SUB_FEED_LIMIT * 3)
             .execute()
         )
-        trending_raw = [ProductResponse(**item) for item in (trending_r.data or [])]
+        trending_raw = [
+            ProductResponse(**item)
+            for item in (trending_r.data or [])
+            if str(item.get("id")) not in exclude_set
+        ][:_SUB_FEED_LIMIT]
     except Exception as exc:
         logger.warning("Trending feed query failed: %s", exc)
         trending_raw = algorithm_raw[:_SUB_FEED_LIMIT]
@@ -94,10 +113,14 @@ def get_home_feed(
             .eq("status", "active")
             .order("listing_score", desc=True)
             .order("created_at", desc=True)
-            .limit(_SUB_FEED_LIMIT)
+            .limit(_SUB_FEED_LIMIT * 3)
             .execute()
         )
-        premium_raw = [ProductResponse(**item) for item in (premium_r.data or [])]
+        premium_raw = [
+            ProductResponse(**item)
+            for item in (premium_r.data or [])
+            if str(item.get("id")) not in exclude_set
+        ][:_SUB_FEED_LIMIT]
     except Exception as exc:
         logger.warning("Premium feed query failed: %s", exc)
         premium_raw = algorithm_raw[:_SUB_FEED_LIMIT]

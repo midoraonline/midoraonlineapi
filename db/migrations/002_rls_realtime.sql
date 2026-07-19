@@ -3,16 +3,15 @@
 --
 -- Row Level Security + Realtime publication for public-facing reads.
 --
--- Context: Midora runs a custom (non-Supabase) JWT auth system, so
--- `auth.uid()` is NOT available to our users. Instead we rely on:
---   * The API (using the service role key, which BYPASSES RLS) for writes and
---     any data access that needs ownership / admin checks.
---   * The ANON key in the browser for Supabase Realtime subscriptions on
---     public-readable rows only.
+-- Context: Midora runs a custom JWT auth system (see `auth/service.py`).
+-- Supabase Realtime authorises subscribers by checking a JWT signed with the
+-- Supabase project JWT secret. For per-user access (chat, notifications) we
+-- mint a Supabase-compatible token via `create_supabase_realtime_jwt` — see
+-- migration `024_realtime_chat_rls.sql`. For anonymous / public data we grant
+-- SELECT to the `anon` role and rely on `USING` clauses to hide private rows.
 --
--- Because RLS is enabled on every relevant table, the anon key has NO access
--- by default. These policies explicitly grant `SELECT` on the subset of rows
--- that are safe to expose to the public.
+-- The API (using the service role key) BYPASSES RLS entirely for writes and
+-- privileged reads; RLS below only governs what Realtime subscribers see.
 --
 -- Idempotent: safe to run repeatedly.
 -- =============================================================================

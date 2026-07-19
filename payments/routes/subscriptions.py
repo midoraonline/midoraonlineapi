@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
+from supabase import Client
 
 from db.supabase import get_supabase_client
 from core.security import get_current_user_id
@@ -25,7 +26,7 @@ async def create_subscription(
 
 @router.get("/subscriptions")
 async def list_subscriptions(
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
     return payments_service.list_subscriptions_for_user(client)

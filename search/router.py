@@ -2,6 +2,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
+from supabase import Client
 
 from core.schemas import PaginationParams
 from core.security import get_current_user_id, get_optional_user_id
@@ -17,7 +18,7 @@ class SearchLogBody(BaseModel):
 
 @router.get("/products")
 async def search_products(
-    client: Annotated[Any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     params: Annotated[PaginationParams, Depends()],
     q: str = Query(..., min_length=2, max_length=200, description="Search query"),
     category: str | None = Query(None, description="Optional category filter"),
@@ -43,7 +44,7 @@ async def search_products(
 
 @router.get("/trending")
 async def trending_searches(
-    client: Annotated[Any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     limit: int = Query(10, ge=1, le=50),
     days: int = Query(30, ge=1, le=90, description="Look-back window in days"),
 ) -> dict[str, Any]:
@@ -54,7 +55,7 @@ async def trending_searches(
 
 @router.get("/recent")
 async def recent_searches(
-    client: Annotated[Any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
     limit: int = Query(10, ge=1, le=30),
 ) -> dict[str, Any]:
@@ -66,7 +67,7 @@ async def recent_searches(
 @router.post("/log")
 async def log_search_query(
     body: SearchLogBody,
-    client: Annotated[Any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ) -> dict[str, str]:
     """Manually log a search query (e.g. from autocomplete selection)."""

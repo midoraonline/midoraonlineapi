@@ -38,7 +38,8 @@ def get_access_token(
     return bearer or cookie_token
 
 
-def _decode_auth_token(token: str) -> TokenPayload:
+def decode_auth_token(token: str) -> TokenPayload:
+    """Decode and validate an app JWT. Raises 401 on any signature error."""
     settings = get_settings()
     try:
         payload = jwt.decode(
@@ -52,6 +53,10 @@ def _decode_auth_token(token: str) -> TokenPayload:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token",
         )
+
+
+# Backwards-compat alias for existing internal callers.
+_decode_auth_token = decode_auth_token
 
 
 def get_current_user_id(

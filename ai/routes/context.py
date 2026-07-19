@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from supabase import Client
 
 from core.authz import ensure_shop_owner
 from db.supabase import get_supabase_client
@@ -12,7 +13,7 @@ router = APIRouter()
 @router.get("/{shop_id}/ai-context")
 async def list_ai_context(
     shop_id: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
     try:
@@ -29,7 +30,7 @@ async def list_ai_context(
 async def create_ai_context(
     shop_id: str,
     body: dict,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
     try:

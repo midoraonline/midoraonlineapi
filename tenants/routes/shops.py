@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from supabase import Client
 
 from core.authz import ensure_shop_owner
 from core.schemas import PaginationParams
@@ -14,7 +15,7 @@ router = APIRouter()
 
 @router.get("/me")
 async def list_my_shops(
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     params: Annotated[PaginationParams, Depends()],
     user_id: str = Depends(get_current_user_id),
 ):
@@ -25,7 +26,7 @@ async def list_my_shops(
 @router.get("/{shop_id}", response_model=ShopResponse)
 async def get_shop(
     shop_id: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     viewer_id: str | None = Depends(get_optional_user_id),
 ):
     shop = tenants_service.get_shop(client, shop_id, viewer_id=viewer_id)
@@ -38,7 +39,7 @@ async def get_shop(
 async def update_shop(
     shop_id: str,
     body: ShopUpdate,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
     try:
@@ -57,7 +58,7 @@ async def update_shop(
 @router.post("/{shop_id}/logo/generate")
 async def generate_shop_logo(
     shop_id: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
     """Generate simple logo via Nano Banana for shop without logo. Merchant only."""
@@ -73,7 +74,7 @@ async def generate_shop_logo(
 @router.post("/{shop_id}/toggle-availability", response_model=ShopResponse)
 async def toggle_shop_availability(
     shop_id: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
     """Refresh shop available_now from the owner's online presence (not a manual toggle)."""

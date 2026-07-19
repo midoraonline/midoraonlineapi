@@ -1,0 +1,68 @@
+<mjml>
+  <mj-head>
+    <mj-title>New product pending review</mj-title>
+    <mj-preview>$product_title in $shop_name is waiting for moderation.</mj-preview>
+    <mj-attributes>
+      <mj-all font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" />
+      <mj-text font-size="15px" line-height="1.6" color="#1f2937" />
+      <mj-button background-color="#0f172a" color="#ffffff" font-weight="600" border-radius="10px" padding="12px 22px" />
+      <mj-section padding="0" />
+    </mj-attributes>
+    <mj-style inline="inline">
+      .muted { color: #64748b; font-size: 13px; line-height: 1.55; }
+      .meta-table td { padding: 6px 0; vertical-align: top; }
+      .meta-key { color: #64748b; font-size: 13px; width: 110px; }
+      .meta-val { color: #0f172a; font-weight: 600; font-size: 14px; }
+    </mj-style>
+  </mj-head>
+  <mj-body background-color="#f6f7f9">
+    <mj-section padding="24px 20px 8px 20px">
+      <mj-column>
+        <mj-image src="cid:midora_logo" alt="Midora" width="130px" align="center" padding="0" />
+      </mj-column>
+    </mj-section>
+
+    <mj-section background-color="#ffffff" border-radius="18px" padding="32px 36px">
+      <mj-column>
+        <mj-text font-size="20px" font-weight="700" color="#0f172a" padding-bottom="8px">
+          New product pending review
+        </mj-text>
+        <mj-text padding-bottom="16px">
+          A new product has just been submitted in <strong>$shop_name</strong> and is waiting for moderation.
+        </mj-text>
+
+        <mj-table css-class="meta-table">
+          <tr>
+            <td class="meta-key">Title</td>
+            <td class="meta-val">$product_title</td>
+          </tr>
+          <tr>
+            <td class="meta-key">Price</td>
+            <td class="meta-val">UGX $price_ugx_formatted</td>
+          </tr>
+          <tr>
+            <td class="meta-key">Category</td>
+            <td class="meta-val">$category</td>
+          </tr>
+          <tr>
+            <td class="meta-key">Shop</td>
+            <td class="meta-val">$shop_name</td>
+          </tr>
+        </mj-table>
+
+        <mj-spacer height="20px" />
+        <mj-button href="$admin_listings_url" align="left">
+          Review in admin panel
+        </mj-button>
+      </mj-column>
+    </mj-section>
+
+    <mj-section padding="20px">
+      <mj-column>
+        <mj-text align="center" css-class="muted">
+          Automated notification from the Midora moderation queue.
+        </mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

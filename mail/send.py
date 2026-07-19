@@ -111,19 +111,10 @@ async def _enqueue(to: str, subject: str, body_html: str) -> None:
     await enqueue_mail(to=to, subject=subject, body_html=body_html)
 
 async def send_verification_email(to: str, verification_link: str) -> None:
-    body = _html_shell(
-        "Verify your email",
-        f"""
-        <p>Thanks for joining Midora. Please confirm your email address to activate your account.</p>
-        <p style=\"margin:24px 0;\">
-          <a href=\"{verification_link}\" style=\"display:inline-block;padding:12px 20px;background:#0f172a;color:#ffffff;text-decoration:none;border-radius:10px;font-weight:600;\">Verify email</a>
-        </p>
-        <p style=\"color:#64748b;font-size:13px;\">If the button doesn't work, paste this link into your browser:<br/>
-          <span style=\"word-break:break-all;color:#334155;\">{verification_link}</span>
-        </p>
-        """,
-    )
-    await _enqueue(to=to, subject="Verify your Midora email", body_html=body)
+    from mail.templates import render_verify_email
+
+    subject, body = render_verify_email(verification_link=verification_link)
+    await _enqueue(to=to, subject=subject, body_html=body)
 
 
 # ---------------------------------------------------------------------------
@@ -135,37 +126,12 @@ async def send_shop_verification_decision_email(
     to: str, shop_name: str, decision: str, notes: str | None = None
 ) -> None:
     """Notify a merchant that their shop verification was approved or rejected."""
-    notes_html = (
-        f"<div style=\"margin-top:20px;padding:14px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;color:#334155;\"><strong>Notes from our team:</strong><br/>{notes}</div>"
-        if notes
-        else ""
+    from mail.templates import render_shop_verification_decision
+
+    subject, body = render_shop_verification_decision(
+        shop_name=shop_name, decision=decision, notes=notes,
     )
-
-    if decision == "verified":
-        subject = f"'{shop_name}' is live on Midora"
-        inner = f"""
-          <p>Great news — <strong>{shop_name}</strong> has been verified and is now visible to customers on Midora.</p>
-          <p style=\"margin:20px 0;\">You can start adding products, configuring your storefront, and sharing your shop link.</p>
-          {notes_html}
-        """
-        title = "Your shop is verified"
-    elif decision == "rejected":
-        subject = f"Update on your shop '{shop_name}'"
-        inner = f"""
-          <p>We've reviewed <strong>{shop_name}</strong> and unfortunately could not verify it at this time.</p>
-          <p>You can update your details and re-submit for verification from your merchant dashboard.</p>
-          {notes_html}
-        """
-        title = "Verification update"
-    else:
-        subject = f"Update on your shop '{shop_name}'"
-        inner = f"""
-          <p>The verification status of <strong>{shop_name}</strong> is now: <code>{decision}</code>.</p>
-          {notes_html}
-        """
-        title = "Verification update"
-
-    await _enqueue(to, subject, _html_shell(title, inner))
+    await _enqueue(to, subject, body)
 
 
 async def send_shop_submission_received_email(

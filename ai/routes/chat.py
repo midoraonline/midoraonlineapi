@@ -3,6 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
+from supabase import Client
 
 from db.supabase import get_supabase_client
 from core.security import get_optional_user_id
@@ -43,7 +44,7 @@ async def midora_info_chat(body: MidoraChatRequest) -> MidoraChatResponse:
 @router.post("/sessions")
 async def create_chat_session(
     body: ChatSessionCreate,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str | None = Depends(get_optional_user_id),
 ):
     intent = body.intent
@@ -65,7 +66,7 @@ async def create_chat_session(
 
 @router.get("/sessions")
 async def list_chat_sessions(
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     shop_id: str | None = None,
     user_id: str | None = Depends(get_optional_user_id),
 ):
@@ -85,7 +86,7 @@ async def list_chat_sessions(
 async def send_message(
     session_id: str,
     body: dict,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
 ):
     message = body.get("message", "")
     if not message:
@@ -155,7 +156,7 @@ async def send_message(
 @router.get("/sessions/{session_id}/messages")
 async def get_messages(
     session_id: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
 ):
     r = await asyncio.to_thread(
         lambda: client.table("chat_messages")

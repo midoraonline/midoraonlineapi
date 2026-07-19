@@ -218,3 +218,50 @@ class ProductDetailResponse(BaseModel):
 class DiscountSet(BaseModel):
     discount_price: float | None = None
     discount_expires_at: str | None = None
+
+
+class ProductCard(BaseModel):
+    """Denormalised product card for carousels and grid lists.
+
+    Superset schema so a single serializer can back liked-products, trending,
+    premium, and any future card feed without divergent shapes on the client.
+    Every consumer-specific field is optional so tighter mappers can omit them.
+    """
+
+    id: str
+    shop_id: str
+    title: str
+    description: str | None = None
+    price_ugx: float
+    discount_price: float | None = None
+    discount_expires_at: str | None = None
+    image_urls: list[str] | None = None
+    category: str | None = None
+    item_type: str = "product"
+    status: str = "active"
+    listing_score: int = 0
+    location_name: str | None = None
+    is_published: bool = True
+    is_negotiable: bool = True
+    view_count: int = 0
+    created_at: str | None = None
+
+    # Reviews (optional — omitted by carousels)
+    average_rating: float = 0.0
+    review_count: int = 0
+
+    # Embedded shop snapshot
+    shop_name: str | None = None
+    shop_slug: str | None = None
+    shop_whatsapp: str | None = None
+    owner_id: str | None = None
+    shop_is_active: bool = True
+    shop_trust_badges: list[str] = []
+    shop_available_now: bool = False
+
+
+class PaginatedProductCards(BaseModel):
+    items: list[ProductCard]
+    total: int
+    page: int
+    limit: int

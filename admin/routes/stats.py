@@ -370,7 +370,98 @@ def admin_stats_overview() -> dict[str, Any]:
     total_conversations = _count("conversations")
     total_messages = _count("messages")
 
+    # ── Impressions (30-day window) ─────────────────────────────────────
+    impressions_cutoff = (now - timedelta(days=window_days)).isoformat()
+    impressions_series_map: dict[str, int] = defaultdict(int)
+    pool_counts: Counter = Counter()
+    impressions_by_listing: dict[str, int] = defaultdict(int)
+    impressions_last_24h = 0
+    total_impressions_window = 0
+    cutoff_24h = (now - timedelta(hours=24)).isoformat()
+    try:
+        imp_rows = (
+            admin.table("listing_impressions")
+            .select("listing_id, pool, created_at")
+            .gte("created_at", impressions_cutoff)
+            .limit(100000)
+            .execute()
+        ).data or []
+        total_impressions_window = len(imp_rows)
+        for row in imp_rows:
+            day = str(row.get("created_at") or "")[:10]
+            if day:
+                impressions_series_map[day] += 1
+            pool_counts[str(row.get("pool") or "organic")] += 1
+            impressions_by_listing[str(row.get("listing_id") or "")] += 1
+            if str(row.get("created_at") or "") >= cutoff_24h:
+                impressions_last_24h += 1
+    except Exception as exc:
+        logger.warning("admin stats impressions failed: %s", exc)
+
+    impressions_series = []
+    for i in range(window_days):
+        d = (window_start + timedelta(days=i)).isoformat()
+        impressions_series.append({"day": d, "count": impressions_series_map.get(d, 0)})
+
+    # ── Engagement events (whatsapp/messages daily) ─────────────────────
+    wa_series_map: dict[str, int] = defaultdict(int)
+    msg_series_map: dict[str, int] = defaultdict(int)
+    total_wa_window = 0
+    total_msg_window = 0
+    try:
+        ev_rows = (
+            admin.table("listing_events")
+            .select("event_type, created_at")
+            .gte("created_at", impressions_cutoff)
+            .in_("event_type", ["whatsapp_clicked", "messaged"])
+            .limit(100000)
+            .execute()
+        ).data or []
+        for row in ev_rows:
+            day = str(row.get("created_at") or "")[:10]
+            et = row.get("event_type")
+            if not day:
+                continue
+            if et == "whatsapp_clicked":
+                wa_series_map[day] += 1
+                total_wa_window += 1
+            elif et == "messaged":
+                msg_series_map[day] += 1
+                total_msg_window += 1
+    except Exception as exc:
+        logger.warning("admin stats engagement series failed: %s", exc)
+
+    def _fill(bucket: dict[str, int]) -> list[dict[str, Any]]:
+        out = []
+        for i in range(window_days):
+            d = (window_start + timedelta(days=i)).isoformat()
+            out.append({"day": d, "count": bucket.get(d, 0)})
+        return out
+    whatsapp_series = _fill(wa_series_map)
+    messages_series = _fill(msg_series_map)
+
     # ── Build enriched top shops ─────────────────────────────────────────
+    # Map product -> shop so we can rollup impressions per shop
+    prod_shop_map: dict[str, str] = {}
+    try:
+        top_shop_ids_set = {s["id"] for s in top_shops_raw}
+        prods_rows = (
+            admin.table("products")
+            .select("id, shop_id")
+            .in_("shop_id", list(top_shop_ids_set))
+            .execute()
+        ).data or [] if top_shop_ids_set else []
+        for p in prods_rows:
+            prod_shop_map[str(p.get("id"))] = str(p.get("shop_id") or "")
+    except Exception:
+        pass
+
+    shop_impressions: dict[str, int] = defaultdict(int)
+    for pid, n in impressions_by_listing.items():
+        sid = prod_shop_map.get(pid)
+        if sid:
+            shop_impressions[sid] += n
+
     enriched_top_shops = []
     for s in top_shops_raw:
         sid = str(s["id"])
@@ -382,6 +473,7 @@ def admin_stats_overview() -> dict[str, Any]:
             "is_active": s.get("is_active"),
             "created_at": s.get("created_at"),
             "view_count": _safe_int(s.get("view_count")),
+            "impressions": shop_impressions.get(sid, 0),
             "product_count": 0,
             "published_product_count": 0,
             "like_count": 0,
@@ -431,6 +523,10 @@ def admin_stats_overview() -> dict[str, Any]:
             "total_flagged_comments": total_flagged_comments,
             "total_conversations": total_conversations,
             "total_messages": total_messages,
+            "total_impressions": total_impressions_window,
+            "impressions_last_24h": impressions_last_24h,
+            "whatsapp_clicks_window": total_wa_window,
+            "messages_window": total_msg_window,
         },
         "role_breakdown": [
             {"role": role, "count": n} for role, n in role_counts.most_common()
@@ -440,6 +536,9 @@ def admin_stats_overview() -> dict[str, Any]:
             "products": products_series,
             "users": users_series,
             "orders": orders_series,
+            "impressions": impressions_series,
+            "whatsapp": whatsapp_series,
+            "messages": messages_series,
         },
         "top_shops": enriched_top_shops,
         "top_products": enriched_top_products,
@@ -461,6 +560,9 @@ def admin_stats_overview() -> dict[str, Any]:
             ],
             "order_status": [
                 {"label": k, "value": v} for k, v in order_status_counts.most_common()
+            ],
+            "impression_pools": [
+                {"label": k, "value": v} for k, v in pool_counts.most_common()
             ],
         },
     }

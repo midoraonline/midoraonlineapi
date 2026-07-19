@@ -4,7 +4,7 @@ import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi_cache.decorator import cache
+from supabase import Client
 
 from db.supabase import get_supabase_admin, get_supabase_client
 from core.security import get_current_user_id, get_optional_user_id
@@ -19,7 +19,7 @@ router = APIRouter()
 @router.get("/{shop_id}/engagement", response_model=ShopEngagementState)
 async def get_shop_engagement(
     shop_id: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     viewer_id: str | None = Depends(get_optional_user_id),
 ):
     if not engagement_service.shop_exists(client, shop_id):
@@ -30,7 +30,7 @@ async def get_shop_engagement(
 @router.post("/{shop_id}/follow", response_model=ShopEngagementState)
 async def follow_shop(
     shop_id: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
     try:
@@ -42,7 +42,7 @@ async def follow_shop(
 @router.delete("/{shop_id}/follow", response_model=ShopEngagementState)
 async def unfollow_shop(
     shop_id: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
     return engagement_service.unfollow_shop(client, user_id, shop_id)
@@ -51,7 +51,7 @@ async def unfollow_shop(
 @router.post("/{shop_id}/like", response_model=ShopEngagementState)
 async def like_shop(
     shop_id: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
     try:
@@ -63,7 +63,7 @@ async def like_shop(
 @router.post("/{shop_id}/views", response_model=ViewCountResponse)
 async def record_shop_view(
     shop_id: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
 ):
     """Increment shop page view (click) count. Call once when a customer opens the storefront."""
     try:
@@ -82,13 +82,16 @@ async def record_shop_event(
     """Record a shop-level event (whatsapp click, message, etc.)."""
     valid_types = {"whatsapp_clicked", "messaged"}
     if event_type not in valid_types:
-        return {"error": f"Invalid event_type. Must be one of: {', '.join(sorted(valid_types))}"}
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid event_type. Must be one of: {', '.join(sorted(valid_types))}",
+        )
 
     admin = get_supabase_admin()
 
     shop_r = admin.table("shops").select("id,owner_id").eq("id", shop_id).limit(1).execute()
     if not shop_r.data:
-        return {"error": "Shop not found"}
+        raise HTTPException(status_code=404, detail="Shop not found")
     seller_id = str(shop_r.data[0].get("owner_id", ""))
 
     try:
@@ -102,7 +105,7 @@ async def record_shop_event(
         admin.table("listing_events").insert(payload).execute()
     except Exception as exc:
         logger.warning("record_shop_event(%s, %s) failed: %s", shop_id, event_type, exc)
-        return {"error": "Failed to record event"}
+        raise HTTPException(status_code=502, detail="Failed to record event")
 
     return {"status": "recorded"}
 
@@ -110,7 +113,7 @@ async def record_shop_event(
 @router.delete("/{shop_id}/like", response_model=ShopEngagementState)
 async def unlike_shop(
     shop_id: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
     return engagement_service.unlike_shop(client, user_id, shop_id)
@@ -197,7 +200,6 @@ async def my_liked_shops(user_id: str = Depends(get_current_user_id)) -> dict:
 
 
 @router.get("/{shop_id}/dashboard")
-@cache(expire=120)
 async def shop_dashboard(
     shop_id: str,
     user_id: str = Depends(get_current_user_id),
@@ -214,8 +216,8 @@ async def shop_dashboard(
         sr = admin.table("shops").select("*").eq("id", shop_id).limit(1).execute()
         if sr.data:
             shop_data = sr.data[0]
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("shop_dashboard: shop lookup failed for %s: %s", shop_id, exc)
 
     if not shop_data:
         raise HTTPException(status_code=404, detail="Shop not found")
@@ -256,8 +258,8 @@ async def shop_dashboard(
                         product_event_counts[lid]["whatsapp_clicks"] += 1
                     elif et == "messaged":
                         product_event_counts[lid]["messages"] += 1
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("shop_dashboard: listing_events lookup failed: %s", exc)
         for row in (pr.data or []):
             imgs = row.get("image_urls")
             if isinstance(imgs, str):
@@ -394,8 +396,8 @@ async def my_shops_stats(user_id: str = Depends(get_current_user_id)) -> dict:
                     total_whatsapp_clicks += 1
                 elif et == "messaged":
                     total_messages += 1
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("listing_events aggregate failed: %s", exc)
             
     # 2. Shop-level events
     if shop_ids:
@@ -417,8 +419,8 @@ async def my_shops_stats(user_id: str = Depends(get_current_user_id)) -> dict:
                         total_whatsapp_clicks += 1
                     elif et == "messaged":
                         total_messages += 1
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("shop-level listing_events lookup failed: %s", exc)
 
     return {
         "total_shops": len(shops),
@@ -432,4 +434,226 @@ async def my_shops_stats(user_id: str = Depends(get_current_user_id)) -> dict:
         "total_whatsapp_clicks": total_whatsapp_clicks,
         "total_messages": total_messages,
     }
+
+
+@router.get("/me/analytics")
+async def my_shops_analytics(
+    user_id: str = Depends(get_current_user_id),
+    days: int = Query(30, ge=1, le=180),
+) -> dict:
+    """Rich merchant analytics: impressions, daily series, per-shop breakdown,
+    conversion funnels, and top listings. Powers the expanded merchant dashboard."""
+    from datetime import datetime, timedelta, timezone
+    from collections import defaultdict
+
+    admin = get_supabase_admin()
+    now = datetime.now(timezone.utc)
+    since_iso = (now - timedelta(days=days)).isoformat()
+
+    # Shops owned
+    shops_r = (
+        admin.table("shops")
+        .select("id,name,slug,is_active,view_count,follower_count,like_count,created_at,shop_type")
+        .eq("owner_id", user_id)
+        .execute()
+    )
+    shops = shops_r.data or []
+    shop_ids = [str(s["id"]) for s in shops if s.get("id")]
+
+    if not shop_ids:
+        return {
+            "generated_at": now.isoformat(),
+            "window_days": days,
+            "summary": {},
+            "per_shop": [],
+            "top_products": [],
+            "trends": {"impressions": [], "views": [], "whatsapp": [], "messages": []},
+            "funnel": {},
+            "pool_mix": [],
+        }
+
+    # Products
+    prods_r = (
+        admin.table("products")
+        .select("id,shop_id,title,view_count,like_count,category,price_ugx,is_published,created_at")
+        .in_("shop_id", shop_ids)
+        .execute()
+    )
+    products = prods_r.data or []
+    product_ids = [str(p["id"]) for p in products if p.get("id")]
+    prod_shop = {str(p["id"]): str(p.get("shop_id") or "") for p in products}
+
+    # ── Impressions (chunked IN) ───────────────────────────────────────────
+    impressions_rows: list[dict[str, Any]] = []
+    chunk = 400
+    for i in range(0, len(product_ids), chunk):
+        subset = product_ids[i : i + chunk]
+        try:
+            r = (
+                admin.table("listing_impressions")
+                .select("listing_id,pool,created_at")
+                .in_("listing_id", subset)
+                .gte("created_at", since_iso)
+                .limit(50000)
+                .execute()
+            )
+            impressions_rows.extend(r.data or [])
+        except Exception as exc:
+            logger.warning("me/analytics impressions chunk failed: %s", exc)
+
+    total_impressions = len(impressions_rows)
+    impressions_by_product: dict[str, int] = defaultdict(int)
+    pool_counts: dict[str, int] = defaultdict(int)
+    impr_series: dict[str, int] = defaultdict(int)
+    for r in impressions_rows:
+        pid = str(r.get("listing_id") or "")
+        pool_counts[str(r.get("pool") or "organic")] += 1
+        impressions_by_product[pid] += 1
+        day = str(r.get("created_at") or "")[:10]
+        if day:
+            impr_series[day] += 1
+
+    # ── Listing events (views, whatsapp, messages) ─────────────────────────
+    events_rows: list[dict[str, Any]] = []
+    for i in range(0, len(product_ids), chunk):
+        subset = product_ids[i : i + chunk]
+        try:
+            r = (
+                admin.table("listing_events")
+                .select("listing_id,event_type,created_at")
+                .in_("listing_id", subset)
+                .gte("created_at", since_iso)
+                .limit(50000)
+                .execute()
+            )
+            events_rows.extend(r.data or [])
+        except Exception as exc:
+            logger.warning("me/analytics events chunk failed: %s", exc)
+
+    events_by_type: dict[str, int] = defaultdict(int)
+    views_by_product: dict[str, int] = defaultdict(int)
+    wa_by_product: dict[str, int] = defaultdict(int)
+    msg_by_product: dict[str, int] = defaultdict(int)
+    view_series: dict[str, int] = defaultdict(int)
+    wa_series: dict[str, int] = defaultdict(int)
+    msg_series: dict[str, int] = defaultdict(int)
+    for e in events_rows:
+        et = str(e.get("event_type") or "")
+        events_by_type[et] += 1
+        pid = str(e.get("listing_id") or "")
+        day = str(e.get("created_at") or "")[:10]
+        if et == "viewed":
+            views_by_product[pid] += 1
+            if day:
+                view_series[day] += 1
+        elif et == "whatsapp_clicked":
+            wa_by_product[pid] += 1
+            if day:
+                wa_series[day] += 1
+        elif et == "messaged":
+            msg_by_product[pid] += 1
+            if day:
+                msg_series[day] += 1
+
+    # ── Per-shop rollup ────────────────────────────────────────────────────
+    impressions_by_shop: dict[str, int] = defaultdict(int)
+    for pid, n in impressions_by_product.items():
+        sid = prod_shop.get(pid, "")
+        if sid:
+            impressions_by_shop[sid] += n
+
+    per_shop = []
+    for s in shops:
+        sid = str(s["id"])
+        per_shop.append({
+            "id": sid,
+            "name": s.get("name"),
+            "slug": s.get("slug"),
+            "is_active": bool(s.get("is_active", False)),
+            "shop_type": s.get("shop_type"),
+            "view_count": int(s.get("view_count") or 0),
+            "follower_count": int(s.get("follower_count") or 0),
+            "like_count": int(s.get("like_count") or 0),
+            "impressions": impressions_by_shop.get(sid, 0),
+        })
+    per_shop.sort(key=lambda r: r["impressions"], reverse=True)
+
+    # ── Top products (by impressions) ──────────────────────────────────────
+    top_products = []
+    for p in products:
+        pid = str(p["id"])
+        impr = impressions_by_product.get(pid, 0)
+        vw = int(p.get("view_count") or 0) + views_by_product.get(pid, 0)
+        top_products.append({
+            "id": pid,
+            "title": p.get("title"),
+            "category": p.get("category"),
+            "shop_id": prod_shop.get(pid, ""),
+            "impressions": impr,
+            "views": vw,
+            "whatsapp_clicks": wa_by_product.get(pid, 0),
+            "messages": msg_by_product.get(pid, 0),
+            "likes": int(p.get("like_count") or 0),
+            "ctr": (vw / impr) if impr > 0 else 0.0,
+            "price_ugx": float(p.get("price_ugx") or 0),
+        })
+    top_products.sort(key=lambda r: r["impressions"], reverse=True)
+    top_products = top_products[:15]
+
+    # ── Daily series (zero-filled) ────────────────────────────────────────
+    def _series(bucket: dict[str, int]) -> list[dict[str, Any]]:
+        out = []
+        for i in range(days):
+            d = (now - timedelta(days=days - 1 - i)).date().isoformat()
+            out.append({"day": d, "count": bucket.get(d, 0)})
+        return out
+
+    trends = {
+        "impressions": _series(impr_series),
+        "views": _series(view_series),
+        "whatsapp": _series(wa_series),
+        "messages": _series(msg_series),
+    }
+
+    total_views = sum(views_by_product.values()) + sum(int(p.get("view_count") or 0) for p in products)
+    total_wa = sum(wa_by_product.values())
+    total_msg = sum(msg_by_product.values())
+
+    funnel = {
+        "impressions": total_impressions,
+        "views": total_views,
+        "whatsapp_clicks": total_wa,
+        "messages": total_msg,
+        "view_rate": (total_views / total_impressions) if total_impressions else 0.0,
+        "wa_rate": (total_wa / total_views) if total_views else 0.0,
+        "msg_rate": (total_msg / total_views) if total_views else 0.0,
+    }
+
+    pool_mix = [{"label": k, "value": v} for k, v in sorted(pool_counts.items(), key=lambda x: -x[1])]
+
+    summary = {
+        "total_shops": len(shops),
+        "active_shops": sum(1 for s in shops if s.get("is_active")),
+        "total_products": len(products),
+        "published_products": sum(1 for p in products if p.get("is_published")),
+        "total_impressions": total_impressions,
+        "total_product_views": total_views,
+        "total_whatsapp_clicks": total_wa,
+        "total_messages": total_msg,
+        "total_shop_views": sum(int(s.get("view_count") or 0) for s in shops),
+        "total_followers": sum(int(s.get("follower_count") or 0) for s in shops),
+        "total_shop_likes": sum(int(s.get("like_count") or 0) for s in shops),
+    }
+
+    return {
+        "generated_at": now.isoformat(),
+        "window_days": days,
+        "summary": summary,
+        "per_shop": per_shop,
+        "top_products": top_products,
+        "trends": trends,
+        "funnel": funnel,
+        "pool_mix": pool_mix,
+    }
+
 

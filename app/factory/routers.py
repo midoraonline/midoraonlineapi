@@ -26,6 +26,7 @@ def register_routers(app: FastAPI) -> None:
     from search.router import router as search_router
     from marketplace.router import router as marketplace_router
     from mail.routes.contactus import router as contactus_router
+    from notifications.router import router as push_router
 
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(categories_router, prefix="/api/v1")
@@ -38,3 +39,4 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(search_router, prefix="/api/v1")
     app.include_router(marketplace_router, prefix="/api/v1")
     app.include_router(contactus_router, prefix="/api/v1")
+    app.include_router(push_router, prefix="/api/v1/push", tags=["push"])

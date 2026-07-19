@@ -1,6 +1,7 @@
-from pydantic import Field
+from functools import lru_cache
+
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AliasChoices
 
 
 class Settings(BaseSettings):
@@ -106,6 +107,21 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("REVALIDATE_SECRET", "NEXT_REVALIDATE_SECRET"),
     )
 
+    # ------------------------------------------------------------------
+    # Web Push (VAPID). Generate a keypair with:
+    #     pywebpush --gen-vapid-key
+    # The public key is exposed to the browser via NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+    # the private key stays server-side. `vapid_contact_email` is a
+    # `mailto:` string sent to the push service so it can reach the operator
+    # on delivery abuse.
+    # ------------------------------------------------------------------
+    vapid_public_key: str = Field(default="", alias="VAPID_PUBLIC_KEY")
+    vapid_private_key: str = Field(default="", alias="VAPID_PRIVATE_KEY")
+    vapid_contact_email: str = Field(
+        default="",
+        alias="VAPID_CONTACT_EMAIL",
+    )
+
     @property
     def is_production(self) -> bool:
         return self.environment.strip().lower() == "production"
@@ -130,7 +146,14 @@ class Settings(BaseSettings):
         return [o.strip() for o in raw.split(",") if o.strip()]
 
 
+@lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    """Return the process-wide settings singleton.
+
+    Cached so every request-scoped dependency (auth, DB client, mail) reuses
+    the same instance instead of re-reading `.env` and re-validating on every
+    request. On Vercel this is per-invocation cold-start-safe.
+    """
     settings = Settings()
     if settings.is_production:
         missing: list[str] = []

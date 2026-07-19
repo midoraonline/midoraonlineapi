@@ -1,16 +1,25 @@
-from typing import Annotated, Any
+from typing import Annotated
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from supabase import Client
 
 from core.authz import ensure_product_owner, ensure_shop_owner
 from core.config import get_settings
 from core.schemas import PaginationParams
 from db.supabase import get_supabase_admin, get_supabase_client
-from core.security import get_current_claims, get_current_user_id, get_optional_user_id
+from core.security import TokenPayload, get_current_claims, get_current_user_id, get_optional_user_id
+from mail.queue import enqueue_mail, filter_recipients, get_admin_emails
+from mail.templates import (
+    build_new_product_admin_notification,
+    build_product_submitted_confirmation,
+)
 from ranking.service import calculate_listing_score
 from shop import engagement_service, service as shop_service
 from shop.schemas import (
     DiscountSet,
+    PaginatedProductCards,
+    ProductCard,
     ProductCreate,
     ProductDetailResponse,
     ProductEngagementState,
@@ -18,15 +27,73 @@ from shop.schemas import (
     ProductUpdate,
     ViewCountResponse,
 )
+from shop.serializers import serialize_product_card
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _notify_product_submission(
+    *,
+    client: Client,
+    user_id: str,
+    shop_id: str,
+    body: ProductCreate,
+) -> None:
+    """Best-effort merchant confirmation + admin notification for a new product.
+
+    All email work is queued (writes go through `mail_queue`) so route latency
+    stays flat. Exceptions from DB reads or enqueue are logged, never raised.
+    """
+    merchant_email: str | None = None
+    try:
+        user_r = client.table("users").select("email").eq("id", user_id).limit(1).execute()
+        if user_r.data and user_r.data[0].get("email"):
+            merchant_email = user_r.data[0]["email"]
+    except Exception as exc:
+        logger.warning("lookup merchant email failed for user %s: %s", user_id, exc)
+
+    if merchant_email:
+        subject, body_html = build_product_submitted_confirmation(product_title=body.title)
+        try:
+            await enqueue_mail(to=merchant_email, subject=subject, body_html=body_html)
+        except Exception as exc:
+            logger.warning("enqueue merchant confirmation failed: %s", exc)
+
+    recipients = filter_recipients(get_admin_emails(), merchant_email)
+    if not recipients:
+        return
+
+    shop_name = "Unknown"
+    try:
+        shop_row = client.table("shops").select("name").eq("id", shop_id).limit(1).execute()
+        if shop_row.data:
+            shop_name = shop_row.data[0].get("name", "Unknown")
+    except Exception as exc:
+        logger.warning("lookup shop name failed for %s: %s", shop_id, exc)
+
+    settings = get_settings()
+    admin_url = f"{settings.frontend_public_url}/admin/listings"
+    subject, body_html = build_new_product_admin_notification(
+        shop_name=shop_name,
+        product_title=body.title,
+        price_ugx=body.price_ugx,
+        category=body.category,
+        admin_listings_url=admin_url,
+    )
+    for recipient in recipients:
+        try:
+            await enqueue_mail(to=recipient, subject=subject, body_html=body_html)
+        except Exception as exc:
+            logger.warning("enqueue admin notification failed for %s: %s", recipient, exc)
 
 
 @router.post("/{shop_id}/products", response_model=ProductResponse)
 async def create_product(
   shop_id: str,
   body: ProductCreate,
-  client: Annotated[Any, Depends(get_supabase_client)],
+  client: Annotated[Client, Depends(get_supabase_client)],
   user_id: str = Depends(get_current_user_id),
 ):
     try:
@@ -35,70 +102,22 @@ async def create_product(
         raise HTTPException(status_code=404, detail="Shop not found")
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+
     try:
         product = shop_service.create_product(client, shop_id, body)
-
-        from mail.send import _html_shell
-        from mail.queue import get_admin_emails, enqueue_mail, filter_recipients
-
-        merchant_email: str | None = None
-        try:
-            user_r = client.table("users").select("email").eq("id", user_id).limit(1).execute()
-            if user_r.data and user_r.data[0].get("email"):
-                merchant_email = user_r.data[0]["email"]
-        except Exception:
-            pass
-
-        # Confirmation to the merchant
-        if merchant_email:
-            try:
-                confirm_inner = f"""
-                <p>Your product <strong>{body.title}</strong> has been submitted and is now pending review.</p>
-                <p>Our team will review it shortly. Once approved, it will be visible to customers on Midora.</p>
-                <p style="margin-top:24px;color:#64748b;font-size:13px;">You can track the status of your listings from your merchant dashboard.</p>
-                """
-                await enqueue_mail(
-                    to=merchant_email,
-                    subject=f"Product submitted: {body.title} — Midora",
-                    body_html=_html_shell("Product submitted for review", confirm_inner),
-                )
-            except Exception:
-                pass
-
-        # Notify admins (best-effort, queued)
-        recipients = filter_recipients(get_admin_emails(), merchant_email)
-        if recipients:
-            shop_row = client.table("shops").select("name, slug").eq("id", shop_id).limit(1).execute()
-            shop_name = shop_row.data[0].get("name", "Unknown") if shop_row.data else "Unknown"
-            price = body.price_ugx
-            settings = get_settings()
-            inner = f"""
-            <p>A new product has been added to <strong>{shop_name}</strong> and is pending review.</p>
-            <ul>
-              <li><strong>Title:</strong> {body.title}</li>
-              <li><strong>Price:</strong> UGX {price:,.0f}</li>
-              <li><strong>Category:</strong> {body.category}</li>
-            </ul>
-            <p style="margin-top:24px;">
-              <a href="{settings.frontend_public_url}/admin/listings" style="display:inline-block;padding:10px 18px;background:#0f172a;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:600;">Review in admin panel</a>
-            </p>
-            """
-            for recipient in recipients:
-                await enqueue_mail(
-                    to=recipient,
-                    subject=f"[Midora] New product: {body.title}",
-                    body_html=_html_shell("New product pending review", inner),
-                )
-
-        return product
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    await _notify_product_submission(
+        client=client, user_id=user_id, shop_id=shop_id, body=body,
+    )
+    return product
 
 
 @router.get("/{shop_id}/products")
 async def list_products(
   shop_id: str,
-  client: Annotated[any, Depends(get_supabase_client)],
+  client: Annotated[Client, Depends(get_supabase_client)],
   params: Annotated[PaginationParams, Depends()],
   category: str | None = None,
   search: str | None = None,
@@ -122,9 +141,9 @@ async def list_products(
 router_products = APIRouter()
 
 
-@router_products.get("/me/liked")
+@router_products.get("/me/liked", response_model=PaginatedProductCards)
 async def my_liked_products(
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
@@ -145,7 +164,7 @@ async def my_liked_products(
     page_ids = product_ids[offset:offset + limit]
 
     if not page_ids:
-        return {"items": [], "total": 0, "page": page, "limit": limit}
+        return PaginatedProductCards(items=[], total=0, page=page, limit=limit)
 
     pr = (
         admin.table("products")
@@ -170,80 +189,50 @@ async def my_liked_products(
             )
             for s in sr.data or []:
                 shops_map[str(s["id"])] = s
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("my_liked_products: shop lookup failed: %s", exc)
 
     avg_ratings: dict[str, float] = {}
     review_counts: dict[str, int] = {}
-    if page_ids:
-        try:
-            rev_r = (
-                admin.table("product_reviews")
-                .select("product_id,rating")
-                .in_("product_id", page_ids)
-                .execute()
-            )
-            sums: dict[str, float] = {}
-            for rev in rev_r.data or []:
-                pid = str(rev.get("product_id"))
-                rating = rev.get("rating")
-                if pid and rating:
-                    sums[pid] = sums.get(pid, 0) + float(rating)
-                    review_counts[pid] = review_counts.get(pid, 0) + 1
-            for pid in page_ids:
-                if review_counts.get(pid, 0) > 0:
-                    avg_ratings[pid] = round(sums[pid] / review_counts[pid], 2)
-        except Exception:
-            pass
+    try:
+        rev_r = (
+            admin.table("product_reviews")
+            .select("product_id,rating")
+            .in_("product_id", page_ids)
+            .execute()
+        )
+        sums: dict[str, float] = {}
+        for rev in rev_r.data or []:
+            pid = str(rev.get("product_id"))
+            rating = rev.get("rating")
+            if pid and rating:
+                sums[pid] = sums.get(pid, 0) + float(rating)
+                review_counts[pid] = review_counts.get(pid, 0) + 1
+        for pid in page_ids:
+            if review_counts.get(pid, 0) > 0:
+                avg_ratings[pid] = round(sums[pid] / review_counts[pid], 2)
+    except Exception as exc:
+        logger.warning("my_liked_products: reviews lookup failed: %s", exc)
 
-    items = []
+    items: list[ProductCard] = []
     for pid in page_ids:
         row = by_id.get(pid)
         if not row:
             continue
-        imgs = row.get("image_urls")
-        if isinstance(imgs, str):
-            imgs = [s.strip() for s in imgs.split(",") if s.strip()]
-        elif not isinstance(imgs, list):
-            imgs = []
-        sid = str(row["shop_id"])
-        shop = shops_map.get(sid, {})
-        pid = str(row["id"])
-        items.append({
-            "id": pid,
-            "shop_id": sid,
-            "title": row.get("title", ""),
-            "description": row.get("description"),
-            "price_ugx": float(row.get("price_ugx", 0)),
-            "discount_price": float(row["discount_price"]) if row.get("discount_price") is not None else None,
-            "discount_expires_at": str(row["discount_expires_at"]) if row.get("discount_expires_at") else None,
-            "image_urls": imgs[:1] if imgs else None,
-            "category": row.get("category"),
-            "item_type": row.get("item_type", "product"),
-            "status": row.get("status", "active"),
-            "listing_score": int(row.get("listing_score") or 0),
-            "location_name": row.get("location_name"),
-            "is_published": bool(row.get("is_published", True)),
-            "is_negotiable": row.get("is_negotiable", True) is not False,
-            "view_count": int(row.get("view_count") or 0),
-            "created_at": str(row["created_at"]) if row.get("created_at") else None,
-            "average_rating": avg_ratings.get(pid, 0.0),
-            "review_count": review_counts.get(pid, 0),
-            "shop_name": shop.get("name"),
-            "shop_slug": shop.get("slug"),
-            "shop_whatsapp": shop.get("whatsapp_number") or None,
-            "owner_id": str(shop.get("owner_id")) if shop.get("owner_id") else None,
-            "shop_is_active": bool(shop.get("is_active")),
-            "shop_trust_badges": shop.get("trust_badges") or [],
-            "shop_available_now": bool(shop.get("available_now", False)),
-        })
-    return {"items": items, "total": total, "page": page, "limit": limit}
+        items.append(serialize_product_card(
+            row,
+            shop_row=shops_map.get(str(row["shop_id"])),
+            average_rating=avg_ratings.get(pid, 0.0),
+            review_count=review_counts.get(pid, 0),
+            first_image_only=True,
+        ))
+    return PaginatedProductCards(items=items, total=total, page=page, limit=limit)
 
 
 @router_products.get("/{product_id}/engagement", response_model=ProductEngagementState)
 async def get_product_engagement(
     product_id: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     viewer_id: str | None = Depends(get_optional_user_id),
 ):
     if not engagement_service.product_exists(client, product_id):
@@ -254,7 +243,7 @@ async def get_product_engagement(
 @router_products.post("/{product_id}/like", response_model=ProductEngagementState)
 async def like_product(
     product_id: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
     try:
@@ -268,7 +257,7 @@ async def like_product(
 @router_products.delete("/{product_id}/like", response_model=ProductEngagementState)
 async def unlike_product(
     product_id: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
     result = engagement_service.unlike_product(client, user_id, product_id)
@@ -279,7 +268,7 @@ async def unlike_product(
 @router_products.post("/{product_id}/views", response_model=ViewCountResponse)
 async def record_product_view(
     product_id: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str | None = Depends(get_optional_user_id),
 ):
     """Increment product view count and record a per-user viewed event when authenticated."""
@@ -291,110 +280,76 @@ async def record_product_view(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router_products.get("/premium")
+def _fetch_carousel_products(
+    client: Client,
+    *,
+    order_by: str,
+    limit: int,
+) -> list[ProductCard]:
+    """Shared query for the trending & premium carousels.
+
+    Both endpoints share the exact same shape and joins — they only differ in
+    the ordering column, so we thread that in and let a single serializer own
+    the projection.
+    """
+    r = (
+        client.table("products")
+        .select(
+            "id, shop_id, title, price_ugx, discount_price, discount_expires_at, "
+            "image_urls, category, view_count, listing_score, created_at"
+        )
+        .eq("is_published", True)
+        .eq("status", "active")
+        .order(order_by, desc=True)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    products = r.data or []
+    shop_ids = list({str(p["shop_id"]) for p in products if p.get("shop_id")})
+
+    shops_map: dict[str, dict] = {}
+    if shop_ids:
+        try:
+            sr = (
+                client.table("shops")
+                .select("id, name, slug")
+                .in_("id", shop_ids)
+                .execute()
+            )
+            for s in sr.data or []:
+                shops_map[str(s["id"])] = s
+        except Exception as exc:
+            logger.warning("carousel shop lookup failed (order=%s): %s", order_by, exc)
+
+    return [
+        serialize_product_card(p, shop_row=shops_map.get(str(p.get("shop_id", ""))))
+        for p in products
+    ]
+
+
+@router_products.get("/premium", response_model=list[ProductCard])
 async def get_premium_products(
-    client: Annotated[Any, Depends(get_supabase_client)],
-    limit: int = 10,
-):
+    client: Annotated[Client, Depends(get_supabase_client)],
+    limit: int = Query(10, ge=1, le=50),
+) -> list[ProductCard]:
     """Return premium (high-scoring boosted) products for the premium carousel."""
-    r = (
-        client.table("products")
-        .select("id, shop_id, title, price_ugx, discount_price, discount_expires_at, image_urls, category, view_count, listing_score, created_at")
-        .eq("is_published", True)
-        .eq("status", "active")
-        .order("listing_score", desc=True)
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
-    )
-    items = r.data or []
-    shop_ids = list({str(p["shop_id"]) for p in items if p.get("shop_id")})
-    shops_map: dict[str, dict] = {}
-    if shop_ids:
-        sr = (
-            client.table("shops")
-            .select("id, name, slug")
-            .in_("id", shop_ids)
-            .execute()
-        )
-        for s in sr.data or []:
-            shops_map[str(s["id"])] = s
-    out = []
-    for p in items:
-        sid = str(p.get("shop_id", ""))
-        s = shops_map.get(sid, {})
-        out.append({
-            "id": str(p["id"]),
-            "shop_id": sid,
-            "title": p.get("title", ""),
-            "price_ugx": float(p.get("price_ugx", 0)),
-            "discount_price": float(p["discount_price"]) if p.get("discount_price") is not None else None,
-            "discount_expires_at": str(p["discount_expires_at"]) if p.get("discount_expires_at") else None,
-            "image_urls": ([str(x).strip() for x in p.get("image_urls", []) if x] if isinstance(p.get("image_urls"), list) else []),
-            "category": p.get("category"),
-            "view_count": int(p.get("view_count") or 0),
-            "listing_score": int(p.get("listing_score") or 0),
-            "created_at": str(p.get("created_at", "")),
-            "shop_name": s.get("name"),
-            "shop_slug": s.get("slug"),
-        })
-    return out
+    return _fetch_carousel_products(client, order_by="listing_score", limit=limit)
 
 
-@router_products.get("/trending")
+@router_products.get("/trending", response_model=list[ProductCard])
 async def get_trending_products(
-    client: Annotated[Any, Depends(get_supabase_client)],
-    limit: int = 12,
-):
+    client: Annotated[Client, Depends(get_supabase_client)],
+    limit: int = Query(12, ge=1, le=50),
+) -> list[ProductCard]:
     """Return trending products (highest view count) for the trending carousel."""
-    r = (
-        client.table("products")
-        .select("id, shop_id, title, price_ugx, discount_price, discount_expires_at, image_urls, category, view_count, listing_score, created_at")
-        .eq("is_published", True)
-        .eq("status", "active")
-        .order("view_count", desc=True)
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
-    )
-    items = r.data or []
-    shop_ids = list({str(p["shop_id"]) for p in items if p.get("shop_id")})
-    shops_map: dict[str, dict] = {}
-    if shop_ids:
-        sr = (
-            client.table("shops")
-            .select("id, name, slug")
-            .in_("id", shop_ids)
-            .execute()
-        )
-        for s in sr.data or []:
-            shops_map[str(s["id"])] = s
-    out = []
-    for p in items:
-        sid = str(p.get("shop_id", ""))
-        s = shops_map.get(sid, {})
-        out.append({
-            "id": str(p["id"]),
-            "shop_id": sid,
-            "title": p.get("title", ""),
-            "price_ugx": float(p.get("price_ugx", 0)),
-            "discount_price": float(p["discount_price"]) if p.get("discount_price") is not None else None,
-            "discount_expires_at": str(p["discount_expires_at"]) if p.get("discount_expires_at") else None,
-            "image_urls": ([str(x).strip() for x in p.get("image_urls", []) if x] if isinstance(p.get("image_urls"), list) else []),
-            "category": p.get("category"),
-            "view_count": int(p.get("view_count") or 0),
-            "listing_score": int(p.get("listing_score") or 0),
-            "created_at": str(p.get("created_at", "")),
-            "shop_name": s.get("name"),
-            "shop_slug": s.get("slug"),
-        })
-    return out
+    return _fetch_carousel_products(client, order_by="view_count", limit=limit)
 
 
 @router_products.get("/{product_id}/similar")
 async def get_similar_products(
     product_id: str,
-    client: Annotated[Any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     limit: int = 8,
 ):
     """Fetch similar products in the same category."""
@@ -404,7 +359,7 @@ async def get_similar_products(
 @router_products.get("/{product_id}", response_model=ProductDetailResponse)
 async def get_product(
     product_id: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     viewer_id: str | None = Depends(get_optional_user_id),
 ):
     """Fetch a single product with shop snapshot and engagement data bundled.
@@ -429,7 +384,7 @@ async def get_product(
 async def update_product(
   product_id: str,
   body: ProductUpdate,
-  client: Annotated[any, Depends(get_supabase_client)],
+  client: Annotated[Client, Depends(get_supabase_client)],
   user_id: str = Depends(get_current_user_id),
 ):
     try:
@@ -451,8 +406,8 @@ async def update_product(
 @router_products.delete("/{product_id}")
 async def delete_product(
   product_id: str,
-  client: Annotated[any, Depends(get_supabase_client)],
-  claims: Annotated[Any, Depends(get_current_claims)],
+  client: Annotated[Client, Depends(get_supabase_client)],
+  claims: Annotated[TokenPayload, Depends(get_current_claims)],
 ):
     user_id = claims.sub
     is_admin = (claims.role or "").lower() == "admin"
@@ -473,7 +428,7 @@ async def delete_product(
 @router_products.post("/{product_id}/repost", response_model=ProductResponse)
 async def repost_product(
   product_id: str,
-  client: Annotated[any, Depends(get_supabase_client)],
+  client: Annotated[Client, Depends(get_supabase_client)],
   user_id: str = Depends(get_current_user_id),
 ):
     try:
@@ -496,7 +451,7 @@ async def repost_product(
 async def set_product_discount(
     product_id: str,
     body: DiscountSet,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
     """Set or remove a discount on a product. Pass discount_price=null to remove discount."""
@@ -529,7 +484,7 @@ async def set_product_discount(
 @router_products.post("/{product_id}/toggle-availability", response_model=ProductResponse)
 async def toggle_product_availability(
     product_id: str,
-    client: Annotated[any, Depends(get_supabase_client)],
+    client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
     """Toggle whether a product is published/available on the storefront."""
@@ -561,7 +516,7 @@ async def toggle_product_availability(
 
 @router_products.post("/generate-from-image")
 async def generate_from_image(
-  client: Annotated[any, Depends(get_supabase_client)],
+  client: Annotated[Client, Depends(get_supabase_client)],
   user_id: str = Depends(get_current_user_id),
 ):
     """Merchant Copilot: Gemini suggests title, description, tags from image. Body: image_url or image_base64, shop_id."""

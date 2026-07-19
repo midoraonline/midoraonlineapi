@@ -2,6 +2,11 @@
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.30,<1.0
 
+# TLS: use the OS certificate store so corporate SSL-inspection proxies
+# (which re-sign traffic with a private CA) work without patching certifi.
+# `truststore.inject_into_ssl()` is called once in main.py at startup.
+truststore>=0.9.0,<1.0
+
 # Database / backend services
 supabase>=2.7.0,<3.0
 
@@ -16,6 +21,10 @@ python-multipart>=0.0.9,<1.0
 fastapi-mail>=1.4.2,<2.0
 httpx>=0.27,<1.0
 
+# Email templates: MJML compiled via the Rust `mrml` bindings.
+# Pure-wheel install (no Node.js, no build tools) — safe for Vercel.
+mrml>=0.2.0,<1.0
+
 # Config & validation
 pydantic-settings>=2.4.0,<3.0
 email-validator>=2.2.0,<3.0
@@ -23,8 +32,8 @@ email-validator>=2.2.0,<3.0
 # AI
 google-genai>=0.3.0,<2.0
 
+# Web Push (VAPID). Pure Python, works on Vercel serverless.
+pywebpush>=2.0.0,<3.0
+
 # Tests
 pytest>=8.0.0,<9.0
-
-# Cache
-fastapi-cache2>=0.2.1,<1.0
