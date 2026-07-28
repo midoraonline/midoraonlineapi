@@ -127,18 +127,37 @@ def record_presence(
     user_id: str | None,
 ) -> None:
     now_iso = datetime.now(timezone.utc).isoformat()
+    previous_user_id: str | None = None
+    try:
+        existing = (
+            admin.table("online_presence")
+            .select("user_id")
+            .eq("instance_id", instance_id)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            raw_prev = existing.data[0].get("user_id")
+            if raw_prev:
+                previous_user_id = str(raw_prev)
+    except Exception as exc:
+        logger.warning("record_presence(%s) read previous failed: %s", instance_id[:8], exc)
+
     payload: dict[str, Any] = {
         "instance_id": instance_id,
         "last_seen_at": now_iso,
+        # Explicitly set null when anonymous so sign-out detaches the row from
+        # the previous authenticated user.
+        "user_id": user_id,
     }
-    if user_id:
-        payload["user_id"] = user_id
 
     admin.table("online_presence").upsert(payload, on_conflict="instance_id").execute()
 
     if user_id:
         touch_user_last_seen(admin, user_id, now_iso)
         set_merchant_shops_available(admin, user_id, now_iso)
+    elif previous_user_id:
+        clear_merchant_shops_if_idle(admin, previous_user_id)
 
 
 def remove_presence(admin: Any, instance_id: str) -> str | None:
