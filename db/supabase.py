@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 import threading
-from typing import Annotated
+import time
+from typing import Annotated, Callable, TypeVar
 
 import httpx
 from fastapi import Depends
@@ -12,8 +14,12 @@ from supabase.lib.client_options import SyncClientOptions, SyncHttpxClient
 from core.config import get_settings
 from core.security import get_bearer_token
 
+logger = logging.getLogger(__name__)
+
 _admin_lock = threading.Lock()
 _admin_client: Client | None = None
+
+T = TypeVar("T")
 
 
 def _make_httpx_client() -> SyncHttpxClient:
@@ -70,6 +76,70 @@ def get_supabase_admin() -> Client:
                 options=_client_options(),
             )
         return _admin_client
+
+
+def reset_supabase_admin() -> None:
+    """Drop the cached admin client (e.g. after DNS / connection blips)."""
+    global _admin_client
+    with _admin_lock:
+        _admin_client = None
+
+
+def is_transient_supabase_error(exc: BaseException) -> bool:
+    """DNS blips, connect timeouts, and brief connection drops."""
+    if isinstance(
+        exc,
+        (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.RemoteProtocolError,
+            httpx.NetworkError,
+        ),
+    ):
+        return True
+    text = str(exc).lower()
+    needles = (
+        "temporary failure in name resolution",
+        "name or service not known",
+        "nodename nor servname",
+        "connection reset",
+        "connection refused",
+        "server disconnected",
+        "connectionterminated",
+        "errno -3",
+        "gaierror",
+    )
+    return any(n in text for n in needles)
+
+
+def with_supabase_retry(
+    fn: Callable[[], T],
+    *,
+    attempts: int = 3,
+    base_delay_s: float = 0.35,
+    label: str = "supabase",
+) -> T:
+    """Retry transient network/DNS failures; reset admin client between tries."""
+    last: BaseException | None = None
+    for i in range(max(1, attempts)):
+        try:
+            return fn()
+        except Exception as exc:
+            last = exc
+            if not is_transient_supabase_error(exc) or i >= attempts - 1:
+                raise
+            logger.warning(
+                "%s transient failure (%s/%s): %s — retrying",
+                label,
+                i + 1,
+                attempts,
+                exc,
+            )
+            reset_supabase_admin()
+            time.sleep(base_delay_s * (2 ** i))
+    assert last is not None
+    raise last
 
 
 def get_supabase_client(

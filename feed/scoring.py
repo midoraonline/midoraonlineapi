@@ -42,7 +42,19 @@ from feed.signals import parse_timestamp
 # Individual bonus/penalty helpers — one function per line item in the spec
 # ---------------------------------------------------------------------------
 
-def taste_match(user_vector: list[float] | None, product_embedding: Any) -> float:
+def taste_match(
+    user_vector: list[float] | None,
+    product_embedding: Any,
+    *,
+    precomputed: float | None = None,
+) -> float:
+    """Taste score from cosine similarity (0..VECTOR_SCORE_SCALE).
+
+    Prefer `precomputed` similarity in [0,1] from pgvector ANN when available
+    so we don't ship/recompute 768-d JSON blobs for every candidate.
+    """
+    if precomputed is not None:
+        return max(float(precomputed), 0.0) * C.VECTOR_SCORE_SCALE
     if not user_vector:
         return 0.0
     vec = parse_embedding(product_embedding)
@@ -248,6 +260,7 @@ def score_product(
     boost_map: dict[str, dict[str, Any]],
     fraud_map: dict[str, str],
     exposure_multiplier: dict[str, float] | None = None,
+    taste_scores: dict[str, float] | None = None,
     now: datetime | None = None,
 ) -> float | None:
     """Return the composite score, or None if the product should be hidden."""
@@ -258,7 +271,9 @@ def score_product(
     if fraud is None:
         return None  # critical fraud -> hidden
 
-    taste = taste_match(user_vector, product.get("embedding"))
+    pid = str(product.get("id", ""))
+    precomputed = taste_scores.get(pid) if taste_scores else None
+    taste = taste_match(user_vector, product.get("embedding"), precomputed=precomputed)
     used_vector = taste > 0
 
     score = 0.0

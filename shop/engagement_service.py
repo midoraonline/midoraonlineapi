@@ -2,6 +2,7 @@ from typing import Any
 
 from core.postgrest_compat import is_undefined_column_error
 from postgrest.exceptions import APIError
+from feed.service import invalidate_user_feed_cache
 
 
 def _parse_rpc_int(data: Any) -> int | None:
@@ -103,38 +104,72 @@ def _count_shop_listing_events(client: Any, shop_id: str, event_type: str) -> in
         return 0
 
 
-def get_shop_engagement(client: Any, shop_id: str, viewer_user_id: str | None) -> dict[str, Any]:
-    follower_count = _count_by_shop(client, "shop_follows", shop_id)
-    like_count = _count_by_shop(client, "shop_likes", shop_id)
+def get_shop_engagement(
+    client: Any,
+    shop_id: str,
+    viewer_user_id: str | None,
+    *,
+    include_lead_counts: bool = False,
+) -> dict[str, Any]:
+    """Shop social counters.
+
+    Lead counts (whatsapp/messages) scan listing_events across every product
+    in the shop — expensive. Skip them on public SSR slug lookups; load via
+    the dedicated engagement endpoint or analytics when needed.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        fut_followers = pool.submit(_count_by_shop, client, "shop_follows", shop_id)
+        fut_likes = pool.submit(_count_by_shop, client, "shop_likes", shop_id)
+        fut_views = pool.submit(_shop_view_count, client, shop_id)
+        fut_wa = (
+            pool.submit(_count_shop_listing_events, client, shop_id, "whatsapp_clicked")
+            if include_lead_counts
+            else None
+        )
+        fut_msg = (
+            pool.submit(_count_shop_listing_events, client, shop_id, "messaged")
+            if include_lead_counts
+            else None
+        )
+        follower_count = fut_followers.result()
+        like_count = fut_likes.result()
+        view_count = fut_views.result()
+        whatsapp_clicks = fut_wa.result() if fut_wa else 0
+        messages = fut_msg.result() if fut_msg else 0
+
     viewer_following: bool | None = None
     viewer_liked_shop: bool | None = None
     if viewer_user_id:
-        fr = (
-            client.table("shop_follows")
-            .select("user_id")
-            .eq("shop_id", shop_id)
-            .eq("user_id", viewer_user_id)
-            .limit(1)
-            .execute()
-        )
-        viewer_following = bool(fr.data)
-        lr = (
-            client.table("shop_likes")
-            .select("user_id")
-            .eq("shop_id", shop_id)
-            .eq("user_id", viewer_user_id)
-            .limit(1)
-            .execute()
-        )
-        viewer_liked_shop = bool(lr.data)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_f = pool.submit(
+                lambda: client.table("shop_follows")
+                .select("user_id")
+                .eq("shop_id", shop_id)
+                .eq("user_id", viewer_user_id)
+                .limit(1)
+                .execute()
+            )
+            fut_l = pool.submit(
+                lambda: client.table("shop_likes")
+                .select("user_id")
+                .eq("shop_id", shop_id)
+                .eq("user_id", viewer_user_id)
+                .limit(1)
+                .execute()
+            )
+            viewer_following = bool(fut_f.result().data)
+            viewer_liked_shop = bool(fut_l.result().data)
+
     return {
         "follower_count": follower_count,
         "like_count": like_count,
-        "view_count": _shop_view_count(client, shop_id),
+        "view_count": view_count,
         "viewer_following": viewer_following,
         "viewer_liked_shop": viewer_liked_shop,
-        "whatsapp_clicks": _count_shop_listing_events(client, shop_id, "whatsapp_clicked"),
-        "messages": _count_shop_listing_events(client, shop_id, "messaged"),
+        "whatsapp_clicks": whatsapp_clicks,
+        "messages": messages,
     }
 
 
@@ -229,11 +264,13 @@ def follow_shop(client: Any, user_id: str, shop_id: str) -> dict[str, Any]:
     if not shop_exists(client, shop_id):
         raise ValueError("Shop not found")
     client.table("shop_follows").upsert({"user_id": user_id, "shop_id": shop_id}).execute()
+    invalidate_user_feed_cache(client, user_id)
     return get_shop_engagement(client, shop_id, user_id)
 
 
 def unfollow_shop(client: Any, user_id: str, shop_id: str) -> dict[str, Any]:
     client.table("shop_follows").delete().eq("user_id", user_id).eq("shop_id", shop_id).execute()
+    invalidate_user_feed_cache(client, user_id)
     return get_shop_engagement(client, shop_id, user_id)
 
 
@@ -241,11 +278,13 @@ def like_shop(client: Any, user_id: str, shop_id: str) -> dict[str, Any]:
     if not shop_exists(client, shop_id):
         raise ValueError("Shop not found")
     client.table("shop_likes").upsert({"user_id": user_id, "shop_id": shop_id}).execute()
+    invalidate_user_feed_cache(client, user_id)
     return get_shop_engagement(client, shop_id, user_id)
 
 
 def unlike_shop(client: Any, user_id: str, shop_id: str) -> dict[str, Any]:
     client.table("shop_likes").delete().eq("user_id", user_id).eq("shop_id", shop_id).execute()
+    invalidate_user_feed_cache(client, user_id)
     return get_shop_engagement(client, shop_id, user_id)
 
 
@@ -253,9 +292,11 @@ def like_product(client: Any, user_id: str, product_id: str) -> dict[str, Any]:
     if not product_exists(client, product_id):
         raise ValueError("Product not found")
     client.table("product_likes").upsert({"user_id": user_id, "product_id": product_id}).execute()
+    invalidate_user_feed_cache(client, user_id)
     return get_product_engagement(client, product_id, user_id)
 
 
 def unlike_product(client: Any, user_id: str, product_id: str) -> dict[str, Any]:
     client.table("product_likes").delete().eq("user_id", user_id).eq("product_id", product_id).execute()
+    invalidate_user_feed_cache(client, user_id)
     return get_product_engagement(client, product_id, user_id)

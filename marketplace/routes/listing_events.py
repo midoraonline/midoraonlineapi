@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query
 
 from core.security import get_optional_user_id, get_current_user_id
 from db.supabase import get_supabase_admin
+from feed.service import invalidate_user_feed_cache
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,9 @@ async def record_listing_event(
 
         if event_type == "viewed":
             admin.rpc("increment_product_view_count", {"p_product_id": product_id}).execute()
+        # Strong user-intent events should refresh personalization immediately.
+        if current_user_id and event_type in {"saved", "whatsapp_clicked", "messaged"}:
+            invalidate_user_feed_cache(admin, current_user_id)
 
     return r.data[0] if r.data else {"status": "recorded"}
 

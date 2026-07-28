@@ -200,6 +200,43 @@ def fatigued_listing_ids(
     return {pid for pid, n in counts.items() if n >= threshold}
 
 
+def shop_impressions_for_listings(
+    listing_to_shop: dict[str, str],
+    hours: int = 24,
+) -> dict[str, int]:
+    """Aggregate 24h impressions for candidate listings only, keyed by shop_id.
+
+    Much cheaper than scanning every product owned by each shop.
+    """
+    if not listing_to_shop:
+        return {}
+    admin = get_supabase_admin()
+    cutoff_iso = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    listing_ids = list(listing_to_shop.keys())
+    counts: dict[str, int] = {}
+    chunk = 500
+    for i in range(0, len(listing_ids), chunk):
+        subset = listing_ids[i : i + chunk]
+        try:
+            r = (
+                admin.table("listing_impressions")
+                .select("listing_id")
+                .in_("listing_id", subset)
+                .gte("created_at", cutoff_iso)
+                .limit(20000)
+                .execute()
+            )
+        except Exception as exc:
+            logger.warning("shop_impressions_for_listings failed: %s", exc)
+            continue
+        for row in r.data or []:
+            lid = str(row.get("listing_id") or "")
+            sid = listing_to_shop.get(lid)
+            if sid:
+                counts[sid] = counts.get(sid, 0) + 1
+    return counts
+
+
 def shop_impressions_last_hours(shop_ids: list[str], hours: int = 24) -> dict[str, int]:
     """Aggregate impression counts per shop over the given window.
 
@@ -226,33 +263,7 @@ def shop_impressions_last_hours(shop_ids: list[str], hours: int = 24) -> dict[st
         return {}
 
     listing_to_shop = {str(row["id"]): str(row["shop_id"]) for row in (r.data or [])}
-    listing_ids = list(listing_to_shop.keys())
-    if not listing_ids:
-        return {}
-
-    # 2. Count impressions for those listings
-    counts: dict[str, int] = {}
-    # Process in chunks (Postgrest IN clause length limits)
-    chunk = 500
-    for i in range(0, len(listing_ids), chunk):
-        subset = listing_ids[i : i + chunk]
-        try:
-            r = (
-                admin.table("listing_impressions")
-                .select("listing_id")
-                .in_("listing_id", subset)
-                .gte("created_at", cutoff_iso)
-                .limit(20000)
-                .execute()
-            )
-        except Exception as exc:
-            logger.warning("shop_impressions_last_hours (impressions) failed: %s", exc)
-            continue
-        for row in r.data or []:
-            sid = listing_to_shop.get(str(row.get("listing_id") or ""))
-            if sid:
-                counts[sid] = counts.get(sid, 0) + 1
-    return counts
+    return shop_impressions_for_listings(listing_to_shop, hours=hours)
 
 
 # ---------------------------------------------------------------------------

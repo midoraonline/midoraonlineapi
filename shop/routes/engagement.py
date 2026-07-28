@@ -21,10 +21,16 @@ async def get_shop_engagement(
     shop_id: str,
     client: Annotated[Client, Depends(get_supabase_client)],
     viewer_id: str | None = Depends(get_optional_user_id),
+    include_leads: bool = Query(False, description="Include expensive whatsapp/message tallies"),
 ):
     if not engagement_service.shop_exists(client, shop_id):
         raise HTTPException(status_code=404, detail="Shop not found")
-    return engagement_service.get_shop_engagement(client, shop_id, viewer_id)
+    return engagement_service.get_shop_engagement(
+        client,
+        shop_id,
+        viewer_id,
+        include_lead_counts=include_leads,
+    )
 
 
 @router.post("/{shop_id}/follow", response_model=ShopEngagementState)
@@ -222,8 +228,10 @@ async def shop_dashboard(
     if not shop_data:
         raise HTTPException(status_code=404, detail="Shop not found")
 
-    # Engagement
-    engagement = engagement_service.get_shop_engagement(admin, shop_id, user_id)
+    # Engagement (include lead tallies — analytics page needs them)
+    engagement = engagement_service.get_shop_engagement(
+        admin, shop_id, user_id, include_lead_counts=True
+    )
 
     # Products
     products_list: list[dict[str, Any]] = []

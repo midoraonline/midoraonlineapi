@@ -38,6 +38,19 @@ def _split_ids(raw: str | None) -> list[str]:
     return out[:500]  # hard cap — protects URL / header size
 
 
+def _decode_page_cursor(raw: str | None) -> int | None:
+    if not raw:
+        return None
+    v = raw.strip()
+    if not v.startswith("p:"):
+        return None
+    try:
+        page = int(v[2:])
+    except ValueError:
+        return None
+    return page if page >= 1 else None
+
+
 class SearchQuery(BaseModel):
     query: str
 
@@ -68,13 +81,19 @@ async def log_search(
     from search.service import log_search
 
     log_search(client, body.query, user_id=user_id)
+    feed_service.invalidate_user_feed_cache(client, user_id)
     return {"status": "ok"}
 
 
 @router.get("/home")
 async def home_feed(
+    response: Response,
     limit: int = Query(72, ge=1, le=200),
     page: int = Query(1, ge=1),
+    cursor: str | None = Query(
+        None,
+        description="Continuation cursor (format: p:<page>). When present it overrides page.",
+    ),
     exclude_ids: str | None = Query(
         None,
         description="Comma-separated listing IDs already shown on this session.",
@@ -85,19 +104,28 @@ async def home_feed(
 ) -> dict[str, Any]:
     """Composite endpoint: all 4 feeds with shop + boost data embedded.
 
-    Pagination + de-duplication:
-      * `page` / `limit` slice the scored feed.
-      * `exclude_ids` (client-tracked in-memory) hides items already
-        rendered during this browsing session so subsequent pages never
-        repeat content the user just scrolled past.
-      * Fatigue suppression (server-side): listings shown >=3 times in the
-        last 48h are also filtered out — per authenticated user OR per
-        anonymous session cookie.
+    Personalized users (authenticated):
+      * Rank once, store IDs in `user_feed_cache` for **1 hour TTL**.
+      * Within TTL: hydrate cards from cached order (no re-score).
+      * After TTL: full algorithm runs again and refreshes the cache.
+      * Load-more uses `exclude_ids` only; does not trigger re-score.
+
+    Exclusion (load-more only):
+      * Initial SSR / first paint: do NOT send `exclude_ids` — return top ranks.
+      * Load-more / soft refresh: send `exclude_ids` of cards already on screen.
+        Server drops those IDs then returns the next `limit` from the head of
+        the remaining ranked list (page/cursor ignored when exclude is set).
+      * Fatigue (≥3 impressions / 48h) only applies on continuation, not page 1.
     """
     session = session_id_header or session_id
+    cursor_page = _decode_page_cursor(cursor)
+    effective_page = cursor_page or page
+    if not user_id:
+        # Anonymous home feed is safe to edge-cache briefly.
+        response.headers["Cache-Control"] = "public, s-maxage=60, stale-while-revalidate=120"
     return get_home_feed(
         limit=limit,
-        page=page,
+        page=effective_page,
         user_id=user_id,
         exclude_ids=_split_ids(exclude_ids),
         session_id=session,
@@ -114,7 +142,11 @@ async def get_algorithm_feed(
     session_id: str | None = Cookie(default=None, alias="midora_session_id"),
     session_id_header: str | None = Header(default=None, alias="X-Midora-Session"),
 ):
-    """Personalized feed. Re-scored on every request; never cached.
+    """Personalized feed.
+
+    For authenticated users, ranked IDs are cached for **1 hour** (`user_feed_cache`).
+    Reloads and load-more reuse that ranking until the TTL expires, then the
+    algorithm is recalculated once and written back.
 
     Accepts `exclude_ids` for client-driven pagination de-duplication and
     honours the same fatigue rules as `/feed/home`.

@@ -172,17 +172,33 @@ def vectorize_product(client: Any, product_id: str) -> bool:
 
     now = datetime.now(timezone.utc).isoformat()
     try:
-        client.table("products").update(
-            {
-                "embedding": vector,
-                "embedding_source_hash": source_hash,
-                "embedding_updated_at": now,
-            }
-        ).eq("id", product_id).execute()
+        payload: dict[str, Any] = {
+            "embedding": vector,
+            "embedding_source_hash": source_hash,
+            "embedding_updated_at": now,
+        }
+        # Prefer native pgvector column when migration 032 is applied.
+        # PostgREST accepts a string like "[0.1,0.2,...]" for vector types.
+        try:
+            payload["embedding_vec"] = "[" + ",".join(str(float(v)) for v in vector) + "]"
+        except Exception:
+            pass
+        client.table("products").update(payload).eq("id", product_id).execute()
         return True
     except Exception as exc:
-        logger.warning("vectorize_product save failed (%s): %s", product_id, exc)
-        return False
+        # Fallback if embedding_vec column is missing.
+        try:
+            client.table("products").update(
+                {
+                    "embedding": vector,
+                    "embedding_source_hash": source_hash,
+                    "embedding_updated_at": now,
+                }
+            ).eq("id", product_id).execute()
+            return True
+        except Exception as exc2:
+            logger.warning("vectorize_product save failed (%s): %s / %s", product_id, exc, exc2)
+            return False
 
 
 def schedule_vectorize_product(product_id: str) -> None:

@@ -220,24 +220,54 @@ def create_shop(client: Any, owner_id: str, data: ShopCreate) -> dict:
     return shop
 
 
+# Columns needed for public shop pages (avoid select *).
+_SHOP_DETAIL_COLS = (
+    "id,owner_id,name,slug,category,description,about,logo_url,shop_email,"
+    "whatsapp_number,contacts,social_links,location,availability,theme_config,"
+    "shop_type,is_active,subscription_end_date,created_at,updated_at,view_count,"
+    "trust_score,seller_score,fraud_score,trust_badges,available_now,last_seen_at"
+)
+
+
 def get_shop(client: Any, shop_id: str, viewer_id: str | None = None) -> dict | None:
     """Get one shop by id, including follower/like counts and viewer flags."""
-    r = client.table("shops").select("*").eq("id", shop_id).execute()
+    r = (
+        client.table("shops")
+        .select(_SHOP_DETAIL_COLS)
+        .eq("id", shop_id)
+        .limit(1)
+        .execute()
+    )
     if not r.data or len(r.data) == 0:
         return None
     out = _row_to_shop_response(r.data[0])
-    out.update(engagement_service.get_shop_engagement(client, shop_id, viewer_id))
+    # Skip expensive listing_events lead scans on public shop fetch.
+    out.update(
+        engagement_service.get_shop_engagement(
+            client, shop_id, viewer_id, include_lead_counts=False
+        )
+    )
     return out
 
 
 def get_shop_by_slug(client: Any, slug: str, viewer_id: str | None = None) -> dict | None:
-    """Get shop by slug."""
-    r = client.table("shops").select("*").eq("slug", slug).execute()
+    """Get shop by slug (lean engagement for fast SSR)."""
+    r = (
+        client.table("shops")
+        .select(_SHOP_DETAIL_COLS)
+        .eq("slug", slug)
+        .limit(1)
+        .execute()
+    )
     if not r.data or len(r.data) == 0:
         return None
     row = r.data[0]
     out = _row_to_shop_response(row)
-    out.update(engagement_service.get_shop_engagement(client, str(row["id"]), viewer_id))
+    out.update(
+        engagement_service.get_shop_engagement(
+            client, str(row["id"]), viewer_id, include_lead_counts=False
+        )
+    )
     return out
 
 

@@ -137,15 +137,25 @@ def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
 
 def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[dict]:
     """Fetch products in the same category, excluding the current product."""
-    product = get_product(client, product_id)
-    if not product or not product.get("category"):
+    try:
+        cat_r = (
+            client.table("products")
+            .select("category")
+            .eq("id", product_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
         return []
+    if not cat_r.data or not cat_r.data[0].get("category"):
+        return []
+    category = cat_r.data[0]["category"]
     try:
         r = (
             client.table("products")
             .select("id,shop_id,title,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
                     "listing_score,location_name,is_published,is_negotiable,created_at,view_count")
-            .eq("category", product["category"])
+            .eq("category", category)
             .eq("is_published", True)
             .eq("status", "active")
             .neq("id", product_id)
@@ -159,7 +169,7 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             client.table("products")
             .select("id,shop_id,title,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
                     "is_published,created_at")
-            .eq("category", product["category"])
+            .eq("category", category)
             .eq("is_published", True)
             .eq("status", "active")
             .neq("id", product_id)
@@ -334,66 +344,80 @@ def get_product_detail(
         return None
 
     # -------------------------------------------------------------------
-    # Q3: Like count + viewer_liked (single query using count=exact)
+    # Q3–Q5: likes, listing-event counts, boost — parallel
     # -------------------------------------------------------------------
     like_count = 0
     viewer_liked: bool | None = None
-    try:
-        likes_q = (
-            client.table("product_likes")
-            .select("user_id", count="exact")
-            .eq("product_id", product_id)
-        )
-        likes_r = likes_q.execute()
-        like_count = int(likes_r.count or 0)
-        if viewer_id:
-            viewer_liked = any(
-                str(row_.get("user_id", "")) == viewer_id
-                for row_ in (likes_r.data or [])
-            )
-    except Exception:
-        pass
-
-    # -------------------------------------------------------------------
-    # Q4: Listing events — both whatsapp_clicks and messages in one query
-    # -------------------------------------------------------------------
     whatsapp_clicks = 0
     messages = 0
-    try:
-        events_r = (
-            client.table("listing_events")
-            .select("event_type")
-            .eq("listing_id", product_id)
-            .in_("event_type", ["whatsapp_clicked", "messaged"])
-            .execute()
-        )
-        for evt in (events_r.data or []):
-            t = evt.get("event_type")
-            if t == "whatsapp_clicked":
-                whatsapp_clicks += 1
-            elif t == "messaged":
-                messages += 1
-    except Exception:
-        pass
-
-    # -------------------------------------------------------------------
-    # Q5: Active boost check
-    # -------------------------------------------------------------------
     boosted = False
-    try:
-        now_iso = datetime.now(timezone.utc).isoformat()
-        boost_r = (
-            client.table("listing_boosts")
-            .select("id")
-            .eq("listing_id", product_id)
-            .eq("active", True)
-            .gte("ends_at", now_iso)
-            .limit(1)
-            .execute()
-        )
-        boosted = bool(boost_r.data)
-    except Exception:
-        pass
+
+    def _likes() -> tuple[int, bool | None]:
+        try:
+            likes_r = (
+                client.table("product_likes")
+                .select("product_id", count="exact")
+                .eq("product_id", product_id)
+                .limit(1)
+                .execute()
+            )
+            count = int(likes_r.count or 0)
+            liked: bool | None = None
+            if viewer_id:
+                vr = (
+                    client.table("product_likes")
+                    .select("user_id")
+                    .eq("product_id", product_id)
+                    .eq("user_id", viewer_id)
+                    .limit(1)
+                    .execute()
+                )
+                liked = bool(vr.data)
+            return count, liked
+        except Exception:
+            return 0, None
+
+    def _event_count(event_type: str) -> int:
+        try:
+            er = (
+                client.table("listing_events")
+                .select("id", count="exact")
+                .eq("listing_id", product_id)
+                .eq("event_type", event_type)
+                .limit(1)
+                .execute()
+            )
+            return int(er.count or 0)
+        except Exception:
+            return 0
+
+    def _boost() -> bool:
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            boost_r = (
+                client.table("listing_boosts")
+                .select("id")
+                .eq("listing_id", product_id)
+                .eq("active", True)
+                .gte("ends_at", now_iso)
+                .limit(1)
+                .execute()
+            )
+            return bool(boost_r.data)
+        except Exception:
+            return False
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        fut_likes = pool.submit(_likes)
+        fut_wa = pool.submit(_event_count, "whatsapp_clicked")
+        fut_msg = pool.submit(_event_count, "messaged")
+        fut_boost = pool.submit(_boost)
+        like_count, viewer_liked = fut_likes.result()
+        whatsapp_clicks = fut_wa.result()
+        messages = fut_msg.result()
+        boosted = fut_boost.result()
 
     # -------------------------------------------------------------------
     # Assemble response

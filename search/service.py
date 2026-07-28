@@ -59,6 +59,10 @@ def log_search(
 
     try:
         client.table("search_history").insert(payload).execute()
+        if user_id:
+            # Search intent is a strong personalization signal.
+            from feed.service import invalidate_user_feed_cache
+            invalidate_user_feed_cache(client, user_id)
     except Exception as exc:
         logger.warning("log_search failed: %s", exc)
 

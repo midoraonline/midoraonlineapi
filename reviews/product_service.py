@@ -93,12 +93,16 @@ def get_product_review_stats(product_id: str) -> dict:
             admin.table("product_reviews")
             .select("rating")
             .eq("product_id", product_id)
+            .limit(5000)
             .execute()
         )
-        ratings = [row["rating"] for row in (r.data or []) if row.get("rating")]
+        ratings = [int(row["rating"]) for row in (r.data or []) if row.get("rating")]
         count = len(ratings)
         avg = round(sum(ratings) / count, 2) if count else 0.0
-        distribution = {i: ratings.count(i) for i in range(1, 6)}
+        distribution = {i: 0 for i in range(1, 6)}
+        for rating in ratings:
+            if 1 <= rating <= 5:
+                distribution[rating] += 1
         return {
             "total_reviews": count,
             "average_rating": avg,
