@@ -4,15 +4,25 @@ Uses the pywebpush library, which is pure-Python and works on Vercel's
 serverless runtime. The VAPID keypair is configured via
 `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in the environment.
 
+Keys may be stored as either:
+  - URL-safe base64 (applicationServerKey / raw private) — preferred
+  - PEM (`-----BEGIN … KEY-----`) — accepted and normalized at runtime
+
+Browsers require the public key as an uncompressed P-256 point in
+URL-safe base64. pywebpush's `Vapid.from_string` expects a raw 32-byte
+private key (URL-safe base64) or DER — not PEM. We normalize both.
+
 Public API:
     save_subscription(user_id, subscription, user_agent)
     delete_subscription_by_endpoint(endpoint)
     send_to_user(user_id, payload)     -> best-effort fan-out
-    vapid_public_key()                  -> exposed to the browser via /me
+    vapid_public_key()                  -> exposed to the browser via /public-key
+    push_ready_status()                 -> why send may be skipped
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from typing import Any
@@ -36,9 +46,95 @@ class PushSubscriptionDict(dict):
     """Type stub for the subscription JSON sent by the browser."""
 
 
+def _normalize_env_key(raw: str) -> str:
+    """Strip quotes and turn escaped newlines into real ones (dotenv PEM)."""
+    text = (raw or "").strip().strip('"').strip("'")
+    if "\\n" in text and "BEGIN" in text and "\n" not in text:
+        text = text.replace("\\n", "\n")
+    return text.strip()
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
+def _application_server_key_from_pem(pem: str) -> str:
+    """PEM SPKI public key → URL-safe base64 uncompressed EC point (65 bytes)."""
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    key = serialization.load_pem_public_key(pem.encode("utf-8"), backend=default_backend())
+    if not isinstance(key, ec.EllipticCurvePublicKey):
+        raise ValueError("VAPID public key must be an EC key")
+    raw = key.public_bytes(
+        encoding=serialization.Encoding.X962,
+        format=serialization.PublicFormat.UncompressedPoint,
+    )
+    return _b64url(raw)
+
+
+def _raw_private_key_from_pem(pem: str) -> str:
+    """PEM private key → URL-safe base64 of the 32-byte raw EC private value."""
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    key = serialization.load_pem_private_key(
+        pem.encode("utf-8"), password=None, backend=default_backend()
+    )
+    if not isinstance(key, ec.EllipticCurvePrivateKey):
+        raise ValueError("VAPID private key must be an EC key")
+    raw = key.private_numbers().private_value.to_bytes(32, "big")
+    return _b64url(raw)
+
+
 def vapid_public_key() -> str:
-    """Return the VAPID public key or empty string if not configured."""
-    return (get_settings().vapid_public_key or "").strip()
+    """Return the VAPID public key for `PushManager.subscribe`.
+
+    Always URL-safe base64 (applicationServerKey). PEM env values are converted.
+    """
+    raw = _normalize_env_key(get_settings().vapid_public_key or "")
+    if not raw:
+        return ""
+    if "BEGIN PUBLIC KEY" in raw or "BEGIN EC PUBLIC KEY" in raw:
+        try:
+            return _application_server_key_from_pem(raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to convert VAPID_PUBLIC_KEY from PEM: %s", exc)
+            return ""
+    # Already applicationServerKey (typically ~87 chars, often starts with 'B')
+    return raw.replace("\n", "").replace(" ", "")
+
+
+def _vapid_private_key_for_webpush() -> str:
+    """Private key string accepted by `pywebpush.webpush` / `Vapid.from_string`."""
+    raw = _normalize_env_key(get_settings().vapid_private_key or "")
+    if not raw:
+        return ""
+    if "BEGIN PRIVATE KEY" in raw or "BEGIN EC PRIVATE KEY" in raw:
+        try:
+            return _raw_private_key_from_pem(raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to convert VAPID_PRIVATE_KEY from PEM: %s", exc)
+            return ""
+    return raw.replace("\n", "").replace(" ", "")
+
+
+def push_ready_status() -> dict[str, Any]:
+    """Diagnostics for /push/test — why delivery may return 0."""
+    public = vapid_public_key()
+    private = _vapid_private_key_for_webpush()
+    claims = _vapid_claims()
+    if webpush is None:
+        return {"ready": False, "reason": "pywebpush_not_installed"}
+    if not private:
+        return {"ready": False, "reason": "VAPID_PRIVATE_KEY missing or invalid"}
+    if not public:
+        return {"ready": False, "reason": "VAPID_PUBLIC_KEY missing or invalid"}
+    if not claims.get("sub"):
+        return {"ready": False, "reason": "VAPID_CONTACT_EMAIL missing"}
+    return {"ready": True, "reason": "ok"}
 
 
 def _vapid_claims() -> dict[str, str]:
@@ -154,13 +250,21 @@ def send_to_user(user_id: str, payload: dict[str, Any]) -> int:
     Dead subscriptions (410 Gone, 404 Not Found) are pruned as a side-effect.
     """
     if webpush is None:
-        logger.debug("pywebpush not installed; skipping push for %s", user_id)
+        logger.warning("pywebpush not installed; skipping push for %s", user_id)
         return 0
 
-    settings = get_settings()
-    private_key = (settings.vapid_private_key or "").strip()
+    private_key = _vapid_private_key_for_webpush()
     if not private_key:
-        logger.debug("VAPID_PRIVATE_KEY not set; skipping push for %s", user_id)
+        logger.warning(
+            "VAPID_PRIVATE_KEY missing/invalid; skipping push for %s", user_id
+        )
+        return 0
+
+    claims = _vapid_claims()
+    if not claims.get("sub"):
+        logger.warning(
+            "VAPID_CONTACT_EMAIL missing; skipping push for %s", user_id
+        )
         return 0
 
     subs = _list_user_subscriptions(user_id)
@@ -168,7 +272,6 @@ def send_to_user(user_id: str, payload: dict[str, Any]) -> int:
         return 0
 
     body = json.dumps(payload, separators=(",", ":"))
-    claims = _vapid_claims()
 
     successes = 0
     for sub in subs:

@@ -109,11 +109,12 @@ class Settings(BaseSettings):
 
     # ------------------------------------------------------------------
     # Web Push (VAPID). Generate a keypair with:
-    #     pywebpush --gen-vapid-key
-    # The public key is exposed to the browser via NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-    # the private key stays server-side. `vapid_contact_email` is a
-    # `mailto:` string sent to the push service so it can reach the operator
-    # on delivery abuse.
+    #     python -c "from py_vapid import Vapid; v=Vapid(); v.generate_keys(); print(v.public_key); print(v.private_pem())"
+    # Prefer URL-safe base64: public = applicationServerKey (~87 chars),
+    # private = raw 32-byte key. PEM is also accepted and normalized at runtime.
+    # Expose the public key to the browser via NEXT_PUBLIC_VAPID_PUBLIC_KEY
+    # (same applicationServerKey value). `vapid_contact_email` is a mailto
+    # address sent to the push service for abuse contact.
     # ------------------------------------------------------------------
     vapid_public_key: str = Field(default="", alias="VAPID_PUBLIC_KEY")
     vapid_private_key: str = Field(default="", alias="VAPID_PRIVATE_KEY")

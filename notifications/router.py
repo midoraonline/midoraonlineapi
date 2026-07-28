@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from core.security import get_current_user_id
 from notifications.push_service import (
     delete_subscription_by_endpoint,
+    push_ready_status,
     save_subscription,
     send_to_user,
     vapid_public_key,
@@ -72,6 +73,9 @@ async def send_test_push(
     user_id: Annotated[str, Depends(get_current_user_id)],
 ) -> dict[str, Any]:
     """Fire a test push to the current user's registered devices."""
+    status = push_ready_status()
+    if not status.get("ready"):
+        return {"delivered": 0, "reason": status.get("reason")}
     count = send_to_user(
         user_id,
         {
@@ -80,4 +84,5 @@ async def send_test_push(
             "url": "/chat",
         },
     )
-    return {"delivered": count}
+    reason = "ok" if count else "no_subscriptions"
+    return {"delivered": count, "reason": reason}
