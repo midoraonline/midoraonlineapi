@@ -6,9 +6,15 @@ from core.next_cache import revalidate_nextjs_cache_tag
 from shop import engagement_service
 from tenants.schemas import ShopCreate, ShopListItem, ShopResponse, ShopUpdate, ShopThemeConfig
 
+# Lean shop-card columns for the public directory (description kept for card tagline).
+_SHOP_CARD_SELECT = (
+    "id,name,slug,description,logo_url,shop_type,category,location,"
+    "is_active,created_at,view_count,trust_badges"
+)
+
 # When optional columns are missing (no migration yet), try narrower selects — see list_shops().
 _SHOP_LIST_COLS_TIERS: tuple[str, ...] = (
-    "id,name,slug,description,logo_url,shop_type,category,location,is_active,created_at,view_count,trust_badges",
+    _SHOP_CARD_SELECT,
     "id,name,slug,description,logo_url,shop_type,location,is_active,created_at,view_count,trust_badges",
     "id,name,slug,description,logo_url,shop_type,is_active,created_at,view_count,trust_badges",
     "id,name,slug,description,logo_url,shop_type,is_active,created_at,trust_badges",
@@ -23,6 +29,23 @@ def _theme_config_for_db(value: ShopThemeConfig | dict[str, Any] | None) -> dict
     return value.model_dump(mode="json", exclude_none=True)
 
 
+def _shop_list_item(row: dict) -> ShopListItem:
+    return ShopListItem(
+        id=str(row["id"]),
+        name=row.get("name", ""),
+        slug=row.get("slug", ""),
+        description=row.get("description"),
+        logo_url=row.get("logo_url"),
+        category=row.get("category"),
+        location=row.get("location"),
+        shop_type=row.get("shop_type") or "product",
+        is_active=row.get("is_active", False),
+        created_at=str(row["created_at"]) if row.get("created_at") else None,
+        view_count=int(row.get("view_count") or 0),
+        trust_badges=row.get("trust_badges") or ["shop_listed"],
+    )
+
+
 def list_shops(
     client: Any,
     page: int = 1,
@@ -30,24 +53,40 @@ def list_shops(
     search: str | None = None,
     shop_type: str | None = None,
     include_inactive: bool = False,
+    exclude_ids: list[str] | None = None,
 ) -> dict:
     """List shops (public). Paginated. Optional filter by shop_type (product, service, both).
 
     By default only `is_active=True` shops are returned — shops that haven't
     completed verification or whose subscription lapsed stay hidden from the
     public directory. Pass `include_inactive=True` for admin surfaces.
+
+    Load-more: pass `exclude_ids` of shops already on screen — ignores `page`,
+    skips expensive `count=exact`, returns `has_more` like the product feed.
     """
-    limit = min(limit, 100)
-    offset = (page - 1) * limit
+    limit = min(max(limit, 1), 100)
+    exclude = [str(x).strip() for x in (exclude_ids or []) if str(x).strip()]
+    # Cap exclude list so PostgREST URL stays reasonable
+    if len(exclude) > 500:
+        exclude = exclude[-500:]
+    use_exclude = bool(exclude)
+    offset = 0 if use_exclude else (page - 1) * limit
+    want_count = not use_exclude
 
     def _run_list(select_cols: str):
-        q = client.table("shops").select(select_cols, count="exact")
+        if want_count:
+            q = client.table("shops").select(select_cols, count="exact")
+        else:
+            q = client.table("shops").select(select_cols)
         if not include_inactive:
             q = q.eq("is_active", True)
         if search:
             q = q.or_(f"name.ilike.%{search}%,slug.ilike.%{search}%")
         if shop_type and shop_type in ("product", "service", "both"):
             q = q.eq("shop_type", shop_type)
+        if use_exclude:
+            # PostgREST: not.in.(id1,id2,…)
+            q = q.not_("id", "in", f"({','.join(exclude)})")
         return q.range(offset, offset + limit - 1).order("created_at", desc=True).execute()
 
     r = None
@@ -62,26 +101,56 @@ def list_shops(
             last_err = exc
     if r is None:
         raise last_err  # type: ignore[misc]
-    total = r.count if hasattr(r, "count") and r.count is not None else len(r.data or [])
-    total_pages = (total + limit - 1) // limit if limit else 0
-    items = [
-        ShopListItem(
-            id=str(row["id"]),
-            name=row.get("name", ""),
-            slug=row.get("slug", ""),
-            description=row.get("description"),
-            logo_url=row.get("logo_url"),
-            category=row.get("category"),
-            location=row.get("location"),
-            shop_type=row.get("shop_type") or "product",
-            is_active=row.get("is_active", False),
-            created_at=str(row["created_at"]) if row.get("created_at") else None,
-            view_count=int(row.get("view_count") or 0),
-            trust_badges=row.get("trust_badges") or ["shop_listed"],
+
+    items = [_shop_list_item(row) for row in (r.data or [])]
+    has_more = len(items) >= limit
+    if want_count:
+        total = r.count if hasattr(r, "count") and r.count is not None else len(items)
+        total_pages = (total + limit - 1) // limit if limit else 0
+    else:
+        total = None
+        total_pages = None
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page if not use_exclude else None,
+        "limit": limit,
+        "total_pages": total_pages,
+        "has_more": has_more,
+        "next_cursor": f"p:{page + 1}" if has_more and not use_exclude else None,
+    }
+
+
+def shop_product_categories(
+    client: Any,
+    shop_ids: list[str],
+) -> dict[str, list[str]]:
+    """Batch distinct published product categories per shop (replaces N+1 list)."""
+    ids = [str(x).strip() for x in shop_ids if str(x).strip()]
+    if not ids:
+        return {}
+    # Cap to keep the request bounded
+    ids = ids[:200]
+    out: dict[str, set[str]] = {i: set() for i in ids}
+    try:
+        r = (
+            client.table("products")
+            .select("shop_id,category")
+            .in_("shop_id", ids)
+            .eq("is_published", True)
+            .eq("status", "active")
+            .not_("category", "is", "null")
+            .execute()
         )
-        for row in (r.data or [])
-    ]
-    return {"items": items, "total": total, "page": page, "limit": limit, "total_pages": total_pages}
+        for row in r.data or []:
+            sid = str(row.get("shop_id") or "")
+            cat = (row.get("category") or "").strip()
+            if sid in out and cat:
+                out[sid].add(cat)
+    except Exception:
+        return {i: [] for i in ids}
+    return {k: sorted(v) for k, v in out.items()}
 
 
 def list_my_shops(client: Any, owner_id: str, page: int = 1, limit: int = 20) -> dict:
@@ -109,23 +178,7 @@ def list_my_shops(client: Any, owner_id: str, page: int = 1, limit: int = 20) ->
         raise last_err  # type: ignore[misc]
     total = r.count if hasattr(r, "count") and r.count is not None else len(r.data or [])
     total_pages = (total + limit - 1) // limit if limit else 0
-    items = [
-        ShopListItem(
-            id=str(row["id"]),
-            name=row.get("name", ""),
-            slug=row.get("slug", ""),
-            description=row.get("description"),
-            logo_url=row.get("logo_url"),
-            category=row.get("category"),
-            location=row.get("location"),
-            shop_type=row.get("shop_type") or "product",
-            is_active=row.get("is_active", False),
-            created_at=str(row["created_at"]) if row.get("created_at") else None,
-            view_count=int(row.get("view_count") or 0),
-            trust_badges=row.get("trust_badges") or ["shop_listed"],
-        )
-        for row in (r.data or [])
-    ]
+    items = [_shop_list_item(row) for row in (r.data or [])]
     return {"items": items, "total": total, "page": page, "limit": limit, "total_pages": total_pages}
 
 

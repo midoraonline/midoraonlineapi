@@ -163,6 +163,7 @@ class ShopSummary(BaseModel):
     name: str
     slug: str | None = None
     logo_url: str | None = None
+    owner_id: str | None = None
     whatsapp_number: str | None = None
     is_active: bool = True
     trust_score: int = 0
@@ -195,11 +196,12 @@ class ProductDetailResponse(BaseModel):
     item_type: str | None = None
     status: str | None = None
     is_published: bool
+    is_negotiable: bool = True
     listing_score: int = 0
     location_name: str | None = None
     ai_seo_tags: str | None = None
     ai_generated_desc: bool = False
-    created_at: str | None
+    created_at: str | None = None
 
     # Engagement — fetched in a single batched pass
     like_count: int = 0

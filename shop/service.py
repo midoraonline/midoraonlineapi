@@ -289,7 +289,7 @@ def get_product_detail(
         client.table("products")
         .select(
             "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,stock_quantity,image_urls,"
-            "category,item_type,status,is_published,listing_score,location_name,"
+            "category,item_type,status,is_published,is_negotiable,listing_score,location_name,"
             "ai_seo_tags,ai_generated_desc,created_at,view_count"
         )
         .eq("id", product_id)
@@ -329,6 +329,7 @@ def get_product_detail(
                     name=s.get("name", ""),
                     slug=s.get("slug"),
                     logo_url=s.get("logo_url"),
+                    owner_id=str(s["owner_id"]) if s.get("owner_id") else None,
                     whatsapp_number=s.get("whatsapp_number"),
                     is_active=bool(s.get("is_active", True)),
                     trust_score=int(s.get("trust_score") or 0),
@@ -442,6 +443,7 @@ def get_product_detail(
         item_type=row.get("item_type"),
         status=row.get("status"),
         is_published=bool(row.get("is_published", True)),
+        is_negotiable=row.get("is_negotiable", True) is not False,
         listing_score=int(row.get("listing_score") or 0),
         location_name=row.get("location_name"),
         ai_seo_tags=row.get("ai_seo_tags"),

@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from supabase import Client
 
 from auth import service as auth_service
@@ -15,18 +15,55 @@ from tenants.schemas import ShopCreate, ShopResponse
 router = APIRouter(prefix="/shops", tags=["shops"])
 
 
+def _split_ids(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
 @router.get("", include_in_schema=True)
 @router.get("/", include_in_schema=False)
 async def list_shops(
     client: Annotated[Client, Depends(get_supabase_client)],
     params: Annotated[PaginationParams, Depends()],
+    response: Response,
     search: str | None = None,
     shop_type: str | None = None,
+    exclude_ids: str | None = Query(
+        None,
+        description="Comma-separated shop IDs already on screen (load-more).",
+    ),
 ):
-    """Public shop directory. Both /api/v1/shops and /api/v1/shops/ are supported."""
-    return tenants_service.list_shops(
-        client, page=params.page, limit=params.limit, search=search, shop_type=shop_type
+    """Public shop directory. Both /api/v1/shops and /api/v1/shops/ are supported.
+
+    First paint: page + limit (no exclude_ids).
+    Load-more: pass exclude_ids of rendered shops; page is ignored.
+    """
+    result = tenants_service.list_shops(
+        client,
+        page=params.page,
+        limit=params.limit,
+        search=search,
+        shop_type=shop_type,
+        exclude_ids=_split_ids(exclude_ids),
     )
+    # Short edge cache for anonymous browse (search/exclude skip shared cache)
+    if not search and not exclude_ids:
+        response.headers["Cache-Control"] = "public, s-maxage=60, stale-while-revalidate=120"
+    return result
+
+
+@router.get("/product-categories")
+async def shop_product_categories(
+    client: Annotated[Client, Depends(get_supabase_client)],
+    shop_ids: str = Query(..., description="Comma-separated shop UUIDs (max 200)"),
+):
+    """Batch distinct published product categories for the given shops."""
+    return {
+        "categories": tenants_service.shop_product_categories(
+            client, _split_ids(shop_ids)
+        )
+    }
 
 
 @router.post("", response_model=ShopResponse)
