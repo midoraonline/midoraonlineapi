@@ -260,33 +260,65 @@ def _vector_search(
 
 def _attach_shops(client: Any, products: list[dict[str, Any]]) -> list[dict[str, Any]]:
     shop_ids = list({str(p.get("shop_id")) for p in products if p.get("shop_id")})
+    product_ids = [str(p.get("id")) for p in products if p.get("id")]
     shops_map: dict[str, dict[str, Any]] = {}
     if shop_ids:
         try:
             resp = (
                 client.table("shops")
-                .select("id,name,slug,logo_url,is_active,category,trust_score,location,available_now,whatsapp_number,trust_badges")
+                .select("id,name,slug,logo_url,owner_id,is_active,category,trust_score,location,available_now,whatsapp_number,trust_badges")
                 .in_("id", shop_ids)
                 .execute()
             )
             for shop in resp.data or []:
                 sid = str(shop["id"])
                 loc = shop.get("location")
+                badges = shop.get("trust_badges") or []
+                if not isinstance(badges, list):
+                    badges = []
                 shops_map[sid] = {
                     "id": sid,
                     "name": shop.get("name", ""),
                     "slug": shop.get("slug", ""),
                     "logo_url": shop.get("logo_url"),
+                    "owner_id": str(shop.get("owner_id", "")) if shop.get("owner_id") else None,
                     "is_active": bool(shop.get("is_active", False)),
                     "category": shop.get("category"),
                     "trust_score": int(shop.get("trust_score") or 0),
                     "location": loc.get("display") if isinstance(loc, dict) else loc,
                     "available_now": bool(shop.get("available_now", False)),
                     "whatsapp_number": shop.get("whatsapp_number"),
-                    "trust_badges": shop.get("trust_badges") or [],
+                    "trust_badges": badges if badges else ["shop_listed"],
                 }
         except Exception as exc:
             logger.warning("search shop batch fetch failed: %s", exc)
+
+    avg_ratings: dict[str, float] = {}
+    review_counts: dict[str, int] = {}
+    if product_ids:
+        try:
+            rev_r = (
+                client.table("product_reviews")
+                .select("product_id,rating")
+                .in_("product_id", product_ids)
+                .execute()
+            )
+            sums: dict[str, float] = {}
+            counts: dict[str, int] = {}
+            for row in rev_r.data or []:
+                pid = str(row.get("product_id"))
+                r = row.get("rating")
+                if pid and r:
+                    sums[pid] = sums.get(pid, 0) + float(r)
+                    counts[pid] = counts.get(pid, 0) + 1
+            for pid in product_ids:
+                if counts.get(pid, 0) > 0:
+                    avg_ratings[pid] = round(sums[pid] / counts[pid], 2)
+                else:
+                    avg_ratings[pid] = 0.0
+                review_counts[pid] = counts.get(pid, 0)
+        except Exception as exc:
+            logger.warning("search rating batch fetch failed: %s", exc)
 
     out: list[dict[str, Any]] = []
     for product in products:
@@ -310,6 +342,10 @@ def _attach_shops(client: Any, products: list[dict[str, Any]]) -> list[dict[str,
                 "view_count": int(product.get("view_count") or 0),
                 "location_name": product.get("location_name"),
                 "created_at": product.get("created_at"),
+                "updated_at": product.get("updated_at"),
+                "average_rating": avg_ratings.get(pid, 0.0),
+                "review_count": review_counts.get(pid, 0),
+                "is_negotiable": product.get("is_negotiable") is not False,
                 "shop": shops_map.get(sid) or {},
             }
         )

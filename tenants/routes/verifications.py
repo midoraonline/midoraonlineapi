@@ -488,7 +488,10 @@ async def admin_get_verification_stages(shop_id: str) -> dict[str, Any]:
             "status": meta.get("stage2_status", "unverified"),
             "requested_at": meta.get("stage2_requested_at"),
             "notes": meta.get("stage2_notes"),
-            "docs": meta.get("stage2_docs"),
+            "docs": meta.get("stage2_docs") or _normalise_docs(row.get("submitted_docs")),
+            "phone": meta.get("stage2_phone") or row.get("submitted_phone"),
+            "whatsapp": meta.get("stage2_whatsapp") or row.get("submitted_whatsapp"),
+            "location": meta.get("stage2_location") or row.get("submitted_location"),
         },
         "stage3": {
             "status": meta.get("stage3_status", "unverified"),
@@ -496,6 +499,10 @@ async def admin_get_verification_stages(shop_id: str) -> dict[str, Any]:
             "notes": meta.get("stage3_notes"),
             "docs": meta.get("stage3_docs"),
         },
+        "shop_duration_days": row.get("shop_duration_days") or 0,
+        "submitted_phone": meta.get("stage2_phone") or row.get("submitted_phone"),
+        "submitted_whatsapp": meta.get("stage2_whatsapp") or row.get("submitted_whatsapp"),
+        "submitted_location": meta.get("stage2_location") or row.get("submitted_location"),
     }
 
 

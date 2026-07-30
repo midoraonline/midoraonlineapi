@@ -18,8 +18,8 @@ MAX_CARDS = 72
 _SUB_FEED_LIMIT = 8
 _CARD_SELECT = (
     "id,shop_id,title,price_ugx,discount_price,discount_expires_at,image_urls,category,"
-    "item_type,is_published,status,listing_score,location_name,"
-    "created_at,view_count,stock_quantity"
+    "item_type,is_published,status,listing_score,location_name,is_negotiable,"
+    "created_at,updated_at,view_count,stock_quantity"
 )
 
 # Short process-local cache for anonymous public sub-feeds (trending/premium).
@@ -197,7 +197,7 @@ def get_home_feed(
                 admin.table("shops")
                 .select(
                     "id,name,slug,logo_url,owner_id,whatsapp_number,"
-                    "is_active,category,trust_score,available_now,location"
+                    "is_active,category,trust_score,trust_badges,available_now,location"
                 )
                 .in_("id", shop_ids)
                 .execute()
@@ -205,6 +205,9 @@ def get_home_feed(
             for s in (shops_r.data or []):
                 sid = str(s["id"])
                 loc = s.get("location")
+                badges = s.get("trust_badges") or []
+                if not isinstance(badges, list):
+                    badges = []
                 shops_map[sid] = {
                     "id": sid,
                     "name": s.get("name", ""),
@@ -215,6 +218,7 @@ def get_home_feed(
                     "is_active": bool(s.get("is_active", False)),
                     "category": s.get("category"),
                     "trust_score": _safe_int(s.get("trust_score")),
+                    "trust_badges": badges if badges else ["shop_listed"],
                     "available_now": bool(s.get("available_now", False)),
                     "location": loc.get("display") if isinstance(loc, dict) else loc,
                 }
@@ -228,103 +232,110 @@ def get_home_feed(
     avg_ratings: dict[str, float] = {}
     review_counts: dict[str, int] = {}
 
-    # Guests skip likes/boosts/reviews enrichment for faster first paint.
-    if product_ids and not is_guest:
-        def _likes() -> dict[str, int]:
-            try:
-                likes_r = (
-                    admin.table("product_likes")
-                    .select("product_id")
-                    .in_("product_id", product_ids)
-                    .execute()
-                )
-                counts_raw: dict[str, int] = {}
-                for row in likes_r.data or []:
-                    pid = str(row.get("product_id"))
-                    counts_raw[pid] = counts_raw.get(pid, 0) + 1
-                return {pid: counts_raw.get(pid, 0) for pid in product_ids}
-            except Exception as exc:
-                logger.warning("home feed batch like-count fetch failed: %s", exc)
-                return {}
+    def _boosts() -> set[str]:
+        if not product_ids:
+            return set()
+        try:
+            now_iso = __import__("datetime").datetime.now(
+                __import__("datetime").timezone.utc
+            ).isoformat()
+            boosts_r = (
+                admin.table("listing_boosts")
+                .select("listing_id")
+                .in_("listing_id", product_ids)
+                .eq("active", True)
+                .gte("ends_at", now_iso)
+                .execute()
+            )
+            return {
+                str(b["listing_id"])
+                for b in (boosts_r.data or [])
+                if b.get("listing_id")
+            }
+        except Exception as exc:
+            logger.warning("home feed batch boost fetch failed: %s", exc)
+            return set()
 
-        def _viewer_likes() -> set[str]:
-            if not user_id:
-                return set()
-            try:
-                vr = (
-                    admin.table("product_likes")
-                    .select("product_id")
-                    .eq("user_id", user_id)
-                    .in_("product_id", product_ids)
-                    .execute()
-                )
-                return {
-                    str(row.get("product_id"))
-                    for row in (vr.data or [])
-                    if row.get("product_id")
-                }
-            except Exception as exc:
-                logger.warning("home feed viewer-liked fetch failed: %s", exc)
-                return set()
+    def _ratings() -> tuple[dict[str, float], dict[str, int]]:
+        if not product_ids:
+            return {}, {}
+        try:
+            rev_r = (
+                admin.table("product_reviews")
+                .select("product_id,rating")
+                .in_("product_id", product_ids)
+                .execute()
+            )
+            sums: dict[str, float] = {}
+            counts: dict[str, int] = {}
+            for row in rev_r.data or []:
+                pid = str(row.get("product_id"))
+                r = row.get("rating")
+                if pid and r:
+                    sums[pid] = sums.get(pid, 0) + float(r)
+                    counts[pid] = counts.get(pid, 0) + 1
+            ratings: dict[str, float] = {}
+            rcounts: dict[str, int] = {}
+            for pid in product_ids:
+                if counts.get(pid, 0) > 0:
+                    ratings[pid] = round(sums[pid] / counts[pid], 2)
+                else:
+                    ratings[pid] = 0.0
+                rcounts[pid] = counts.get(pid, 0)
+            return ratings, rcounts
+        except Exception as exc:
+            logger.warning("home feed batch rating fetch failed: %s", exc)
+            return {}, {}
 
-        def _boosts() -> set[str]:
-            try:
-                now_iso = __import__("datetime").datetime.now(
-                    __import__("datetime").timezone.utc
-                ).isoformat()
-                boosts_r = (
-                    admin.table("listing_boosts")
-                    .select("listing_id")
-                    .in_("listing_id", product_ids)
-                    .eq("active", True)
-                    .gte("ends_at", now_iso)
-                    .execute()
-                )
-                return {
-                    str(b["listing_id"])
-                    for b in (boosts_r.data or [])
-                    if b.get("listing_id")
-                }
-            except Exception as exc:
-                logger.warning("home feed batch boost fetch failed: %s", exc)
-                return set()
-
-        def _ratings() -> tuple[dict[str, float], dict[str, int]]:
-            try:
-                rev_r = (
-                    admin.table("product_reviews")
-                    .select("product_id,rating")
-                    .in_("product_id", product_ids)
-                    .execute()
-                )
-                sums: dict[str, float] = {}
-                counts: dict[str, int] = {}
-                for row in rev_r.data or []:
-                    pid = str(row.get("product_id"))
-                    r = row.get("rating")
-                    if pid and r:
-                        sums[pid] = sums.get(pid, 0) + float(r)
-                        counts[pid] = counts.get(pid, 0) + 1
-                ratings: dict[str, float] = {}
-                rcounts: dict[str, int] = {}
-                for pid in product_ids:
-                    if counts.get(pid, 0) > 0:
-                        ratings[pid] = round(sums[pid] / counts[pid], 2)
-                    else:
-                        ratings[pid] = 0.0
-                    rcounts[pid] = counts.get(pid, 0)
-                return ratings, rcounts
-            except Exception as exc:
-                logger.warning("home feed batch rating fetch failed: %s", exc)
-                return {}, {}
-
+    # Ratings + boosts are public card signals — always enrich (including guests).
+    # Likes / viewer_liked stay auth-only for faster anonymous first paint.
+    if product_ids:
         with ThreadPoolExecutor(max_workers=4) as pool:
-            fl = pool.submit(_likes)
-            fv = pool.submit(_viewer_likes)
             fb = pool.submit(_boosts)
             fr = pool.submit(_ratings)
-            like_counts = fl.result()
-            viewer_liked_ids = fv.result()
+            if not is_guest:
+                def _likes() -> dict[str, int]:
+                    try:
+                        likes_r = (
+                            admin.table("product_likes")
+                            .select("product_id")
+                            .in_("product_id", product_ids)
+                            .execute()
+                        )
+                        counts_raw: dict[str, int] = {}
+                        for row in likes_r.data or []:
+                            pid = str(row.get("product_id"))
+                            counts_raw[pid] = counts_raw.get(pid, 0) + 1
+                        return {pid: counts_raw.get(pid, 0) for pid in product_ids}
+                    except Exception as exc:
+                        logger.warning("home feed batch like-count fetch failed: %s", exc)
+                        return {}
+
+                def _viewer_likes() -> set[str]:
+                    if not user_id:
+                        return set()
+                    try:
+                        vr = (
+                            admin.table("product_likes")
+                            .select("product_id")
+                            .eq("user_id", user_id)
+                            .in_("product_id", product_ids)
+                            .execute()
+                        )
+                        return {
+                            str(row.get("product_id"))
+                            for row in (vr.data or [])
+                            if row.get("product_id")
+                        }
+                    except Exception as exc:
+                        logger.warning("home feed viewer-liked fetch failed: %s", exc)
+                        return set()
+
+                fl = pool.submit(_likes)
+                fv = pool.submit(_viewer_likes)
+                like_counts = fl.result()
+                viewer_liked_ids = fv.result()
+
             boosted_ids = fb.result()
             avg_ratings, review_counts = fr.result()
 
