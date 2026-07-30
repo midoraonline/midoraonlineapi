@@ -208,6 +208,19 @@ def get_home_feed(
                 badges = s.get("trust_badges") or []
                 if not isinstance(badges, list):
                     badges = []
+                loc_display = loc.get("display") if isinstance(loc, dict) else loc
+                loc_lat = None
+                loc_lng = None
+                if isinstance(loc, dict):
+                    try:
+                        lat_v = loc.get("lat")
+                        lng_v = loc.get("lng")
+                        if lat_v is not None and lng_v is not None:
+                            loc_lat = float(lat_v)
+                            loc_lng = float(lng_v)
+                    except (TypeError, ValueError):
+                        loc_lat = None
+                        loc_lng = None
                 shops_map[sid] = {
                     "id": sid,
                     "name": s.get("name", ""),
@@ -220,7 +233,9 @@ def get_home_feed(
                     "trust_score": _safe_int(s.get("trust_score")),
                     "trust_badges": badges if badges else ["shop_listed"],
                     "available_now": bool(s.get("available_now", False)),
-                    "location": loc.get("display") if isinstance(loc, dict) else loc,
+                    "location": loc_display,
+                    "location_lat": loc_lat,
+                    "location_lng": loc_lng,
                 }
         except Exception as exc:
             logger.warning("home feed batch shop fetch failed: %s", exc)

@@ -276,6 +276,19 @@ def _attach_shops(client: Any, products: list[dict[str, Any]]) -> list[dict[str,
                 badges = shop.get("trust_badges") or []
                 if not isinstance(badges, list):
                     badges = []
+                loc_display = loc.get("display") if isinstance(loc, dict) else loc
+                loc_lat = None
+                loc_lng = None
+                if isinstance(loc, dict):
+                    try:
+                        lat_v = loc.get("lat")
+                        lng_v = loc.get("lng")
+                        if lat_v is not None and lng_v is not None:
+                            loc_lat = float(lat_v)
+                            loc_lng = float(lng_v)
+                    except (TypeError, ValueError):
+                        loc_lat = None
+                        loc_lng = None
                 shops_map[sid] = {
                     "id": sid,
                     "name": shop.get("name", ""),
@@ -285,7 +298,9 @@ def _attach_shops(client: Any, products: list[dict[str, Any]]) -> list[dict[str,
                     "is_active": bool(shop.get("is_active", False)),
                     "category": shop.get("category"),
                     "trust_score": int(shop.get("trust_score") or 0),
-                    "location": loc.get("display") if isinstance(loc, dict) else loc,
+                    "location": loc_display,
+                    "location_lat": loc_lat,
+                    "location_lng": loc_lng,
                     "available_now": bool(shop.get("available_now", False)),
                     "whatsapp_number": shop.get("whatsapp_number"),
                     "trust_badges": badges if badges else ["shop_listed"],
