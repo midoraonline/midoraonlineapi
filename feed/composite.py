@@ -19,7 +19,7 @@ _SUB_FEED_LIMIT = 8
 _CARD_SELECT = (
     "id,shop_id,title,price_ugx,discount_price,discount_expires_at,image_urls,category,"
     "item_type,is_published,status,listing_score,location_name,is_negotiable,"
-    "created_at,updated_at,view_count,stock_quantity"
+    "listing_meta,created_at,updated_at,view_count,stock_quantity"
 )
 
 # Short process-local cache for anonymous public sub-feeds (trending/premium).
@@ -377,6 +377,9 @@ def get_home_feed(
                 "viewer_liked": (str(p.id) in viewer_liked_ids) if not is_guest else None,
                 "listing_score": _safe_int(p.listing_score),
                 "location_name": p.location_name,
+                "listing_meta": getattr(p, "listing_meta", None)
+                if isinstance(getattr(p, "listing_meta", None), dict)
+                else (p.get("listing_meta") if isinstance(p, dict) and isinstance(p.get("listing_meta"), dict) else {}),
                 "created_at": p.created_at,
                 "stock_quantity": int(getattr(p, "stock_quantity", 0) or 0),
                 "updated_at": getattr(p, "updated_at", None),

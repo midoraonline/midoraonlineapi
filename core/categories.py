@@ -125,6 +125,33 @@ _CATEGORY_TREE: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         ),
     ),
     (
+        "property-land",
+        "Property & Land",
+        (
+            "Land & Plots",
+            "Houses for Sale",
+            "Houses for Rent",
+            "Apartments & Flats",
+            "Rooms & Hostels",
+            "Commercial Property",
+            "Warehouses & Storage",
+            "Short Stay & Airbnb",
+        ),
+    ),
+    (
+        "opportunities",
+        "Opportunities",
+        (
+            "Full-time Jobs",
+            "Part-time Jobs",
+            "Gigs & Freelance",
+            "Internships",
+            "Tenders & Contracts",
+            "Partnerships & Collaborations",
+            "Volunteer & Unpaid",
+        ),
+    ),
+    (
         "agriculture",
         "Agriculture",
         (
@@ -399,3 +426,25 @@ def seed_rows() -> list[dict]:
         }
         for c in ALL_CATEGORIES
     ]
+
+
+_PARENT_LABEL_BY_LABEL: dict[str, str] = {}
+_LABEL_BY_SLUG: dict[str, str] = {c.slug: c.label for c in ALL_CATEGORIES}
+for _c in ALL_CATEGORIES:
+    if _c.parent_slug is None:
+        _PARENT_LABEL_BY_LABEL[_c.label] = _c.label
+    else:
+        _PARENT_LABEL_BY_LABEL[_c.label] = _LABEL_BY_SLUG.get(_c.parent_slug, _c.label)
+
+
+def parent_label_for(value: str | None) -> str | None:
+    """Resolve a stored category string to its top-level parent label."""
+    if value is None or not str(value).strip():
+        return None
+    try:
+        label = normalize_category(str(value))
+    except ValueError:
+        return None
+    if label is None:
+        return None
+    return _PARENT_LABEL_BY_LABEL.get(label)

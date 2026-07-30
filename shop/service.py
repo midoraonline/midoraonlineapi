@@ -121,6 +121,8 @@ def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
         "location_name": data.location_name,
         "status": "pending_review",
     }
+    if data.listing_meta is not None:
+        payload["listing_meta"] = data.listing_meta
     imgs = _image_urls_for_db(data.image_urls)
     if imgs is not None:
         payload["image_urls"] = imgs
@@ -446,6 +448,7 @@ def get_product_detail(
         is_negotiable=row.get("is_negotiable", True) is not False,
         listing_score=int(row.get("listing_score") or 0),
         location_name=row.get("location_name"),
+        listing_meta=row.get("listing_meta") if isinstance(row.get("listing_meta"), dict) else {},
         ai_seo_tags=row.get("ai_seo_tags"),
         ai_generated_desc=bool(row.get("ai_generated_desc", False)),
         created_at=str(row["created_at"]) if row.get("created_at") else None,
@@ -527,6 +530,7 @@ def _row_to_product_response(row: dict) -> dict:
         "status": row.get("status", "active"),
         "listing_score": int(row.get("listing_score") or 0),
         "location_name": row.get("location_name"),
+        "listing_meta": row.get("listing_meta") if isinstance(row.get("listing_meta"), dict) else {},
         "ai_seo_tags": row.get("ai_seo_tags"),
         "ai_generated_desc": row.get("ai_generated_desc", False),
         "is_published": row.get("is_published", True),

@@ -10,3 +10,9 @@ class CategoryItem(BaseModel):
 
 class CategoryListResponse(BaseModel):
     items: list[CategoryItem]
+
+
+class CategoryCountsResponse(BaseModel):
+    """Published listing counts keyed by top-level parent category label."""
+
+    counts: dict[str, int]

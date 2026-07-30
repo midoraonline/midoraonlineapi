@@ -1,8 +1,9 @@
 from typing import Any
+from collections import Counter
 
 from postgrest.exceptions import APIError
 
-from core.categories import seed_rows
+from core.categories import parent_label_for, seed_rows
 
 
 def _has_nested_categories(rows: list[dict]) -> bool:
@@ -41,3 +42,22 @@ def list_categories(client: Any) -> list[dict]:
 
 def fallback_categories() -> list[dict]:
     return seed_rows()
+
+
+def listing_counts_by_parent(client: Any) -> dict[str, int]:
+    """Count published listings per top-level parent category label."""
+    counts: Counter[str] = Counter()
+    try:
+        r = (
+            client.table("products")
+            .select("category")
+            .eq("is_published", True)
+            .execute()
+        )
+        for row in r.data or []:
+            parent = parent_label_for(row.get("category"))
+            if parent:
+                counts[parent] += 1
+    except APIError:
+        return {}
+    return dict(counts)

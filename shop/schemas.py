@@ -6,7 +6,7 @@ from core.categories import validate_category_field
 class ProductCreate(BaseModel):
     title: str
     description: str | None = None
-    price_ugx: float
+    price_ugx: float = 0
     discount_price: float | None = None
     discount_expires_at: str | None = None
     stock_quantity: int = 0
@@ -16,6 +16,7 @@ class ProductCreate(BaseModel):
     is_negotiable: bool = True
     item_type: str | None = None
     location_name: str | None = None
+    listing_meta: dict | None = None
 
     @field_validator("image_urls", mode="before")
     @classmethod
@@ -30,6 +31,26 @@ class ProductCreate(BaseModel):
     @classmethod
     def _category(cls, v: str | None) -> str | None:
         return validate_category_field(v)
+
+    @field_validator("item_type", mode="before")
+    @classmethod
+    def _item_type(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        allowed = {"product", "service", "property", "job", "opportunity"}
+        raw = str(v).strip().lower()
+        if raw not in allowed:
+            raise ValueError(f"item_type must be one of {sorted(allowed)}")
+        return raw
+
+    @field_validator("listing_meta", mode="before")
+    @classmethod
+    def _listing_meta(cls, v: dict | None) -> dict | None:
+        if v is None:
+            return None
+        if not isinstance(v, dict):
+            raise ValueError("listing_meta must be an object")
+        return v
 
 
 class ProductUpdate(BaseModel):
@@ -58,11 +79,32 @@ class ProductUpdate(BaseModel):
     status: str | None = None
     location_name: str | None = None
     ai_seo_tags: str | None = None
+    listing_meta: dict | None = None
 
     @field_validator("category", mode="before")
     @classmethod
     def _category(cls, v: str | None) -> str | None:
         return validate_category_field(v)
+
+    @field_validator("item_type", mode="before")
+    @classmethod
+    def _item_type(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        allowed = {"product", "service", "property", "job", "opportunity"}
+        raw = str(v).strip().lower()
+        if raw not in allowed:
+            raise ValueError(f"item_type must be one of {sorted(allowed)}")
+        return raw
+
+    @field_validator("listing_meta", mode="before")
+    @classmethod
+    def _listing_meta(cls, v: dict | None) -> dict | None:
+        if v is None:
+            return None
+        if not isinstance(v, dict):
+            raise ValueError("listing_meta must be an object")
+        return v
 
 
 class ProductResponse(BaseModel):
@@ -82,6 +124,7 @@ class ProductResponse(BaseModel):
     status: str | None = None
     listing_score: int = 0
     location_name: str | None = None
+    listing_meta: dict | None = None
     created_at: str | None
     like_count: int = 0
     view_count: int = 0
@@ -104,6 +147,7 @@ class ProductListItem(BaseModel):
     status: str | None = None
     listing_score: int = 0
     location_name: str | None = None
+    listing_meta: dict | None = None
     created_at: str | None
     view_count: int = 0
 
@@ -199,6 +243,7 @@ class ProductDetailResponse(BaseModel):
     is_negotiable: bool = True
     listing_score: int = 0
     location_name: str | None = None
+    listing_meta: dict | None = None
     ai_seo_tags: str | None = None
     ai_generated_desc: bool = False
     created_at: str | None = None
