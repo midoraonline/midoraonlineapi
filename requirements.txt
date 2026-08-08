@@ -32,6 +32,11 @@ email-validator>=2.2.0,<3.0
 # AI
 google-genai>=0.3.0,<2.0
 
+# Listing moderation: Pillow for perceptual hashing + MIME sniffing.
+# Kept lightweight (no numpy / no torch) so the Vercel Python bundle stays
+# well under the 250 MB standard size limit.
+Pillow>=10.0.0,<12.0
+
 # Web Push (VAPID). Pure Python, works on Vercel serverless.
 pywebpush>=2.0.0,<3.0
 

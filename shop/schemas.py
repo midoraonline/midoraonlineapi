@@ -125,6 +125,8 @@ class ProductResponse(BaseModel):
     listing_score: int = 0
     location_name: str | None = None
     listing_meta: dict | None = None
+    review_notes: str | None = None
+    reviewed_at: str | None = None
     created_at: str | None
     like_count: int = 0
     view_count: int = 0
@@ -148,6 +150,8 @@ class ProductListItem(BaseModel):
     listing_score: int = 0
     location_name: str | None = None
     listing_meta: dict | None = None
+    review_notes: str | None = None
+    reviewed_at: str | None = None
     created_at: str | None
     view_count: int = 0
 
@@ -246,6 +250,8 @@ class ProductDetailResponse(BaseModel):
     listing_meta: dict | None = None
     ai_seo_tags: str | None = None
     ai_generated_desc: bool = False
+    review_notes: str | None = None
+    reviewed_at: str | None = None
     created_at: str | None = None
 
     # Engagement — fetched in a single batched pass

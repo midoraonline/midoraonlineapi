@@ -20,12 +20,12 @@ from shop.schemas import (
 
 _PRODUCT_LIST_COLS_WITH_VIEWS = (
     "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,status,"
-    "listing_score,location_name,is_published,created_at,view_count,"
+    "listing_score,location_name,is_published,created_at,view_count,review_notes,reviewed_at,"
     "shops(id,name,slug,logo_url,whatsapp_number,is_active,trust_score,available_now,location,trust_badges)"
 )
 _PRODUCT_LIST_COLS_BASE = (
     "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
-    "is_published,created_at,"
+    "is_published,created_at,review_notes,reviewed_at,"
     "shops(id,name,slug,logo_url,whatsapp_number,is_active,trust_score,available_now,location,trust_badges)"
 )
 
@@ -91,6 +91,8 @@ def list_products(
                 status=row.get("status"),
                 listing_score=int(row.get("listing_score") or 0),
                 location_name=row.get("location_name"),
+                review_notes=row.get("review_notes"),
+                reviewed_at=str(row["reviewed_at"]) if row.get("reviewed_at") else None,
                 created_at=str(row["created_at"]) if row.get("created_at") else None,
                 view_count=int(row.get("view_count") or 0),
             )
@@ -129,11 +131,21 @@ def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
     r = client.table("products").insert(payload).execute()
     if not r.data or len(r.data) == 0:
         raise ValueError("Failed to create product")
-    result = _row_to_product_response(r.data[0])
+    created_row = r.data[0]
+    result = _row_to_product_response(created_row)
     from ranking.service import calculate_listing_score
-    calculate_listing_score(str(r.data[0]["id"]))
+    calculate_listing_score(str(created_row["id"]))
     from feed.embeddings import refresh_product_embedding
-    refresh_product_embedding(str(r.data[0]["id"]))
+    refresh_product_embedding(str(created_row["id"]))
+
+    # Enqueue for automated moderation. Row stays `pending_review` (set above)
+    # until the cron drain runs the pipeline and flips it to active/rejected/
+    # needs_review. Enqueue is safe to call inline: it's a single admin insert
+    # and never raises.
+    from listingModeration.hooks import enqueue_product
+    _shop_owner = _lookup_shop_owner(client, shop_id)
+    enqueue_product(created_row, seller_id=_shop_owner)
+
     return result
 
 
@@ -292,7 +304,7 @@ def get_product_detail(
         .select(
             "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,stock_quantity,image_urls,"
             "category,item_type,status,is_published,is_negotiable,listing_score,location_name,"
-            "ai_seo_tags,ai_generated_desc,created_at,view_count"
+            "ai_seo_tags,ai_generated_desc,review_notes,reviewed_at,created_at,view_count"
         )
         .eq("id", product_id)
         .limit(1)
@@ -451,6 +463,8 @@ def get_product_detail(
         listing_meta=row.get("listing_meta") if isinstance(row.get("listing_meta"), dict) else {},
         ai_seo_tags=row.get("ai_seo_tags"),
         ai_generated_desc=bool(row.get("ai_generated_desc", False)),
+        review_notes=row.get("review_notes"),
+        reviewed_at=str(row["reviewed_at"]) if row.get("reviewed_at") else None,
         created_at=str(row["created_at"]) if row.get("created_at") else None,
         like_count=like_count,
         view_count=int(row.get("view_count") or 0),
@@ -464,20 +478,49 @@ def get_product_detail(
 
 
 
+def _lookup_shop_owner(client: Any, shop_id: str) -> str | None:
+    try:
+        r = client.table("shops").select("owner_id").eq("id", shop_id).limit(1).execute()
+        if r.data:
+            return str(r.data[0].get("owner_id") or "") or None
+    except Exception:
+        pass
+    return None
+
+
 def update_product(client: Any, product_id: str, data: ProductUpdate) -> dict | None:
     payload = data.model_dump(exclude_unset=True)
     if data.image_urls is not None:
         payload["image_urls"] = _image_urls_for_db(data.image_urls) or []
+
+    # Content-changing edits must go back through moderation. We reset status
+    # to pending_review even if the merchant tried to set status=active, which
+    # closes the "edit-around-the-gate" bypass.
+    content_changed = any(
+        key in payload for key in ("title", "description", "image_urls", "category")
+    )
+    if content_changed:
+        payload["status"] = "pending_review"
+    elif "status" in payload and payload["status"] == "active":
+        # Merchants cannot self-approve. Admin routes handle publish separately.
+        payload.pop("status", None)
     if not payload:
         return get_product(client, product_id, viewer_id=None)
     r = client.table("products").update(payload).eq("id", product_id).execute()
     if not r.data or len(r.data) == 0:
         return None
+    updated_row = r.data[0]
     from feed.embeddings import refresh_product_embedding
     from ranking.service import calculate_listing_score
     refresh_product_embedding(product_id)
     calculate_listing_score(product_id)
-    return _row_to_product_response(r.data[0])
+
+    if content_changed:
+        from listingModeration.hooks import enqueue_product
+        seller_id = _lookup_shop_owner(client, str(updated_row.get("shop_id") or ""))
+        enqueue_product(updated_row, seller_id=seller_id)
+
+    return _row_to_product_response(updated_row)
 
 
 def delete_product(client: Any, product_id: str) -> bool:
@@ -535,6 +578,8 @@ def _row_to_product_response(row: dict) -> dict:
         "ai_generated_desc": row.get("ai_generated_desc", False),
         "is_published": row.get("is_published", True),
         "is_negotiable": row.get("is_negotiable", True) if row.get("is_negotiable") is not False else False,
+        "review_notes": row.get("review_notes"),
+        "reviewed_at": str(row["reviewed_at"]) if row.get("reviewed_at") else None,
         "created_at": str(row["created_at"]) if row.get("created_at") else None,
         "like_count": 0,
         "view_count": int(row.get("view_count") or 0),
