@@ -18,6 +18,10 @@ import os
 from contextlib import asynccontextmanager
 
 from mail.queue import start_worker, stop_worker
+from listingModeration.worker import (
+    start_worker as start_moderation_worker,
+    stop_worker as stop_moderation_worker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +36,7 @@ async def lifespan(app):
     started = False
     if not _is_serverless():
         start_worker()
+        start_moderation_worker()
         started = True
     else:
         logger.info(
@@ -43,4 +48,5 @@ async def lifespan(app):
 
     if started:
         await stop_worker()
+        await stop_moderation_worker()
 
