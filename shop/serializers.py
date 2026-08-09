@@ -70,6 +70,12 @@ def serialize_product_card(
         location_name=product_row.get("location_name"),
         is_published=bool(product_row.get("is_published", True)),
         is_negotiable=product_row.get("is_negotiable", True) is not False,
+        stock_quantity=(
+            int(product_row["stock_quantity"])
+            if product_row.get("stock_quantity") is not None
+            else None
+        ),
+        listing_meta=product_row.get("listing_meta") if isinstance(product_row.get("listing_meta"), dict) else {},
         view_count=int(product_row.get("view_count") or 0),
         created_at=str(product_row["created_at"]) if product_row.get("created_at") else None,
         average_rating=average_rating,

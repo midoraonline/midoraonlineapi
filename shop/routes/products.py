@@ -170,7 +170,8 @@ async def my_liked_products(
         admin.table("products")
         .select(
             "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
-            "status,listing_score,location_name,is_published,is_negotiable,view_count,created_at"
+            "status,listing_score,location_name,is_published,is_negotiable,stock_quantity,listing_meta,"
+            "view_count,created_at"
         )
         .in_("id", page_ids)
         .execute()
@@ -296,7 +297,8 @@ def _fetch_carousel_products(
         client.table("products")
         .select(
             "id, shop_id, title, price_ugx, discount_price, discount_expires_at, "
-            "image_urls, category, view_count, listing_score, created_at"
+            "image_urls, category, item_type, is_negotiable, stock_quantity, listing_meta, "
+            "view_count, listing_score, created_at"
         )
         .eq("is_published", True)
         .eq("status", "active")

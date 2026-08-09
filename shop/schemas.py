@@ -145,6 +145,7 @@ class ProductListItem(BaseModel):
     category: str | None
     is_published: bool
     is_negotiable: bool = True
+    stock_quantity: int | None = None
     item_type: str | None = None
     status: str | None = None
     listing_score: int = 0
@@ -296,6 +297,8 @@ class ProductCard(BaseModel):
     location_name: str | None = None
     is_published: bool = True
     is_negotiable: bool = True
+    stock_quantity: int | None = None
+    listing_meta: dict | None = None
     view_count: int = 0
     created_at: str | None = None
 

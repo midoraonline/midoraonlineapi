@@ -20,12 +20,13 @@ from shop.schemas import (
 
 _PRODUCT_LIST_COLS_WITH_VIEWS = (
     "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,status,"
-    "listing_score,location_name,is_published,created_at,view_count,review_notes,reviewed_at,"
+    "listing_score,location_name,is_published,is_negotiable,stock_quantity,listing_meta,"
+    "created_at,view_count,review_notes,reviewed_at,"
     "shops(id,name,slug,logo_url,whatsapp_number,is_active,trust_score,available_now,location,trust_badges)"
 )
 _PRODUCT_LIST_COLS_BASE = (
     "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
-    "is_published,created_at,review_notes,reviewed_at,"
+    "is_published,is_negotiable,stock_quantity,listing_meta,created_at,review_notes,reviewed_at,"
     "shops(id,name,slug,logo_url,whatsapp_number,is_active,trust_score,available_now,location,trust_badges)"
 )
 
@@ -87,6 +88,9 @@ def list_products(
                 image_urls=image_urls[:1] if image_urls else None,
                 category=row.get("category"),
                 is_published=row.get("is_published", True),
+                is_negotiable=row.get("is_negotiable", True) is not False,
+                stock_quantity=int(row.get("stock_quantity") or 0),
+                listing_meta=row.get("listing_meta") if isinstance(row.get("listing_meta"), dict) else {},
                 item_type=row.get("item_type"),
                 status=row.get("status"),
                 listing_score=int(row.get("listing_score") or 0),
@@ -168,7 +172,8 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
         r = (
             client.table("products")
             .select("id,shop_id,title,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
-                    "listing_score,location_name,is_published,is_negotiable,created_at,view_count")
+                    "listing_score,location_name,is_published,is_negotiable,stock_quantity,listing_meta,"
+                    "created_at,view_count")
             .eq("category", category)
             .eq("is_published", True)
             .eq("status", "active")
@@ -182,7 +187,7 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
         r = (
             client.table("products")
             .select("id,shop_id,title,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
-                    "is_published,created_at")
+                    "is_negotiable,stock_quantity,listing_meta,is_published,created_at")
             .eq("category", category)
             .eq("is_published", True)
             .eq("status", "active")
@@ -248,6 +253,8 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             "created_at": str(row["created_at"]) if row.get("created_at") else None,
             "view_count": int(row.get("view_count") or 0),
             "is_negotiable": row.get("is_negotiable", True) is not False,
+            "stock_quantity": int(row["stock_quantity"]) if row.get("stock_quantity") is not None else None,
+            "listing_meta": row.get("listing_meta") if isinstance(row.get("listing_meta"), dict) else {},
             "average_rating": avg_ratings.get(pid, 0.0),
             "review_count": review_counts.get(pid, 0),
             "shop_name": s.get("name"),
