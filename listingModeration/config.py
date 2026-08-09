@@ -23,6 +23,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class ModerationConfig:
     # Batch size per drain invocation. Keep small so a single Vercel function
@@ -55,6 +62,26 @@ class ModerationConfig:
 
     # Max bytes to read per image (guards against huge images). 5 MB.
     max_image_bytes: int = _env_int("MODERATION_MAX_IMAGE_BYTES", 5 * 1024 * 1024)
+
+    # Run the pipeline synchronously right after enqueue instead of waiting
+    # for the cron drain. Ensures listings complete even when the cron isn't
+    # firing (Vercel Hobby caps at once-per-day; CRON_SECRET missing in prod
+    # returns 503). The cron becomes a safety net for reclaim/retry only.
+    inline_on_enqueue: bool = _env_bool("MODERATION_INLINE_ON_ENQUEUE", True)
+
+    # Max wall-clock we're willing to spend on the inline pipeline run before
+    # we bail and let the cron pick it up. Guards create_product latency.
+    inline_timeout_seconds: float = _env_float("MODERATION_INLINE_TIMEOUT", 25.0)
+
+    # When Gemini is unavailable (no key, transient failure, bad JSON) and
+    # cheap checks (keywords + pHash) came back clean, default to APPROVED
+    # instead of parking in needs_review forever. Toggle off if you want a
+    # human eye on everything when the model can't score. Recommended ON in
+    # production so listings don't get stuck on a transient outage.
+    fail_open_when_model_unavailable: bool = _env_bool(
+        "MODERATION_FAIL_OPEN_WHEN_MODEL_UNAVAILABLE",
+        True,
+    )
 
 
 # Deny-list is intentionally short here; extend from your real policy doc.

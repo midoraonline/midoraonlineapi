@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from uuid import UUID
 
 from . import service
 from .config import config
@@ -25,9 +26,18 @@ logger = logging.getLogger(__name__)
 
 
 def _decide_from_scores(text_score: float | None, image_score: float | None) -> tuple[ModerationStatus, str | None]:
-    # Unknown scores (Gemini failed / not configured) push to needs_review
-    # rather than falsely approving. Never auto-reject on unknowns.
+    # Unknown scores (Gemini failed / not configured). Fail-open when
+    # explicitly allowed so listings don't get stuck at pending_review
+    # forever on a transient outage or a self-hosted deploy without a
+    # Gemini key. Keyword deny-list + pHash blocklist already ran clean at
+    # this point, so this is not a full bypass — just a downgrade of the
+    # model-only signal to "trust unless a cheap check hits".
     if text_score is None or image_score is None:
+        if config.fail_open_when_model_unavailable:
+            return (
+                ModerationStatus.APPROVED,
+                "auto-approved: model unavailable, cheap checks clean",
+            )
         return ModerationStatus.NEEDS_REVIEW, "model unavailable — manual review required"
 
     if text_score >= config.text_reject_threshold:
@@ -114,3 +124,28 @@ async def process_batch(batch_size: int) -> dict[str, int]:
             counts["failed"] += 1
 
     return counts
+
+
+async def process_row(row_id: UUID | str) -> ModerationDecision | None:
+    """Run the pipeline synchronously on a single queue row.
+
+    Used by the inline-on-enqueue hook so a listing gets its final status
+    without waiting for the next cron tick. Returns None when the row is
+    missing or already claimed by a concurrent drain.
+    """
+    row = service.claim_by_id(row_id)
+    if row is None:
+        return None
+
+    known_bad_hashes = service.load_bad_image_hashes()
+    try:
+        decision = await moderate(row, known_bad_hashes)
+    except Exception as exc:
+        logger.exception("inline moderation failed for row %s", row.id)
+        service.mark_failed(row.id, repr(exc))
+        return None
+
+    service.write_decision(row.id, decision)
+    if row.product_id:
+        service.sync_product_status(row.product_id, decision)
+    return decision

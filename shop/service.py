@@ -143,9 +143,10 @@ def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
     refresh_product_embedding(str(created_row["id"]))
 
     # Enqueue for automated moderation. Row stays `pending_review` (set above)
-    # until the cron drain runs the pipeline and flips it to active/rejected/
-    # needs_review. Enqueue is safe to call inline: it's a single admin insert
-    # and never raises.
+    # until the pipeline runs and flips it to active/rejected/needs_review.
+    # The async route handler drives the pipeline synchronously by looking
+    # up the queued row via `service.latest_pending_row_for_product` and
+    # awaiting `moderate_now`.
     from listingModeration.hooks import enqueue_product
     _shop_owner = _lookup_shop_owner(client, shop_id)
     enqueue_product(created_row, seller_id=_shop_owner)

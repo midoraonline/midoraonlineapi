@@ -77,6 +77,65 @@ def claim_batch(limit: int) -> list[ModerationRow]:
     return [ModerationRow.model_validate(row) for row in (r.data or [])]
 
 
+def claim_by_id(row_id: UUID | str) -> Optional[ModerationRow]:
+    """Claim a specific row and flip it to 'processing'.
+
+    Used by the inline hook so create_product can process the row it just
+    enqueued without racing the cron drain. Returns None when the row was
+    already claimed by a concurrent drain, or is no longer pending.
+    """
+    admin = get_supabase_admin()
+    try:
+        # Idempotent status transition: pending -> processing. Any drain
+        # that already grabbed the row will win here (no rows updated).
+        r = (
+            admin.table(_TABLE)
+            .update({
+                "status": "processing",
+                "processing_started_at": datetime.now(timezone.utc).isoformat(),
+            })
+            .eq("id", str(row_id))
+            .eq("status", "pending")
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning("claim_by_id failed for %s: %s", row_id, exc)
+        return None
+    if not r.data:
+        return None
+    return ModerationRow.model_validate(r.data[0])
+
+
+def latest_pending_row_for_product(product_id: UUID | str) -> Optional[UUID]:
+    """Return the id of the most recent pending queue row for a product.
+
+    The async route handler uses this right after `shop_service.create_product`
+    (or `update_product`) to pick up the row that was just enqueued and drive
+    the pipeline inline via `moderate_now`. Returns None when no row is
+    pending (enqueue failed, or an eager cron drain already picked it up).
+    """
+    admin = get_supabase_admin()
+    try:
+        r = (
+            admin.table(_TABLE)
+            .select("id")
+            .eq("product_id", str(product_id))
+            .eq("status", "pending")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning("latest_pending_row_for_product failed: %s", exc)
+        return None
+    if not r.data:
+        return None
+    try:
+        return UUID(str(r.data[0]["id"]))
+    except (KeyError, ValueError, TypeError):
+        return None
+
+
 def write_decision(row_id: UUID, decision: ModerationDecision) -> None:
     admin = get_supabase_admin()
     update = {

@@ -111,6 +111,27 @@ async def create_product(
     await _notify_product_submission(
         client=client, user_id=user_id, shop_id=shop_id, body=body,
     )
+
+    # Drive the moderation pipeline synchronously so the merchant sees the
+    # final status without waiting for cron. `moderate_now` is bounded by
+    # MODERATION_INLINE_TIMEOUT so a slow Gemini call can't blow the
+    # Vercel function budget — cron picks up any row that times out.
+    # Refetch the product so the response reflects the pipeline decision
+    # (status = active / rejected / pending_review).
+    try:
+        from listingModeration.config import config as moderation_config
+        from listingModeration import service as moderation_service
+        from listingModeration.hooks import moderate_now
+        if moderation_config.inline_on_enqueue:
+            row_id = moderation_service.latest_pending_row_for_product(product["id"])
+            if row_id is not None:
+                await moderate_now(row_id)
+                refreshed = shop_service.get_product(client, product["id"], viewer_id=user_id)
+                if refreshed is not None:
+                    product = refreshed
+    except Exception as exc:
+        logger.warning("inline moderation dispatch failed: %s", exc)
+
     return product
 
 
@@ -399,6 +420,21 @@ async def update_product(
     updated = shop_service.update_product(client, product_id, body)
     if not updated:
         raise HTTPException(status_code=404, detail="Product not found")
+
+    # If the edit reset the listing to pending_review, drive the pipeline
+    # inline (mirrors create_product) so the merchant sees the outcome on
+    # the response instead of waiting for cron.
+    try:
+        from listingModeration.config import config as moderation_config
+        from listingModeration import service as moderation_service
+        from listingModeration.hooks import moderate_now
+        if moderation_config.inline_on_enqueue:
+            row_id = moderation_service.latest_pending_row_for_product(product_id)
+            if row_id is not None:
+                await moderate_now(row_id)
+    except Exception as exc:
+        logger.warning("inline moderation dispatch (update) failed: %s", exc)
+
     out = shop_service.get_product(client, product_id, viewer_id=user_id)
     if not out:
         raise HTTPException(status_code=404, detail="Product not found")
