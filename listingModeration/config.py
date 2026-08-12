@@ -52,6 +52,20 @@ class ModerationConfig:
     # Higher = catches more edits, but also more false positives.
     phash_distance_threshold: int = _env_int("MODERATION_PHASH_DISTANCE", 5)
 
+    # Tier 3: local profanity classifier (alt-profanity-check). CPU-only, no
+    # network. Runs before the model calls so obvious garbage is rejected
+    # without spending a Gemini/OpenAI request or risking a 429.
+    enable_profanity_check: bool = _env_bool("MODERATION_ENABLE_PROFANITY_CHECK", True)
+    profanity_reject_threshold: float = _env_float("MODERATION_PROFANITY_REJECT", 0.90)
+
+    # Tier 4: free OpenAI omni-moderation failover. Used only when Gemini is
+    # unavailable / rate-limited (429). The /v1/moderations endpoint is not
+    # billed and accepts text + image URLs in one multimodal request.
+    enable_openai_free_api: bool = _env_bool("MODERATION_ENABLE_OPENAI_FREE_API", True)
+    openai_moderation_model: str = os.getenv(
+        "MODERATION_OPENAI_MODEL", "omni-moderation-latest"
+    )
+
     # Max images to fetch/moderate per listing. Prevents a single row with 30
     # images from eating the whole drain budget. Matches UploadThing's
     # productImage.maxFileCount (see midora/app/api/uploadthing/core.ts).

@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     )
     nano_banana_api_key: str = ""
     nano_banana_url: str = ""
+    # OpenAI: only used for the free /v1/moderations failover endpoint
+    # (omni-moderation-latest is not billed). Optional.
+    openai_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPENAI_API_KEY", "openai_api_key"),
+    )
 
     # Admin API (optional): set ADMIN_API_KEY to protect admin routes
     admin_api_key: str = Field(default="", alias="ADMIN_API_KEY")

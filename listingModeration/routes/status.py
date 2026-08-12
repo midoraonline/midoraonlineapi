@@ -68,8 +68,11 @@ def health() -> dict:
             "fail_open_when_model_unavailable": config.fail_open_when_model_unavailable,
             "batch_size": config.batch_size,
             "stuck_after_seconds": config.stuck_after_seconds,
+            "enable_profanity_check": config.enable_profanity_check,
+            "enable_openai_free_api": config.enable_openai_free_api,
         },
         "gemini_configured": bool(settings.gemini_api_key),
+        "openai_configured": bool(getattr(settings, "openai_api_key", "")),
         "cron_secret_configured": bool(os.getenv("CRON_SECRET", "").strip()),
         "environment": os.getenv("VERCEL_ENV") or os.getenv("ENVIRONMENT", "development"),
     }

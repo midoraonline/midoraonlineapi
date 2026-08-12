@@ -74,16 +74,49 @@ async def moderate(row: ModerationRow, known_bad_hashes: list[int]) -> Moderatio
             scores={"stage": "phash"},
         )
 
-    # Stage 3: text moderation via Gemini.
+    # Stage 3: local profanity classifier (CPU-only, no network call).
+    if config.enable_profanity_check:
+        prof = profanity.score(row.title, row.description)
+        if prof is not None:
+            scores["profanity"] = prof
+            if prof >= config.profanity_reject_threshold:
+                return ModerationDecision(
+                    status=ModerationStatus.REJECTED,
+                    reason=f"local profanity score {prof:.2f} >= reject threshold",
+                    scores={"stage": "profanity", "profanity": prof},
+                )
+
+    # Stage 4: text moderation via Gemini.
     text_result = await text_moderation.check(row.title, row.description)
     scores["text"] = text_result
 
-    # Stage 4: image moderation via Gemini vision (reuse downloaded bytes).
+    # Stage 5: image moderation via Gemini vision (reuse downloaded bytes).
     image_result = await image_moderation.check(image_cache)
     scores["image"] = image_result
 
     text_score = text_result.get("max_score")
     image_score = image_result.get("max_score")
+
+    # Stage 6: free multimodal failover. When Gemini couldn't score (no key,
+    # 429, or bad JSON) fall back to OpenAI's free omni-moderation endpoint
+    # so the listing gets a real decision instead of parking in review.
+    if text_score is None or image_score is None:
+        oai = await openai_moderation.check(row.title, row.description, row.image_urls)
+        scores["openai"] = oai
+        if oai.get("flagged"):
+            cats = ", ".join(oai.get("categories") or []) or "policy violation"
+            return ModerationDecision(
+                status=ModerationStatus.REJECTED,
+                reason=f"openai moderation flagged: {cats}",
+                scores=scores,
+            )
+        oai_score = oai.get("max_score")
+        if oai_score is not None:
+            # Backfill whichever Gemini signal is missing with the OpenAI score.
+            if text_score is None:
+                text_score = oai_score
+            if image_score is None:
+                image_score = oai_score
 
     status, reason = _decide_from_scores(text_score, image_score)
     return ModerationDecision(status=status, reason=reason, scores=scores)
