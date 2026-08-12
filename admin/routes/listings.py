@@ -115,6 +115,15 @@ async def admin_update_listing_status(
     from ranking.service import calculate_listing_score
     refresh_product_embedding(listing_id)
     calculate_listing_score(listing_id)
+
+    # Notify the merchant when the listing goes live or is rejected.
+    if status in {"active", "rejected"}:
+        try:
+            from listingModeration.notifications import notify_product_manual
+            await notify_product_manual(r.data[0], status, r.data[0].get("review_notes"))
+        except Exception as exc:
+            logger.warning("merchant status email failed for %s: %s", listing_id, exc)
+
     return r.data[0]
 
 
@@ -150,6 +159,14 @@ async def admin_review_listing(
     from ranking.service import calculate_listing_score
     refresh_product_embedding(listing_id)
     calculate_listing_score(listing_id)
+
+    # Email the merchant the manual decision + notes (best-effort).
+    try:
+        from listingModeration.notifications import notify_product_manual
+        await notify_product_manual(r.data[0], new_status, notes)
+    except Exception as exc:
+        logger.warning("merchant review email failed for %s: %s", listing_id, exc)
+
     return r.data[0]
 
 

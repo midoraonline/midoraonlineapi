@@ -66,6 +66,17 @@ class ModerationConfig:
         "MODERATION_OPENAI_MODEL", "omni-moderation-latest"
     )
 
+    # Gemini rate-limit resilience: retry on 429 / RESOURCE_EXHAUSTED with
+    # exponential backoff before giving up (and only then falling back to
+    # OpenAI). Keeps free-tier Gemini usable without a second provider.
+    gemini_max_retries: int = _env_int("MODERATION_GEMINI_MAX_RETRIES", 2)
+    gemini_retry_base_delay: float = _env_float("MODERATION_GEMINI_RETRY_BASE_DELAY", 1.5)
+
+    # Email the merchant when the pipeline (or an admin) finalizes a listing.
+    # `on_approved` can be turned off if "your listing is live" mail is noise.
+    notify_merchant_on_decision: bool = _env_bool("MODERATION_NOTIFY_MERCHANT", True)
+    notify_merchant_on_approved: bool = _env_bool("MODERATION_NOTIFY_ON_APPROVED", True)
+
     # Max images to fetch/moderate per listing. Prevents a single row with 30
     # images from eating the whole drain budget. Matches UploadThing's
     # productImage.maxFileCount (see midora/app/api/uploadthing/core.ts).

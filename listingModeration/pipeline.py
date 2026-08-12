@@ -150,6 +150,8 @@ async def process_batch(batch_size: int) -> dict[str, int]:
             service.write_decision(row.id, decision)
             if row.product_id:
                 service.sync_product_status(row.product_id, decision)
+            from . import notifications
+            await notifications.notify_decision(row, decision)
             counts[decision.status.value] = counts.get(decision.status.value, 0) + 1
         except Exception as exc:
             logger.exception("moderation failed for row %s", row.id)
@@ -181,4 +183,6 @@ async def process_row(row_id: UUID | str) -> ModerationDecision | None:
     service.write_decision(row.id, decision)
     if row.product_id:
         service.sync_product_status(row.product_id, decision)
+    from . import notifications
+    await notifications.notify_decision(row, decision)
     return decision

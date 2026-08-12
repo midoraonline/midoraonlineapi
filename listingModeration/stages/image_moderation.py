@@ -11,6 +11,9 @@ from typing import Any, Optional
 
 from core.config import get_settings
 
+from ..config import config
+from ._retry import call_with_retry
+
 logger = logging.getLogger(__name__)
 
 _PROMPT = """You are a strict e-commerce image content moderator. Rate this
@@ -60,16 +63,21 @@ async def _score_one(client: Any, model: str, url: str, data: bytes) -> Optional
     try:
         from google.genai import types  # type: ignore
 
-        resp = await client.aio.models.generate_content(
-            model=model,
-            contents=[
-                types.Part.from_bytes(data=data, mime_type=_guess_mime(url, data)),
-                _PROMPT,
-            ],
-            config=types.GenerateContentConfig(
-                temperature=0.0,
-                response_mime_type="application/json",
+        resp = await call_with_retry(
+            lambda: client.aio.models.generate_content(
+                model=model,
+                contents=[
+                    types.Part.from_bytes(data=data, mime_type=_guess_mime(url, data)),
+                    _PROMPT,
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=0.0,
+                    response_mime_type="application/json",
+                ),
             ),
+            max_retries=config.gemini_max_retries,
+            base_delay=config.gemini_retry_base_delay,
+            label="gemini image moderation",
         )
     except Exception as exc:
         logger.warning("gemini image moderation call failed for %s: %s", url, exc)

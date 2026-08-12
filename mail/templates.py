@@ -131,6 +131,89 @@ def render_shop_verification_decision(
     return subject, html
 
 
+def render_listing_decision(
+    *,
+    product_title: str,
+    decision: str,
+    reason: str | None = None,
+    listings_url: str | None = None,
+) -> tuple[str, str]:
+    """Merchant email for a moderation outcome.
+
+    ``decision`` is ``"approved"``, ``"rejected"``, or ``"needs_review"``.
+    ``reason`` is the moderation reason surfaced to the merchant. Substituted
+    blocks are plain HTML (not mj-* tags) because substitution runs on the
+    already-compiled HTML.
+    """
+    reason_block = ""
+    if reason:
+        reason_block = (
+            '<div style="background:#f8fafc;border:1px solid #e2e8f0;'
+            'border-radius:10px;padding:14px 16px;color:#334155;font-size:14px;'
+            'margin-top:4px;"><strong>Reason:</strong><br/>'
+            f"{reason}</div>"
+        )
+
+    _badge_base = (
+        "display:inline-block;padding:4px 12px;border-radius:999px;"
+        "font-size:12px;font-weight:600;"
+    )
+    _btn_style = (
+        "display:inline-block;margin-top:18px;padding:12px 22px;"
+        "border-radius:10px;background:#0f172a;color:#ffffff;"
+        "text-decoration:none;font-weight:600;font-size:14px;"
+    )
+
+    cta_block = ""
+    if decision == "approved":
+        badge_style = _badge_base + "background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;"
+        badge_label = "Approved"
+        heading = "Your listing is live"
+        message = (
+            f"Good news — <strong>{product_title}</strong> passed review and is "
+            "now visible to buyers on Midora."
+        )
+        if listings_url:
+            cta_block = f'<a style="{_btn_style}" href="{listings_url}">View your listings</a>'
+        subject = f"Approved: {product_title} is live on Midora"
+        preview = f"{product_title} is now live on Midora"
+    elif decision == "needs_review":
+        badge_style = _badge_base + "background:#fffbeb;color:#b45309;border:1px solid #fde68a;"
+        badge_label = "Under review"
+        heading = "Your listing is under review"
+        message = (
+            f"<strong>{product_title}</strong> needs a closer look from our team "
+            "before it goes live. We'll email you again once a decision is made."
+        )
+        subject = f"Under review: {product_title} — Midora"
+        preview = f"{product_title} is under manual review"
+    else:  # rejected
+        badge_style = _badge_base + "background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;"
+        badge_label = "Not approved"
+        heading = "Your listing wasn't approved"
+        message = (
+            f"Unfortunately <strong>{product_title}</strong> didn't meet our "
+            "listing policy and hasn't been published. You can edit it and "
+            "re-submit from your dashboard."
+        )
+        if listings_url:
+            cta_block = f'<a style="{_btn_style}" href="{listings_url}">Edit and re-submit</a>'
+        subject = f"Action needed: {product_title} wasn't approved"
+        preview = f"{product_title} wasn't approved"
+
+    html = _render(
+        "listing_decision",
+        preview=preview,
+        badge_style=badge_style,
+        badge_label=badge_label,
+        heading=heading,
+        message=message,
+        reason_block=reason_block,
+        cta_block=cta_block,
+    )
+    return subject, html
+
+
 # ---------------------------------------------------------------------------
 # Backwards-compat aliases — Phase B code imports build_* names.
 # ---------------------------------------------------------------------------

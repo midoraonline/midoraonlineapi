@@ -12,6 +12,9 @@ from typing import Any
 
 from core.config import get_settings
 
+from ..config import config
+from ._retry import call_with_retry
+
 logger = logging.getLogger(__name__)
 
 _PROMPT = """You are a strict e-commerce content moderator. Score the following
@@ -76,13 +79,18 @@ async def check(title: str, description: str) -> dict[str, Any]:
     prompt = _PROMPT.format(title=title[:2000], description=(description or "")[:8000])
 
     try:
-        resp = await client.aio.models.generate_content(
-            model=settings.gemini_model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.0,
-                response_mime_type="application/json",
+        resp = await call_with_retry(
+            lambda: client.aio.models.generate_content(
+                model=settings.gemini_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.0,
+                    response_mime_type="application/json",
+                ),
             ),
+            max_retries=config.gemini_max_retries,
+            base_delay=config.gemini_retry_base_delay,
+            label="gemini text moderation",
         )
     except Exception as exc:
         logger.warning("gemini text moderation call failed: %s", exc)
