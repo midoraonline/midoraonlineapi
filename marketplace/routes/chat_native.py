@@ -289,20 +289,30 @@ async def mark_read(
     unread_field = "buyer_unread" if is_buyer else "seller_unread"
     admin = get_supabase_admin()
 
+    # Clear the unread counter first and independently: this is what drives the
+    # badge, so it must succeed even if the read-receipt stamping below fails.
+    try:
+        admin.table("conversations").update({unread_field: 0}).eq("id", conversation_id).execute()
+    except Exception as exc:
+        logger.warning("mark_read: clearing %s failed: %s", unread_field, exc)
+        raise HTTPException(status_code=502, detail="Failed to mark as read")
+
+    # Stamp read receipts on the other party's unread messages. NULL must be
+    # matched with `is_`, not `eq` (PostgREST renders eq.None -> timestamp cast
+    # error), which previously threw before the counter above was cleared.
     try:
         (
             admin.table("messages")
             .update({"read_at": datetime.now(timezone.utc).isoformat()})
             .eq("conversation_id", conversation_id)
-            .eq("read_at", None)
+            .is_("read_at", "null")
             .neq("sender_id", current_user_id)
             .execute()
         )
-        admin.table("conversations").update({unread_field: 0}).eq("id", conversation_id).execute()
-        return {"status": "read"}
     except Exception as exc:
-        logger.warning("mark_read failed: %s", exc)
-        raise HTTPException(status_code=502, detail="Failed to mark as read")
+        logger.warning("mark_read: read-receipt stamping failed: %s", exc)
+
+    return {"status": "read"}
 
 
 @router.get("/chat/unread")

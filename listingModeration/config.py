@@ -40,6 +40,13 @@ class ModerationConfig:
     # mid-run) and is reset to pending at the top of the next drain pass.
     stuck_after_seconds: int = _env_int("MODERATION_STUCK_AFTER_SECONDS", 300)
 
+    # Reconciliation: at the top of each drain, heal products stuck in
+    # pending_review — never queued, or reviewed-but-status-never-synced.
+    # Guards against listings that slip through on a deploy or a dropped
+    # inline enqueue. Keep the scan bounded so the cron stays fast.
+    reconcile_on_drain: bool = _env_bool("MODERATION_RECONCILE_ON_DRAIN", True)
+    reconcile_limit: int = _env_int("MODERATION_RECONCILE_LIMIT", 25)
+
     # Text moderation thresholds. Gemini scores are 0..1.
     text_reject_threshold: float = _env_float("MODERATION_TEXT_REJECT", 0.85)
     text_review_threshold: float = _env_float("MODERATION_TEXT_REVIEW", 0.50)

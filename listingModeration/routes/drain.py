@@ -48,6 +48,14 @@ def _authorize(authorization: Optional[str]) -> None:
 
 
 async def _run_drain() -> DrainResponse:
+    # Heal stuck/finished-but-unsynced listings first so a dropped inline
+    # enqueue or a deploy gap self-corrects on the cron schedule.
+    if config.reconcile_on_drain:
+        try:
+            pipeline.reconcile(config.reconcile_limit)
+        except Exception as exc:
+            logger.warning("reconcile step failed: %s", exc)
+
     counts = await pipeline.process_batch(config.batch_size)
     return DrainResponse(
         reclaimed=counts.get("reclaimed", 0),
@@ -71,3 +79,23 @@ async def drain_post(authorization: Optional[str] = Header(default=None)) -> Dra
     """POST entrypoint used by Supabase pg_cron / manual replay."""
     _authorize(authorization)
     return await _run_drain()
+
+
+async def _run_reconcile() -> dict:
+    counts = pipeline.reconcile(config.reconcile_limit)
+    drained = await pipeline.process_batch(config.batch_size)
+    return {"reconcile": counts, "drain": drained}
+
+
+@router.get("/reconcile")
+async def reconcile_get(authorization: Optional[str] = Header(default=None)) -> dict:
+    """Force a heal + drain pass. For manual recovery or an ops cron."""
+    _authorize(authorization)
+    return await _run_reconcile()
+
+
+@router.post("/reconcile")
+async def reconcile_post(authorization: Optional[str] = Header(default=None)) -> dict:
+    _authorize(authorization)
+    return await _run_reconcile()
+

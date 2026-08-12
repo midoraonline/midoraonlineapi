@@ -203,5 +203,41 @@ def add_bad_image_hash(phash: int, label: Optional[str], added_by: Optional[UUID
     }).execute()
 
 
-def _row_dict_to_model(row: dict[str, Any]) -> ModerationRow:
-    return ModerationRow.model_validate(row)
+def fetch_products_pending_review(limit: int) -> list[dict[str, Any]]:
+    """Products still awaiting a moderation decision (oldest first)."""
+    admin = get_supabase_admin()
+    try:
+        r = (
+            admin.table("products")
+            .select("id,title,description,image_urls,shop_id,status")
+            .eq("status", "pending_review")
+            .order("created_at", desc=False)
+            .limit(limit)
+            .execute()
+        )
+        return r.data or []
+    except Exception as exc:
+        logger.warning("fetch_products_pending_review failed: %s", exc)
+        return []
+
+
+def load_queue_rows_for_products(product_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """Map product_id -> its moderation queue rows (status/reason/scores)."""
+    if not product_ids:
+        return {}
+    admin = get_supabase_admin()
+    out: dict[str, list[dict[str, Any]]] = {}
+    try:
+        r = (
+            admin.table(_TABLE)
+            .select("id,product_id,status,reason,scores")
+            .in_("product_id", product_ids)
+            .execute()
+        )
+        for row in r.data or []:
+            pid = str(row.get("product_id"))
+            out.setdefault(pid, []).append(row)
+    except Exception as exc:
+        logger.warning("load_queue_rows_for_products failed: %s", exc)
+    return out
+

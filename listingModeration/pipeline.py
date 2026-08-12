@@ -161,6 +161,56 @@ async def process_batch(batch_size: int) -> dict[str, int]:
     return counts
 
 
+_RECONCILE_TERMINAL = {"approved", "rejected", "needs_review"}
+_RECONCILE_IN_FLIGHT = {"pending", "processing"}
+
+
+def reconcile(limit: int) -> dict[str, int]:
+    """Heal products stuck in `pending_review`.
+
+    For each pending_review product:
+      * a queue row already carrying a decision  -> re-sync products.status
+        (covers "review finished but status never synced");
+      * a queue row still pending/processing     -> leave it for the drain;
+      * no row (or only terminal-failed rows)     -> enqueue a fresh row.
+
+    Returns per-outcome counts. Does not drain — the caller runs the batch.
+    """
+    products = service.fetch_products_pending_review(limit)
+    counts = {"scanned": len(products), "resynced": 0, "enqueued": 0, "in_flight": 0}
+    if not products:
+        return counts
+
+    rows_by_product = service.load_queue_rows_for_products(
+        [str(p["id"]) for p in products]
+    )
+
+    from .hooks import enqueue_product
+
+    for product in products:
+        pid = str(product["id"])
+        rows = rows_by_product.get(pid, [])
+        decided = next(
+            (r for r in rows if r.get("status") in _RECONCILE_TERMINAL), None
+        )
+        in_flight = any(r.get("status") in _RECONCILE_IN_FLIGHT for r in rows)
+
+        if decided:
+            decision = ModerationDecision(
+                status=ModerationStatus(decided["status"]),
+                reason=decided.get("reason"),
+                scores=decided.get("scores") or {},
+            )
+            service.sync_product_status(pid, decision)
+            counts["resynced"] += 1
+        elif in_flight:
+            counts["in_flight"] += 1
+        elif enqueue_product(product) is not None:
+            counts["enqueued"] += 1
+
+    return counts
+
+
 async def process_row(row_id: UUID | str) -> ModerationDecision | None:
     """Run the pipeline synchronously on a single queue row.
 
