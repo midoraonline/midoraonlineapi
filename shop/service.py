@@ -311,7 +311,7 @@ def get_product_detail(
         client.table("products")
         .select(
             "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,stock_quantity,image_urls,"
-            "category,item_type,status,is_published,is_negotiable,listing_score,location_name,"
+            "category,item_type,status,is_published,is_negotiable,listing_score,location_name,listing_meta,"
             "ai_seo_tags,ai_generated_desc,review_notes,reviewed_at,created_at,view_count"
         )
         .eq("id", product_id)
