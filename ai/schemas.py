@@ -81,3 +81,20 @@ class GenerateLogoRequest(BaseModel):
 class GenerateLogoResponse(BaseModel):
     logo_url: str | None = None
     logo_base64: str | None = None
+
+
+class ListingQualityRequest(BaseModel):
+    title: str
+    description: str
+    image_urls: list[str] = []
+    category: str | None = None
+
+
+class ListingQualityResponse(BaseModel):
+    ok: bool
+    score: int
+    title_matches: bool
+    description_quality: str  # "poor" | "fair" | "good"
+    images_match: bool
+    feedback: str
+    suggestions: list[str] = []

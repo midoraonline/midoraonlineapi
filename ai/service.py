@@ -411,6 +411,162 @@ async def chat_midora_info(message: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Listing quality check (pre-submit)
+# ---------------------------------------------------------------------------
+
+_LISTING_QUALITY_PROMPT = """You are a strict e-commerce listing coach on
+Midora, a Ugandan marketplace. Given a listing's title, description and up
+to 4 product images, judge whether the listing is ready to publish.
+
+Return ONLY a JSON object, no prose, no code fences:
+{
+  "score": 0-100,               // overall listing quality score
+  "title_matches": bool,        // title accurately describes the item shown
+  "description_quality": "poor" | "fair" | "good",
+  "images_match": bool,         // images show the item mentioned in title
+  "feedback": "one short user-facing sentence in plain English",
+  "suggestions": ["specific fix 1", "specific fix 2"]  // 0-3 items, actionable
+}
+
+Rules:
+- If title/description/images clearly refer to different things, set
+  title_matches or images_match to false and score < 40.
+- "poor" description = under two sentences, generic ("nice item"), missing
+  size/condition/what's included, or just repeats the title.
+- "fair" = accurate but thin (buyer will need to ask questions).
+- "good" = at least two clear sentences, covers condition/what's included/
+  who it's for, and reads like the seller wrote it.
+- Suggestions must be concrete ("Add condition — new or used?"), not vague.
+- Keep feedback friendly and under 20 words.
+"""
+
+
+async def check_listing_quality(
+    title: str,
+    description: str,
+    image_urls: list[str],
+    category: str | None = None,
+) -> dict[str, Any]:
+    """Score a listing (title + description + images) for publish-readiness.
+
+    Fails open on any Gemini / config error: returns {"ok": True, ...} so
+    the frontend doesn't block the merchant on our internal failure.
+    """
+    client = _get_genai_client()
+    fallback = {
+        "ok": True,
+        "score": 100,
+        "title_matches": True,
+        "description_quality": "good",
+        "images_match": True,
+        "feedback": "AI review unavailable — publishing without pre-check.",
+        "suggestions": [],
+    }
+    if client is None:
+        return fallback
+
+    try:
+        from google.genai import types  # type: ignore
+        import httpx
+    except Exception as exc:
+        logger.warning("google-genai / httpx import failed: %s", exc)
+        return fallback
+
+    parts: list[Any] = []
+    if image_urls:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=8.0) as http:
+            # Cap at 4 images so this fits well inside the request budget.
+            for url in image_urls[:4]:
+                if not url or url.startswith("data:"):
+                    continue
+                try:
+                    resp = await http.get(url)
+                    resp.raise_for_status()
+                except Exception:
+                    continue
+                data = resp.content
+                if len(data) > 4 * 1024 * 1024:
+                    continue
+                mime = "image/jpeg"
+                lower = url.lower()
+                if lower.endswith(".png") or data[:8] == b"\x89PNG\r\n\x1a\n":
+                    mime = "image/png"
+                elif lower.endswith(".webp"):
+                    mime = "image/webp"
+                parts.append(types.Part.from_bytes(data=data, mime_type=mime))
+
+    listing_text = (
+        f"Category: {category or 'unspecified'}\n\n"
+        f"Title: {title.strip()}\n\n"
+        f"Description:\n{(description or '').strip()}"
+    )
+    parts.append(types.Part.from_text(text=listing_text))
+
+    try:
+        resp = await client.aio.models.generate_content(
+            model=_get_model(),
+            contents=parts,
+            config=types.GenerateContentConfig(
+                system_instruction=[_LISTING_QUALITY_PROMPT],
+                temperature=0.0,
+                response_mime_type="application/json",
+            ),
+        )
+    except Exception as exc:
+        _raise_if_rate_limited(exc)
+        logger.warning("check_listing_quality: gemini call failed: %s", exc)
+        return fallback
+
+    text = _response_text(resp).strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    try:
+        data = json.loads(text)
+    except Exception:
+        logger.warning("check_listing_quality: bad JSON: %r", text[:200])
+        return fallback
+
+    score = int(data.get("score", 100))
+    title_matches = bool(data.get("title_matches", True))
+    images_match = bool(data.get("images_match", True))
+    quality = str(data.get("description_quality", "good")).lower()
+    if quality not in {"poor", "fair", "good"}:
+        quality = "fair"
+    suggestions_raw = data.get("suggestions") or []
+    suggestions = [str(s).strip() for s in suggestions_raw if str(s).strip()][:3]
+    feedback = str(data.get("feedback") or "").strip()
+    if not feedback:
+        feedback = (
+            "Looks ready to publish."
+            if title_matches and images_match and quality != "poor"
+            else "This listing needs a bit more work before it's ready."
+        )
+
+    ok = (
+        score >= 60
+        and title_matches
+        and images_match
+        and quality != "poor"
+    )
+
+    return {
+        "ok": ok,
+        "score": score,
+        "title_matches": title_matches,
+        "description_quality": quality,
+        "images_match": images_match,
+        "feedback": feedback,
+        "suggestions": suggestions,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Shop creation wizard
 # ---------------------------------------------------------------------------
 
