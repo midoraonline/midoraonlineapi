@@ -3,9 +3,11 @@
 Order:
     1. Banned-keyword check on title/description        (microseconds)
     2. Perceptual-hash blocklist against known-bad set   (network I/O)
-    3. Gemini text moderation                            (~1-3s)
-    4. Gemini image moderation                           (~1-3s per image)
-    5. Threshold-based decision -> approved | rejected | needs_review
+    3. Image metadata / provenance inspection            (Pillow only)
+    4. Local profanity classifier                        (CPU)
+    5. Gemini text moderation                            (~1-3s)
+    6. Gemini image moderation                           (~1-3s per image)
+    7. Threshold-based decision -> approved | rejected | needs_review
 
 Runs synchronously inside a Vercel Function invocation (called by the drain
 endpoint). Do NOT try to fire this off with `BackgroundTasks` on Vercel —
@@ -23,6 +25,7 @@ from .schemas import ModerationDecision, ModerationRow, ModerationStatus
 from .stages import (
     image_moderation,
     keywords,
+    metadata,
     openai_moderation,
     phash,
     profanity,
@@ -104,14 +107,35 @@ async def moderate(row: ModerationRow, known_bad_hashes: list[int]) -> Moderatio
         len(image_cache),
     )
 
-    # Stage 3: local profanity classifier (CPU-only, no network call).
+    # Stage 3: image metadata inspection. Reuses the already-downloaded
+    # bytes to look for foreign URLs / watermarks / AI-generator markers
+    # in EXIF, XMP and PNG text chunks. No network calls.
+    for url, _phash_val, data in image_cache:
+        if not data:
+            continue
+        meta_reason = metadata.check(data, url=url)
+        if meta_reason:
+            logger.warning(
+                "[Moderation][Stage 3: Metadata] REJECTED row %s (%s) - %s",
+                row.id,
+                url,
+                meta_reason,
+            )
+            return ModerationDecision(
+                status=ModerationStatus.REJECTED,
+                reason=f"{meta_reason} (url={url})",
+                scores={"stage": "metadata", "url": url},
+            )
+    logger.info("[Moderation][Stage 3: Metadata] PASSED for row %s", row.id)
+
+    # Stage 4: local profanity classifier (CPU-only, no network call).
     if config.enable_profanity_check:
         prof = profanity.score(row.title, row.description)
         if prof is not None:
             scores["profanity"] = prof
             if prof >= config.profanity_reject_threshold:
                 logger.warning(
-                    "[Moderation][Stage 3: Profanity] REJECTED row %s - Score %.2f >= threshold %.2f",
+                    "[Moderation][Stage 4: Profanity] REJECTED row %s - Score %.2f >= threshold %.2f",
                     row.id,
                     prof,
                     config.profanity_reject_threshold,
@@ -122,25 +146,25 @@ async def moderate(row: ModerationRow, known_bad_hashes: list[int]) -> Moderatio
                     scores={"stage": "profanity", "profanity": prof},
                 )
             logger.info(
-                "[Moderation][Stage 3: Profanity] PASSED for row %s - Score: %.2f",
+                "[Moderation][Stage 4: Profanity] PASSED for row %s - Score: %.2f",
                 row.id,
                 prof,
             )
 
-    # Stage 4: text moderation via Gemini.
+    # Stage 5: text moderation via Gemini.
     text_result = await text_moderation.check(row.title, row.description)
     scores["text"] = text_result
     logger.info(
-        "[Moderation][Stage 4: Gemini Text] Row %s result: max_score=%s",
+        "[Moderation][Stage 5: Gemini Text] Row %s result: max_score=%s",
         row.id,
         text_result.get("max_score"),
     )
 
-    # Stage 5: image moderation via Gemini vision (reuse downloaded bytes).
+    # Stage 6: image moderation via Gemini vision (reuse downloaded bytes).
     image_result = await image_moderation.check(image_cache)
     scores["image"] = image_result
     logger.info(
-        "[Moderation][Stage 5: Gemini Vision] Row %s result: max_score=%s",
+        "[Moderation][Stage 6: Gemini Vision] Row %s result: max_score=%s",
         row.id,
         image_result.get("max_score"),
     )
@@ -148,12 +172,12 @@ async def moderate(row: ModerationRow, known_bad_hashes: list[int]) -> Moderatio
     text_score = text_result.get("max_score")
     image_score = image_result.get("max_score")
 
-    # Stage 6: free multimodal failover. When Gemini couldn't score (no key,
+    # Stage 7: free multimodal failover. When Gemini couldn't score (no key,
     # 429, or bad JSON) fall back to OpenAI's free omni-moderation endpoint
     # so the listing gets a real decision instead of parking in review.
     if text_score is None or image_score is None:
         logger.info(
-            "[Moderation][Stage 6: OpenAI Failover] Triggered for row %s (Gemini scores: text=%s, image=%s)",
+            "[Moderation][Stage 7: OpenAI Failover] Triggered for row %s (Gemini scores: text=%s, image=%s)",
             row.id,
             text_score,
             image_score,
@@ -163,7 +187,7 @@ async def moderate(row: ModerationRow, known_bad_hashes: list[int]) -> Moderatio
         if oai.get("flagged"):
             cats = ", ".join(oai.get("categories") or []) or "policy violation"
             logger.warning(
-                "[Moderation][Stage 6: OpenAI Failover] REJECTED row %s - Flagged categories: %s",
+                "[Moderation][Stage 7: OpenAI Failover] REJECTED row %s - Flagged categories: %s",
                 row.id,
                 cats,
             )
@@ -180,7 +204,7 @@ async def moderate(row: ModerationRow, known_bad_hashes: list[int]) -> Moderatio
             if image_score is None:
                 image_score = oai_score
             logger.info(
-                "[Moderation][Stage 6: OpenAI Failover] PASSED for row %s - Max score: %.2f",
+                "[Moderation][Stage 7: OpenAI Failover] PASSED for row %s - Max score: %.2f",
                 row.id,
                 oai_score,
             )
