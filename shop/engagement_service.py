@@ -57,14 +57,35 @@ def _count_by_product(client: Any, product_id: str) -> int:
     return int(r.count or 0)
 
 
+_EXISTS_CACHE: dict[str, tuple[float, bool]] = {}
+
+
 def shop_exists(client: Any, shop_id: str) -> bool:
+    cache_key = f"shop:{shop_id}"
+    now = time.time()
+    if cache_key in _EXISTS_CACHE:
+        ts, exists = _EXISTS_CACHE[cache_key]
+        if now - ts < 15.0:
+            return exists
     r = client.table("shops").select("id").eq("id", shop_id).limit(1).execute()
-    return bool(r.data)
+    exists = bool(r.data)
+    _EXISTS_CACHE[cache_key] = (now, exists)
+    return exists
 
 
 def product_exists(client: Any, product_id: str) -> bool:
-    r = client.table("products").select("id,status").eq("id", product_id).limit(1).execute()
-    return bool(r.data and r.data[0].get("status") == "active")
+    cache_key = f"prod:{product_id}"
+    now = time.time()
+    if cache_key in _EXISTS_CACHE:
+        ts, exists = _EXISTS_CACHE[cache_key]
+        if now - ts < 15.0:
+            return exists
+    r = client.table("products").select("id").eq("id", product_id).limit(1).execute()
+    exists = bool(r.data)
+    _EXISTS_CACHE[cache_key] = (now, exists)
+    return exists
+
+
 
 
 def _count_shop_listing_events(client: Any, shop_id: str, event_type: str) -> int:
@@ -188,26 +209,64 @@ def _count_listing_events(client: Any, product_id: str, event_type: str) -> int:
         return 0
 
 
+import time
+
+_PRODUCT_ENGAGEMENT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_CACHE_TTL_SECONDS = 5.0
+
+
 def get_product_engagement(client: Any, product_id: str, viewer_user_id: str | None) -> dict[str, Any]:
-    like_count = _count_by_product(client, product_id)
-    viewer_liked: bool | None = None
-    if viewer_user_id:
-        r = (
-            client.table("product_likes")
-            .select("user_id")
-            .eq("product_id", product_id)
-            .eq("user_id", viewer_user_id)
-            .limit(1)
-            .execute()
-        )
-        viewer_liked = bool(r.data)
-    return {
-        "like_count": like_count,
-        "view_count": _product_view_count(client, product_id),
-        "viewer_liked": viewer_liked,
-        "whatsapp_clicks": _count_listing_events(client, product_id, "whatsapp_clicked"),
-        "messages": _count_listing_events(client, product_id, "messaged"),
-    }
+    """Retrieve product social engagement counters using parallel queries."""
+    cache_key = f"{product_id}:{viewer_user_id or ''}"
+    now = time.time()
+    if cache_key in _PRODUCT_ENGAGEMENT_CACHE:
+        ts, data = _PRODUCT_ENGAGEMENT_CACHE[cache_key]
+        if now - ts < _CACHE_TTL_SECONDS:
+            return data
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _check_viewer_liked() -> bool | None:
+        if not viewer_user_id:
+            return None
+        try:
+            r = (
+                client.table("product_likes")
+                .select("user_id")
+                .eq("product_id", product_id)
+                .eq("user_id", viewer_user_id)
+                .limit(1)
+                .execute()
+            )
+            return bool(r.data)
+        except Exception:
+            return False
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        fut_likes = pool.submit(_count_by_product, client, product_id)
+        fut_views = pool.submit(_product_view_count, client, product_id)
+        fut_viewer = pool.submit(_check_viewer_liked)
+        fut_wa = pool.submit(_count_listing_events, client, product_id, "whatsapp_clicked")
+        fut_msg = pool.submit(_count_listing_events, client, product_id, "messaged")
+
+        result = {
+            "like_count": fut_likes.result(),
+            "view_count": fut_views.result(),
+            "viewer_liked": fut_viewer.result(),
+            "whatsapp_clicks": fut_wa.result(),
+            "messages": fut_msg.result(),
+        }
+
+    _PRODUCT_ENGAGEMENT_CACHE[cache_key] = (now, result)
+    # Evict old cache entries if cache size grows large
+    if len(_PRODUCT_ENGAGEMENT_CACHE) > 1000:
+        cutoff = now - _CACHE_TTL_SECONDS
+        keys_to_remove = [k for k, (t, _) in _PRODUCT_ENGAGEMENT_CACHE.items() if t < cutoff]
+        for k in keys_to_remove:
+            _PRODUCT_ENGAGEMENT_CACHE.pop(k, None)
+
+    return result
+
 
 
 def record_shop_view(client: Any, shop_id: str) -> int:

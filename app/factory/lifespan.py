@@ -1,52 +1,36 @@
 """Application lifespan.
 
 Kept intentionally minimal for serverless (Vercel) deployments where the
-lifespan runs on *every* cold start. Anything expensive here directly hurts
-cold-start p95.
+lifespan runs on *every* cold start. Feature modules own their workers
+(`MailModule`, `ListingModerationModule`); this file only iterates them.
 
-The mail queue worker (`start_worker`) launches an asyncio background task
-that survives only while a container is warm. On Vercel it will not reliably
-drain the queue — `enqueue_mail()` still writes to Postgres, but you must
-add a Supabase cron job (or Vercel Cron) that hits a drain endpoint to
-process pending mail rows in production. For local `uvicorn --reload` and
-non-serverless deployments the worker still runs and drains normally.
+On Vercel, in-process workers are skipped — queue rows still land in
+Postgres and a cron drain processes them.
 """
 from __future__ import annotations
 
 import logging
-import os
 from contextlib import asynccontextmanager
 
-from mail.queue import start_worker, stop_worker
-from listingModeration.worker import (
-    start_worker as start_moderation_worker,
-    stop_worker as stop_moderation_worker,
-)
+from app.factory.routers import start_module_workers
+from core.runtime import is_serverless
 
 logger = logging.getLogger(__name__)
 
 
-def _is_serverless() -> bool:
-    # Vercel sets these at runtime. Guard with either.
-    return bool(os.getenv("VERCEL") or os.getenv("VERCEL_ENV"))
-
-
 @asynccontextmanager
 async def lifespan(app):
-    started = False
-    if not _is_serverless():
-        start_worker()
-        start_moderation_worker()
-        started = True
-    else:
+    modules = getattr(app.state, "modules", [])
+    started: list = []
+    if is_serverless():
         logger.info(
-            "Serverless environment detected — skipping in-process mail worker. "
-            "Drain `mail_queue` via a cron job instead."
+            "Serverless environment detected — skipping in-process workers. "
+            "Drain queues via cron instead."
         )
+    else:
+        started = start_module_workers(modules)
 
     yield
 
-    if started:
-        await stop_worker()
-        await stop_moderation_worker()
-
+    for module in reversed(started):
+        await module.on_shutdown()

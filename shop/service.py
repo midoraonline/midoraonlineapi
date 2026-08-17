@@ -5,6 +5,7 @@ from postgrest.exceptions import APIError
 from core.postgrest_compat import is_undefined_column_error
 from shop import engagement_service
 from core.categories import normalize_category
+from shop.events import CONTENT_MODERATION_FIELDS
 from shop.schemas import (
     OrderCreate,
     OrderListItem,
@@ -136,22 +137,9 @@ def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
     if not r.data or len(r.data) == 0:
         raise ValueError("Failed to create product")
     created_row = r.data[0]
-    result = _row_to_product_response(created_row)
-    from ranking.service import calculate_listing_score
-    calculate_listing_score(str(created_row["id"]))
-    from feed.embeddings import refresh_product_embedding
-    refresh_product_embedding(str(created_row["id"]))
-
-    # Enqueue for automated moderation. Row stays `pending_review` (set above)
-    # until the pipeline runs and flips it to active/rejected/needs_review.
-    # The async route handler drives the pipeline synchronously by looking
-    # up the queued row via `service.latest_pending_row_for_product` and
-    # awaiting `moderate_now`.
-    from listingModeration.hooks import enqueue_product
-    _shop_owner = _lookup_shop_owner(client, shop_id)
-    enqueue_product(created_row, seller_id=_shop_owner)
-
-    return result
+    # Side effects (moderation, mail, ranking, embeddings) are subscribers
+    # on `product.created` / `product.pending_review` emitted by the route.
+    return _row_to_product_response(created_row)
 
 
 def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[dict]:
@@ -486,16 +474,6 @@ def get_product_detail(
 
 
 
-def _lookup_shop_owner(client: Any, shop_id: str) -> str | None:
-    try:
-        r = client.table("shops").select("owner_id").eq("id", shop_id).limit(1).execute()
-        if r.data:
-            return str(r.data[0].get("owner_id") or "") or None
-    except Exception:
-        pass
-    return None
-
-
 def update_product(client: Any, product_id: str, data: ProductUpdate) -> dict | None:
     payload = data.model_dump(exclude_unset=True)
     if data.image_urls is not None:
@@ -504,9 +482,7 @@ def update_product(client: Any, product_id: str, data: ProductUpdate) -> dict | 
     # Content-changing edits must go back through moderation. We reset status
     # to pending_review even if the merchant tried to set status=active, which
     # closes the "edit-around-the-gate" bypass.
-    content_changed = any(
-        key in payload for key in ("title", "description", "image_urls", "category")
-    )
+    content_changed = any(key in payload for key in CONTENT_MODERATION_FIELDS)
     if content_changed:
         payload["status"] = "pending_review"
     elif "status" in payload and payload["status"] == "active":
@@ -518,16 +494,8 @@ def update_product(client: Any, product_id: str, data: ProductUpdate) -> dict | 
     if not r.data or len(r.data) == 0:
         return None
     updated_row = r.data[0]
-    from feed.embeddings import refresh_product_embedding
-    from ranking.service import calculate_listing_score
-    refresh_product_embedding(product_id)
-    calculate_listing_score(product_id)
-
-    if content_changed:
-        from listingModeration.hooks import enqueue_product
-        seller_id = _lookup_shop_owner(client, str(updated_row.get("shop_id") or ""))
-        enqueue_product(updated_row, seller_id=seller_id)
-
+    # Ranking / embeddings / moderation subscribe to `product.updated` and
+    # `product.pending_review` from the PATCH route — not here.
     return _row_to_product_response(updated_row)
 
 

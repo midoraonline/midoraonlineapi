@@ -20,7 +20,15 @@ from uuid import UUID
 from . import service
 from .config import config
 from .schemas import ModerationDecision, ModerationRow, ModerationStatus
-from .stages import image_moderation, keywords, phash, text_moderation
+from .stages import (
+    image_moderation,
+    keywords,
+    openai_moderation,
+    phash,
+    profanity,
+    text_moderation,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -55,24 +63,46 @@ def _decide_from_scores(text_score: float | None, image_score: float | None) -> 
 
 async def moderate(row: ModerationRow, known_bad_hashes: list[int]) -> ModerationDecision:
     scores: dict[str, Any] = {}
+    logger.info(
+        "[Moderation] Starting moderation pipeline for row %s (product_id=%s, title='%s')",
+        row.id,
+        row.product_id or "N/A",
+        row.title,
+    )
 
     # Stage 1: keyword deny-list.
     hit = keywords.check(row.title, row.description)
     if hit:
+        logger.warning(
+            "[Moderation][Stage 1: Keywords] REJECTED row %s - Banned keyword matched: '%s'",
+            row.id,
+            hit,
+        )
         return ModerationDecision(
             status=ModerationStatus.REJECTED,
             reason=f"banned keyword matched: '{hit}'",
             scores={"stage": "keywords", "match": hit},
         )
+    logger.info("[Moderation][Stage 1: Keywords] PASSED for row %s", row.id)
 
     # Stage 2: pHash blocklist (also downloads image bytes we reuse in stage 4).
     phash_reason, image_cache = await phash.check(row.image_urls, known_bad_hashes)
     if phash_reason:
+        logger.warning(
+            "[Moderation][Stage 2: pHash] REJECTED row %s - Reason: %s",
+            row.id,
+            phash_reason,
+        )
         return ModerationDecision(
             status=ModerationStatus.REJECTED,
             reason=phash_reason,
             scores={"stage": "phash"},
         )
+    logger.info(
+        "[Moderation][Stage 2: pHash] PASSED for row %s (%d image(s) downloaded/cached)",
+        row.id,
+        len(image_cache),
+    )
 
     # Stage 3: local profanity classifier (CPU-only, no network call).
     if config.enable_profanity_check:
@@ -80,19 +110,40 @@ async def moderate(row: ModerationRow, known_bad_hashes: list[int]) -> Moderatio
         if prof is not None:
             scores["profanity"] = prof
             if prof >= config.profanity_reject_threshold:
+                logger.warning(
+                    "[Moderation][Stage 3: Profanity] REJECTED row %s - Score %.2f >= threshold %.2f",
+                    row.id,
+                    prof,
+                    config.profanity_reject_threshold,
+                )
                 return ModerationDecision(
                     status=ModerationStatus.REJECTED,
                     reason=f"local profanity score {prof:.2f} >= reject threshold",
                     scores={"stage": "profanity", "profanity": prof},
                 )
+            logger.info(
+                "[Moderation][Stage 3: Profanity] PASSED for row %s - Score: %.2f",
+                row.id,
+                prof,
+            )
 
     # Stage 4: text moderation via Gemini.
     text_result = await text_moderation.check(row.title, row.description)
     scores["text"] = text_result
+    logger.info(
+        "[Moderation][Stage 4: Gemini Text] Row %s result: max_score=%s",
+        row.id,
+        text_result.get("max_score"),
+    )
 
     # Stage 5: image moderation via Gemini vision (reuse downloaded bytes).
     image_result = await image_moderation.check(image_cache)
     scores["image"] = image_result
+    logger.info(
+        "[Moderation][Stage 5: Gemini Vision] Row %s result: max_score=%s",
+        row.id,
+        image_result.get("max_score"),
+    )
 
     text_score = text_result.get("max_score")
     image_score = image_result.get("max_score")
@@ -101,10 +152,21 @@ async def moderate(row: ModerationRow, known_bad_hashes: list[int]) -> Moderatio
     # 429, or bad JSON) fall back to OpenAI's free omni-moderation endpoint
     # so the listing gets a real decision instead of parking in review.
     if text_score is None or image_score is None:
+        logger.info(
+            "[Moderation][Stage 6: OpenAI Failover] Triggered for row %s (Gemini scores: text=%s, image=%s)",
+            row.id,
+            text_score,
+            image_score,
+        )
         oai = await openai_moderation.check(row.title, row.description, row.image_urls)
         scores["openai"] = oai
         if oai.get("flagged"):
             cats = ", ".join(oai.get("categories") or []) or "policy violation"
+            logger.warning(
+                "[Moderation][Stage 6: OpenAI Failover] REJECTED row %s - Flagged categories: %s",
+                row.id,
+                cats,
+            )
             return ModerationDecision(
                 status=ModerationStatus.REJECTED,
                 reason=f"openai moderation flagged: {cats}",
@@ -117,8 +179,21 @@ async def moderate(row: ModerationRow, known_bad_hashes: list[int]) -> Moderatio
                 text_score = oai_score
             if image_score is None:
                 image_score = oai_score
+            logger.info(
+                "[Moderation][Stage 6: OpenAI Failover] PASSED for row %s - Max score: %.2f",
+                row.id,
+                oai_score,
+            )
 
     status, reason = _decide_from_scores(text_score, image_score)
+    logger.info(
+        "[Moderation] FINAL DECISION for row %s (product_id=%s) -> Status: %s | Reason: '%s' | Scores: %s",
+        row.id,
+        row.product_id or "N/A",
+        status.value.upper(),
+        reason or "Clean",
+        scores,
+    )
     return ModerationDecision(status=status, reason=reason, scores=scores)
 
 
@@ -139,6 +214,8 @@ async def process_batch(batch_size: int) -> dict[str, int]:
     if not rows:
         return counts
 
+    logger.info("[Moderation] Processing batch of %d row(s) (reclaimed=%d)", len(rows), reclaimed)
+
     # One DB round-trip for the whole batch — the set is expected to be small
     # (hundreds of entries at most).
     known_bad_hashes = service.load_bad_image_hashes()
@@ -154,10 +231,11 @@ async def process_batch(batch_size: int) -> dict[str, int]:
             await notifications.notify_decision(row, decision)
             counts[decision.status.value] = counts.get(decision.status.value, 0) + 1
         except Exception as exc:
-            logger.exception("moderation failed for row %s", row.id)
+            logger.exception("[Moderation] Batch moderation failed for row %s", row.id)
             service.mark_failed(row.id, repr(exc))
             counts["failed"] += 1
 
+    logger.info("[Moderation] Batch process complete: %s", counts)
     return counts
 
 
@@ -208,6 +286,7 @@ def reconcile(limit: int) -> dict[str, int]:
         elif enqueue_product(product) is not None:
             counts["enqueued"] += 1
 
+    logger.info("[Moderation] Reconcile complete: %s", counts)
     return counts
 
 
@@ -218,15 +297,17 @@ async def process_row(row_id: UUID | str) -> ModerationDecision | None:
     without waiting for the next cron tick. Returns None when the row is
     missing or already claimed by a concurrent drain.
     """
+    logger.info("[Moderation] Executing inline moderation for row %s", row_id)
     row = service.claim_by_id(row_id)
     if row is None:
+        logger.warning("[Moderation] Inline moderation skipped: row %s not found or already claimed", row_id)
         return None
 
     known_bad_hashes = service.load_bad_image_hashes()
     try:
         decision = await moderate(row, known_bad_hashes)
     except Exception as exc:
-        logger.exception("inline moderation failed for row %s", row.id)
+        logger.exception("[Moderation] Inline moderation failed for row %s", row.id)
         service.mark_failed(row.id, repr(exc))
         return None
 
@@ -235,4 +316,6 @@ async def process_row(row_id: UUID | str) -> ModerationDecision | None:
         service.sync_product_status(row.product_id, decision)
     from . import notifications
     await notifications.notify_decision(row, decision)
+    logger.info("[Moderation] Inline moderation finished for row %s -> %s", row.id, decision.status.value.upper())
     return decision
+

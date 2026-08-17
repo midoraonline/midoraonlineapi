@@ -8,6 +8,10 @@ Vercel-native design (no BackgroundTasks, no local SQLite, no bundled ML weights
     GET  /api/v1/moderation/drain           -> Vercel Cron trigger (Bearer CRON_SECRET)
     POST /api/v1/moderation/drain           -> Supabase pg_cron trigger
 
+The shop write routes emit `product.pending_review` (product id in the
+payload). `ListingModerationModule` subscribes and enqueues + optionally
+runs the pipeline inline. Cron drain remains the safety net.
+
 Pipeline (cheapest first, short-circuits on the first hit):
     1. Banned-keyword deny-list (free)
     2. Perceptual-hash blocklist (Pillow only, no numpy)

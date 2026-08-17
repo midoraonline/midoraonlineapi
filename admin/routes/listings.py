@@ -116,13 +116,12 @@ async def admin_update_listing_status(
     refresh_product_embedding(listing_id)
     calculate_listing_score(listing_id)
 
-    # Notify the merchant when the listing goes live or is rejected.
-    if status in {"active", "rejected"}:
-        try:
-            from listingModeration.notifications import notify_product_manual
-            await notify_product_manual(r.data[0], status, r.data[0].get("review_notes"))
-        except Exception as exc:
-            logger.warning("merchant status email failed for %s: %s", listing_id, exc)
+    # Publish status change event — subscribers (mail, notifications) handle side effects
+    try:
+        from common.events.publishers import publish_product_status_changed
+        await publish_product_status_changed(r.data[0], new_status=status, reason=r.data[0].get("review_notes"))
+    except Exception as exc:
+        logger.warning("publish status change event failed for %s: %s", listing_id, exc)
 
     return r.data[0]
 
@@ -160,14 +159,15 @@ async def admin_review_listing(
     refresh_product_embedding(listing_id)
     calculate_listing_score(listing_id)
 
-    # Email the merchant the manual decision + notes (best-effort).
+    # Publish status change event — subscribers (mail, notifications) handle side effects
     try:
-        from listingModeration.notifications import notify_product_manual
-        await notify_product_manual(r.data[0], new_status, notes)
+        from common.events.publishers import publish_product_status_changed
+        await publish_product_status_changed(r.data[0], new_status=new_status, reason=notes)
     except Exception as exc:
-        logger.warning("merchant review email failed for %s: %s", listing_id, exc)
+        logger.warning("publish review event failed for %s: %s", listing_id, exc)
 
     return r.data[0]
+
 
 
 @router.post("/listings/reindex-embeddings")

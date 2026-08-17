@@ -596,7 +596,16 @@ async def admin_approve_verification(
             "trust_badges": badges
         }).eq("id", shop_id).execute()
 
-    await _send_stage_decision_email(shop_id, stage, "approved", notes)
+    try:
+        from common.events.publishers import publish_shop_verification_changed
+        await publish_shop_verification_changed(
+            shop_id=shop_id,
+            new_status="verified",
+            stage=stage,
+            reason=notes,
+        )
+    except Exception as exc:
+        logger.warning("publish verification approval event failed for shop %s: %s", shop_id, exc)
 
     result = upd.data[0] if upd.data else row
     return _row_to_response(result).model_dump()
@@ -640,7 +649,17 @@ async def admin_reject_verification(
     if stage == 2:
         client.table("shops").update({"is_active": False}).eq("id", shop_id).execute()
 
-    await _send_stage_decision_email(shop_id, stage, "rejected", notes)
+    try:
+        from common.events.publishers import publish_shop_verification_changed
+        await publish_shop_verification_changed(
+            shop_id=shop_id,
+            new_status="rejected",
+            stage=stage,
+            reason=notes,
+        )
+    except Exception as exc:
+        logger.warning("publish verification rejection event failed for shop %s: %s", shop_id, exc)
 
     result = upd.data[0] if upd.data else row
     return _row_to_response(result).model_dump()
+

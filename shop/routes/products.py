@@ -5,17 +5,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from supabase import Client
 
 from core.authz import ensure_product_owner, ensure_shop_owner
-from core.config import get_settings
 from core.schemas import PaginationParams
 from db.supabase import get_supabase_admin, get_supabase_client
 from core.security import TokenPayload, get_current_claims, get_current_user_id, get_optional_user_id
-from mail.queue import enqueue_mail, filter_recipients, get_admin_emails
-from mail.templates import (
-    build_new_product_admin_notification,
-    build_product_submitted_confirmation,
-)
 from ranking.service import calculate_listing_score
 from shop import engagement_service, service as shop_service
+from shop.events import (
+    product_update_requires_moderation,
+    publish_product_created,
+    publish_product_updated,
+)
 from shop.schemas import (
     DiscountSet,
     PaginatedProductCards,
@@ -32,61 +31,6 @@ from shop.serializers import serialize_product_card
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-async def _notify_product_submission(
-    *,
-    client: Client,
-    user_id: str,
-    shop_id: str,
-    body: ProductCreate,
-) -> None:
-    """Best-effort merchant confirmation + admin notification for a new product.
-
-    All email work is queued (writes go through `mail_queue`) so route latency
-    stays flat. Exceptions from DB reads or enqueue are logged, never raised.
-    """
-    merchant_email: str | None = None
-    try:
-        user_r = client.table("users").select("email").eq("id", user_id).limit(1).execute()
-        if user_r.data and user_r.data[0].get("email"):
-            merchant_email = user_r.data[0]["email"]
-    except Exception as exc:
-        logger.warning("lookup merchant email failed for user %s: %s", user_id, exc)
-
-    if merchant_email:
-        subject, body_html = build_product_submitted_confirmation(product_title=body.title)
-        try:
-            await enqueue_mail(to=merchant_email, subject=subject, body_html=body_html)
-        except Exception as exc:
-            logger.warning("enqueue merchant confirmation failed: %s", exc)
-
-    recipients = filter_recipients(get_admin_emails(), merchant_email)
-    if not recipients:
-        return
-
-    shop_name = "Unknown"
-    try:
-        shop_row = client.table("shops").select("name").eq("id", shop_id).limit(1).execute()
-        if shop_row.data:
-            shop_name = shop_row.data[0].get("name", "Unknown")
-    except Exception as exc:
-        logger.warning("lookup shop name failed for %s: %s", shop_id, exc)
-
-    settings = get_settings()
-    admin_url = f"{settings.frontend_public_url}/admin/listings"
-    subject, body_html = build_new_product_admin_notification(
-        shop_name=shop_name,
-        product_title=body.title,
-        price_ugx=body.price_ugx,
-        category=body.category,
-        admin_listings_url=admin_url,
-    )
-    for recipient in recipients:
-        try:
-            await enqueue_mail(to=recipient, subject=subject, body_html=body_html)
-        except Exception as exc:
-            logger.warning("enqueue admin notification failed for %s: %s", recipient, exc)
 
 
 @router.post("/{shop_id}/products", response_model=ProductResponse)
@@ -108,30 +52,14 @@ async def create_product(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    await _notify_product_submission(
-        client=client, user_id=user_id, shop_id=shop_id, body=body,
-    )
+    # Subscribers (mail, ranking, embeddings, moderation) run in-process.
+    # The pending-review event carries the product id so moderation does
+    # not have to query pending queue rows after insert.
+    await publish_product_created(product, seller_id=user_id)
 
-    # Drive the moderation pipeline synchronously so the merchant sees the
-    # final status without waiting for cron. `moderate_now` is bounded by
-    # MODERATION_INLINE_TIMEOUT so a slow Gemini call can't blow the
-    # Vercel function budget — cron picks up any row that times out.
-    # Refetch the product so the response reflects the pipeline decision
-    # (status = active / rejected / pending_review).
-    try:
-        from listingModeration.config import config as moderation_config
-        from listingModeration import service as moderation_service
-        from listingModeration.hooks import moderate_now
-        if moderation_config.inline_on_enqueue:
-            row_id = moderation_service.latest_pending_row_for_product(product["id"])
-            if row_id is not None:
-                await moderate_now(row_id)
-                refreshed = shop_service.get_product(client, product["id"], viewer_id=user_id)
-                if refreshed is not None:
-                    product = refreshed
-    except Exception as exc:
-        logger.warning("inline moderation dispatch failed: %s", exc)
-
+    refreshed = shop_service.get_product(client, product["id"], viewer_id=user_id)
+    if refreshed is not None:
+        product = refreshed
     return product
 
 
@@ -421,19 +349,11 @@ async def update_product(
     if not updated:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    # If the edit reset the listing to pending_review, drive the pipeline
-    # inline (mirrors create_product) so the merchant sees the outcome on
-    # the response instead of waiting for cron.
-    try:
-        from listingModeration.config import config as moderation_config
-        from listingModeration import service as moderation_service
-        from listingModeration.hooks import moderate_now
-        if moderation_config.inline_on_enqueue:
-            row_id = moderation_service.latest_pending_row_for_product(product_id)
-            if row_id is not None:
-                await moderate_now(row_id)
-    except Exception as exc:
-        logger.warning("inline moderation dispatch (update) failed: %s", exc)
+    await publish_product_updated(
+        updated,
+        seller_id=user_id,
+        requires_moderation=product_update_requires_moderation(body),
+    )
 
     out = shop_service.get_product(client, product_id, viewer_id=user_id)
     if not out:

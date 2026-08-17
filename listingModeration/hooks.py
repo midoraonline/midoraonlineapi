@@ -1,13 +1,11 @@
-"""Integration hook other modules use to submit products for moderation.
+"""Enqueue + inline-run helpers used by the product.pending_review listener.
 
 Kept out of `service.py` so callers only need this narrow surface and avoid
-pulling in the whole pipeline (Gemini, Pillow) at import time in the hot
-request path.
+pulling in the whole pipeline (Gemini, Pillow) at import time.
 
 `enqueue_product` is fire-and-forget from the caller's perspective: any
 failure is logged but never propagated. A dropped enqueue means the product
-stays `pending_review` and a later manual re-enqueue (or an admin action)
-recovers it — that's the same failure mode as our mail queue.
+stays `pending_review` and a later drain / admin action recovers it.
 """
 from __future__ import annotations
 

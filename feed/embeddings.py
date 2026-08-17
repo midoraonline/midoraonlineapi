@@ -97,8 +97,13 @@ def embed_text(text: str, *, task_type: str = "RETRIEVAL_DOCUMENT") -> list[floa
             return None
         return [float(v) for v in values]
     except Exception as exc:
-        logger.warning("embed_text failed: %s", exc)
+        err_str = str(exc)
+        if "name resolution" in err_str or "gaierror" in err_str or "ConnectTimeout" in err_str:
+            logger.warning("embed_text network unavailable: %s", exc)
+        else:
+            logger.warning("embed_text failed: %s", exc)
         return None
+
 
 
 def embed_query(text: str) -> list[float] | None:

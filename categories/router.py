@@ -8,6 +8,7 @@ from db.supabase import get_supabase_client
 router = APIRouter(prefix="/categories", tags=["categories"])
 
 
+@router.get("", response_model=CategoryListResponse)
 @router.get("/", response_model=CategoryListResponse)
 def list_categories_route(client=Depends(get_supabase_client)) -> CategoryListResponse:
     rows = categories_service.list_categories(client) if client else fallback_categories()
@@ -15,6 +16,7 @@ def list_categories_route(client=Depends(get_supabase_client)) -> CategoryListRe
         rows = fallback_categories()
     items = [CategoryItem(**row) for row in rows]
     return CategoryListResponse(items=items)
+
 
 
 @router.get("/counts", response_model=CategoryCountsResponse)

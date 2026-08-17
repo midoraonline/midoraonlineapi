@@ -121,43 +121,44 @@ def sync_shop_availability_from_presence(admin: Any, owner_id: str) -> bool:
         return False
 
 
+import time
+
+_LAST_PING_THROTTLE: dict[str, float] = {}
+
+
 def record_presence(
     admin: Any,
     instance_id: str,
     user_id: str | None,
 ) -> None:
     now_iso = datetime.now(timezone.utc).isoformat()
-    previous_user_id: str | None = None
-    try:
-        existing = (
-            admin.table("online_presence")
-            .select("user_id")
-            .eq("instance_id", instance_id)
-            .limit(1)
-            .execute()
-        )
-        if existing.data:
-            raw_prev = existing.data[0].get("user_id")
-            if raw_prev:
-                previous_user_id = str(raw_prev)
-    except Exception as exc:
-        logger.warning("record_presence(%s) read previous failed: %s", instance_id[:8], exc)
+    now_ts = time.time()
+    throttle_key = f"{instance_id}:{user_id or ''}"
+    last_ping = _LAST_PING_THROTTLE.get(throttle_key, 0)
 
     payload: dict[str, Any] = {
         "instance_id": instance_id,
         "last_seen_at": now_iso,
-        # Explicitly set null when anonymous so sign-out detaches the row from
-        # the previous authenticated user.
         "user_id": user_id,
     }
 
-    admin.table("online_presence").upsert(payload, on_conflict="instance_id").execute()
+    try:
+        admin.table("online_presence").upsert(payload, on_conflict="instance_id").execute()
+    except Exception as exc:
+        logger.warning("record_presence(%s) upsert failed: %s", instance_id[:8], exc)
 
-    if user_id:
-        touch_user_last_seen(admin, user_id, now_iso)
-        set_merchant_shops_available(admin, user_id, now_iso)
-    elif previous_user_id:
-        clear_merchant_shops_if_idle(admin, previous_user_id)
+    # Throttle user & shop status updates to once every 30 seconds per session
+    if user_id and (now_ts - last_ping > 30.0):
+        _LAST_PING_THROTTLE[throttle_key] = now_ts
+        from concurrent.futures import ThreadPoolExecutor
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                pool.submit(touch_user_last_seen, admin, user_id, now_iso)
+                pool.submit(set_merchant_shops_available, admin, user_id, now_iso)
+        except Exception as exc:
+            logger.warning("record_presence aux updates failed: %s", exc)
+
 
 
 def remove_presence(admin: Any, instance_id: str) -> str | None:

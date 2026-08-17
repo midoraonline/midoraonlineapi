@@ -10,6 +10,13 @@ def _has_nested_categories(rows: list[dict]) -> bool:
     return any(row.get("parent_slug") for row in rows)
 
 
+import time
+
+_CAT_LIST_CACHE: tuple[float, list[dict]] | None = None
+_CAT_COUNTS_CACHE: tuple[float, dict[str, int]] | None = None
+_TTL = 60.0
+
+
 def list_categories(client: Any) -> list[dict]:
     """Return categories with subcategories.
 
@@ -17,6 +24,12 @@ def list_categories(client: Any) -> list[dict]:
     top-level parents (migration not applied / incomplete seed), fall back to
     the in-code catalog so pickers and filters always get subcategories.
     """
+    global _CAT_LIST_CACHE
+    now = time.time()
+    if _CAT_LIST_CACHE and (now - _CAT_LIST_CACHE[0] < _TTL):
+        return _CAT_LIST_CACHE[1]
+
+    res: list[dict] | None = None
     try:
         r = (
             client.table("categories")
@@ -25,7 +38,7 @@ def list_categories(client: Any) -> list[dict]:
             .execute()
         )
         if r.data and _has_nested_categories(r.data):
-            return [
+            res = [
                 {
                     "slug": row["slug"],
                     "label": row["label"],
@@ -37,7 +50,11 @@ def list_categories(client: Any) -> list[dict]:
     except APIError:
         pass
 
-    return seed_rows()
+    if not res:
+        res = seed_rows()
+
+    _CAT_LIST_CACHE = (now, res)
+    return res
 
 
 def fallback_categories() -> list[dict]:
@@ -46,6 +63,11 @@ def fallback_categories() -> list[dict]:
 
 def listing_counts_by_parent(client: Any) -> dict[str, int]:
     """Count published listings per top-level parent category label."""
+    global _CAT_COUNTS_CACHE
+    now = time.time()
+    if _CAT_COUNTS_CACHE and (now - _CAT_COUNTS_CACHE[0] < _TTL):
+        return _CAT_COUNTS_CACHE[1]
+
     counts: Counter[str] = Counter()
     try:
         r = (
@@ -60,4 +82,7 @@ def listing_counts_by_parent(client: Any) -> dict[str, int]:
                 counts[parent] += 1
     except APIError:
         return {}
-    return dict(counts)
+
+    res = dict(counts)
+    _CAT_COUNTS_CACHE = (now, res)
+    return res
