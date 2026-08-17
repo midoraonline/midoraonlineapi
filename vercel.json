@@ -18,7 +18,7 @@
   "crons": [
     {
       "path": "/api/v1/moderation/drain",
-      "schedule": "* * * * *"
+      "schedule": "0 0 * * *"
     }
   ]
 }
