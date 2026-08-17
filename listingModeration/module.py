@@ -1,6 +1,9 @@
 from common.events import EventBus, Events
 from common.module import AppModule, RouterSpec
-from listingModeration.listeners import on_product_pending_review
+from listingModeration.listeners import (
+    on_product_moderate_now,
+    on_product_pending_review,
+)
 
 
 class ListingModerationModule(AppModule):
@@ -10,6 +13,7 @@ class ListingModerationModule(AppModule):
 
     def register_listeners(self, bus: EventBus) -> None:
         bus.on(Events.PRODUCT_PENDING_REVIEW, on_product_pending_review)
+        bus.on(Events.PRODUCT_MODERATE_NOW, on_product_moderate_now)
 
     def on_startup(self) -> None:
         from listingModeration.worker import start_worker

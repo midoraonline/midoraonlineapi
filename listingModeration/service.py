@@ -222,3 +222,29 @@ def load_queue_rows_for_products(product_ids: list[str]) -> dict[str, list[dict[
         logger.warning("load_queue_rows_for_products failed: %s", exc)
     return out
 
+
+def latest_pending_row_for_product(product_id: str) -> Optional[ModerationRow]:
+    """Return the newest queue row still in `pending` for this product.
+
+    Used by the `product.moderate_now` listener so the inline pipeline can
+    pick up the row that the earlier `product.pending_review` listener
+    just enqueued — without re-emitting the enqueue.
+    """
+    admin = get_supabase_admin()
+    try:
+        r = (
+            admin.table(_TABLE)
+            .select("*")
+            .eq("product_id", product_id)
+            .eq("status", ModerationStatus.PENDING.value)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning("latest_pending_row_for_product failed for %s: %s", product_id, exc)
+        return None
+    if not r.data:
+        return None
+    return ModerationRow.model_validate(r.data[0])
+
