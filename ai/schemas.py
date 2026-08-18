@@ -98,3 +98,9 @@ class ListingQualityResponse(BaseModel):
     images_match: bool
     feedback: str
     suggestions: list[str] = []
+    # Optional AI-authored replacements the merchant can accept or ignore.
+    # None when the AI has nothing better to propose for that field.
+    suggested_title: str | None = None
+    suggested_description: str | None = None
+    suggested_category: str | None = None
+    suggested_subcategory: str | None = None

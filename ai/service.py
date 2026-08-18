@@ -415,8 +415,9 @@ async def chat_midora_info(message: str) -> str:
 # ---------------------------------------------------------------------------
 
 _LISTING_QUALITY_PROMPT = """You are a strict e-commerce listing coach on
-Midora, a Ugandan marketplace. Given a listing's title, description and up
-to 4 product images, judge whether the listing is ready to publish.
+Midora, a Ugandan marketplace. Given a listing's title, description, up to
+4 product images, and the marketplace's category tree, judge whether the
+listing is ready to publish and suggest concrete improvements.
 
 Return ONLY a JSON object, no prose, no code fences:
 {
@@ -425,7 +426,11 @@ Return ONLY a JSON object, no prose, no code fences:
   "description_quality": "poor" | "fair" | "good",
   "images_match": bool,         // images show the item mentioned in title
   "feedback": "one short user-facing sentence in plain English",
-  "suggestions": ["specific fix 1", "specific fix 2"]  // 0-3 items, actionable
+  "suggestions": ["specific fix 1", "specific fix 2"],  // 0-3 items, actionable
+  "suggested_title": "a better title, or null if the current one is already good",
+  "suggested_description": "a better 2-4 sentence description, or null if already good",
+  "suggested_category": "one label from the category tree, or null if unsure",
+  "suggested_subcategory": "one subcategory label under suggested_category, or null"
 }
 
 Rules:
@@ -438,6 +443,14 @@ Rules:
   who it's for, and reads like the seller wrote it.
 - Suggestions must be concrete ("Add condition — new or used?"), not vague.
 - Keep feedback friendly and under 20 words.
+- suggested_title / suggested_description are OPTIONAL rewrites the
+  merchant can accept or ignore — only propose one when it is a real
+  improvement over what they wrote, never a trivial reword.
+- suggested_category MUST be copied verbatim from the category tree's
+  parent labels. suggested_subcategory MUST be copied verbatim from the
+  children listed under that exact parent. Never invent a category.
+- If the listing already has a correct category, still return it in
+  suggested_category/suggested_subcategory so the UI can confirm it.
 """
 
 
@@ -461,6 +474,10 @@ async def check_listing_quality(
         "images_match": True,
         "feedback": "AI review unavailable — publishing without pre-check.",
         "suggestions": [],
+        "suggested_title": None,
+        "suggested_description": None,
+        "suggested_category": None,
+        "suggested_subcategory": None,
     }
     if client is None:
         return fallback
@@ -495,8 +512,11 @@ async def check_listing_quality(
                     mime = "image/webp"
                 parts.append(types.Part.from_bytes(data=data, mime_type=mime))
 
+    from core.categories import category_tree_for_prompt, subcategories_for_parent
+
     listing_text = (
-        f"Category: {category or 'unspecified'}\n\n"
+        f"Category tree (parent: subcategories):\n{category_tree_for_prompt()}\n\n"
+        f"Current category: {category or 'unspecified'}\n\n"
         f"Title: {title.strip()}\n\n"
         f"Description:\n{(description or '').strip()}"
     )
@@ -548,6 +568,38 @@ async def check_listing_quality(
             else "This listing needs a bit more work before it's ready."
         )
 
+    def _clean_text_suggestion(raw: object, original: str) -> str | None:
+        text = str(raw or "").strip()
+        if not text or text.lower() == "null":
+            return None
+        # Don't surface a "suggestion" that's identical to what's already there.
+        if text.strip().lower() == original.strip().lower():
+            return None
+        return text
+
+    suggested_title = _clean_text_suggestion(data.get("suggested_title"), title)
+    suggested_description = _clean_text_suggestion(
+        data.get("suggested_description"), description
+    )
+
+    # Validate the AI's category pick against the real tree — never trust
+    # a hallucinated label past this endpoint.
+    from core.categories import normalize_category
+
+    suggested_category: str | None = None
+    suggested_subcategory: str | None = None
+    raw_category = str(data.get("suggested_category") or "").strip()
+    if raw_category and raw_category.lower() != "null":
+        try:
+            suggested_category = normalize_category(raw_category)
+        except ValueError:
+            suggested_category = None
+    if suggested_category:
+        valid_children = subcategories_for_parent(suggested_category)
+        raw_sub = str(data.get("suggested_subcategory") or "").strip()
+        if raw_sub and raw_sub.lower() != "null" and raw_sub in valid_children:
+            suggested_subcategory = raw_sub
+
     ok = (
         score >= 60
         and title_matches
@@ -563,6 +615,10 @@ async def check_listing_quality(
         "images_match": images_match,
         "feedback": feedback,
         "suggestions": suggestions,
+        "suggested_title": suggested_title,
+        "suggested_description": suggested_description,
+        "suggested_category": suggested_category,
+        "suggested_subcategory": suggested_subcategory,
     }
 
 

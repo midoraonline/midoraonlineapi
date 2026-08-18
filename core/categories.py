@@ -448,3 +448,26 @@ def parent_label_for(value: str | None) -> str | None:
     if label is None:
         return None
     return _PARENT_LABEL_BY_LABEL.get(label)
+
+
+_CHILDREN_BY_PARENT_LABEL: dict[str, list[str]] = {}
+for _parent_slug, _parent_label, _children in _CATEGORY_TREE:
+    _CHILDREN_BY_PARENT_LABEL[_parent_label] = list(_children)
+
+
+def category_tree_for_prompt() -> str:
+    """Full parent -> subcategory tree, formatted for an AI prompt."""
+    lines: list[str] = []
+    for parent_slug, parent_label, children in _CATEGORY_TREE:
+        if children:
+            lines.append(f"{parent_label}: {', '.join(children)}")
+        else:
+            lines.append(f"{parent_label} (no subcategories)")
+    return "\n".join(lines)
+
+
+def subcategories_for_parent(parent_label: str | None) -> list[str]:
+    """Valid subcategory labels for a given top-level category label."""
+    if not parent_label:
+        return []
+    return _CHILDREN_BY_PARENT_LABEL.get(parent_label, [])
