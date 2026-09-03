@@ -19,6 +19,7 @@ from core.runtime import is_serverless
 def get_modules() -> list[AppModule]:
     from admin.module import AdminModule
     from ai.module import AiModule
+    from analytics.module import AnalyticsModule
     from auth.module import AuthModule
     from categories.module import CategoriesModule
     from feed.module import FeedModule
@@ -47,6 +48,7 @@ def get_modules() -> list[AppModule]:
         SearchModule(),
         MarketplaceModule(),
         PushModule(),
+        AnalyticsModule(),
     ]
 
 
