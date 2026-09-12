@@ -8,6 +8,7 @@ from supabase import Client
 
 from db.supabase import get_supabase_admin, get_supabase_client
 from core.security import get_current_user_id, get_optional_user_id
+from payments import plan_service
 from shop import engagement_service
 from shop.schemas import ShopEngagementState, ViewCountResponse
 
@@ -216,6 +217,12 @@ async def shop_dashboard(
     the previous 4 separate round-trips.
     """
     admin = get_supabase_admin()
+
+    if not plan_service.has_analytics_access(admin, user_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Shop analytics are available on the Standard plan and above. Upgrade your plan to view them.",
+        )
 
     shop_data: dict[str, Any] | None = None
     try:
@@ -455,18 +462,43 @@ async def my_shops_analytics(
     from collections import defaultdict
 
     admin = get_supabase_admin()
+
+    if not plan_service.has_analytics_access(admin, user_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Shop analytics are available on the Standard plan and above. Upgrade your plan to view them.",
+        )
+
     now = datetime.now(timezone.utc)
     since_iso = (now - timedelta(days=days)).isoformat()
 
     # Shops owned
     shops_r = (
         admin.table("shops")
-        .select("id,name,slug,is_active,view_count,follower_count,like_count,created_at,shop_type")
+        .select("id,name,slug,is_active,view_count,created_at,shop_type")
         .eq("owner_id", user_id)
         .execute()
     )
     shops = shops_r.data or []
     shop_ids = [str(s["id"]) for s in shops if s.get("id")]
+
+    # follower_count/like_count aren't columns on shops — they're derived from
+    # the join tables (see tenants._row_to_shop_response / engagement_service).
+    follower_counts: dict[str, int] = defaultdict(int)
+    shop_like_counts: dict[str, int] = defaultdict(int)
+    if shop_ids:
+        try:
+            fr = admin.table("shop_follows").select("shop_id").in_("shop_id", shop_ids).execute()
+            for row in (fr.data or []):
+                follower_counts[str(row.get("shop_id") or "")] += 1
+        except Exception as exc:
+            logger.warning("me/analytics shop_follows lookup failed: %s", exc)
+        try:
+            lr = admin.table("shop_likes").select("shop_id").in_("shop_id", shop_ids).execute()
+            for row in (lr.data or []):
+                shop_like_counts[str(row.get("shop_id") or "")] += 1
+        except Exception as exc:
+            logger.warning("me/analytics shop_likes lookup failed: %s", exc)
 
     if not shop_ids:
         return {
@@ -483,13 +515,24 @@ async def my_shops_analytics(
     # Products
     prods_r = (
         admin.table("products")
-        .select("id,shop_id,title,view_count,like_count,category,price_ugx,is_published,created_at")
+        .select("id,shop_id,title,view_count,category,price_ugx,is_published,created_at")
         .in_("shop_id", shop_ids)
         .execute()
     )
     products = prods_r.data or []
     product_ids = [str(p["id"]) for p in products if p.get("id")]
     prod_shop = {str(p["id"]): str(p.get("shop_id") or "") for p in products}
+
+    # like_count isn't a column on products either — derive from product_likes.
+    product_like_counts: dict[str, int] = defaultdict(int)
+    for i in range(0, len(product_ids), 400):
+        subset = product_ids[i : i + 400]
+        try:
+            plr = admin.table("product_likes").select("product_id").in_("product_id", subset).execute()
+            for row in (plr.data or []):
+                product_like_counts[str(row.get("product_id") or "")] += 1
+        except Exception as exc:
+            logger.warning("me/analytics product_likes lookup failed: %s", exc)
 
     # ── Impressions (chunked IN) ───────────────────────────────────────────
     impressions_rows: list[dict[str, Any]] = []
@@ -580,8 +623,8 @@ async def my_shops_analytics(
             "is_active": bool(s.get("is_active", False)),
             "shop_type": s.get("shop_type"),
             "view_count": int(s.get("view_count") or 0),
-            "follower_count": int(s.get("follower_count") or 0),
-            "like_count": int(s.get("like_count") or 0),
+            "follower_count": follower_counts.get(sid, 0),
+            "like_count": shop_like_counts.get(sid, 0),
             "impressions": impressions_by_shop.get(sid, 0),
         })
     per_shop.sort(key=lambda r: r["impressions"], reverse=True)
@@ -601,7 +644,7 @@ async def my_shops_analytics(
             "views": vw,
             "whatsapp_clicks": wa_by_product.get(pid, 0),
             "messages": msg_by_product.get(pid, 0),
-            "likes": int(p.get("like_count") or 0),
+            "likes": product_like_counts.get(pid, 0),
             "ctr": (vw / impr) if impr > 0 else 0.0,
             "price_ugx": float(p.get("price_ugx") or 0),
         })
@@ -649,8 +692,8 @@ async def my_shops_analytics(
         "total_whatsapp_clicks": total_wa,
         "total_messages": total_msg,
         "total_shop_views": sum(int(s.get("view_count") or 0) for s in shops),
-        "total_followers": sum(int(s.get("follower_count") or 0) for s in shops),
-        "total_shop_likes": sum(int(s.get("like_count") or 0) for s in shops),
+        "total_followers": sum(follower_counts.values()),
+        "total_shop_likes": sum(shop_like_counts.values()),
     }
 
     return {

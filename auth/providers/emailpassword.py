@@ -166,7 +166,10 @@ def get_profile(user_id: str) -> dict[str, Any] | None:
     client = get_supabase_admin()
     user_res = (
         client.table("users")
-        .select("id, email, full_name, user_role, email_verified")
+        .select(
+            "id, email, full_name, user_role, email_verified, phone_number, phone_verified,"
+            "plan_tier, plan_expires_at"
+        )
         .eq("id", user_id)
         .limit(1)
         .execute()
@@ -188,8 +191,11 @@ def get_profile(user_id: str) -> dict[str, Any] | None:
             "email_verified": bool(user.get("email_verified")),
             "full_name": p.get("full_name") or user.get("full_name"),
             "avatar_url": p.get("avatar_url"),
-            "phone_number": p.get("phone_number"),
+            "phone_number": p.get("phone_number") or user.get("phone_number"),
+            "phone_verified": bool(user.get("phone_verified")),
             "user_role": user.get("user_role", "customer"),
+            "plan_tier": user.get("plan_tier") or "basic",
+            "plan_expires_at": user.get("plan_expires_at"),
         }
 
     return {
@@ -198,6 +204,54 @@ def get_profile(user_id: str) -> dict[str, Any] | None:
         "email_verified": bool(user.get("email_verified")),
         "full_name": user.get("full_name"),
         "avatar_url": None,
-        "phone_number": None,
+        "phone_number": user.get("phone_number"),
+        "phone_verified": bool(user.get("phone_verified")),
         "user_role": user.get("user_role", "customer"),
+        "plan_tier": user.get("plan_tier") or "basic",
+        "plan_expires_at": user.get("plan_expires_at"),
     }
+
+
+def update_profile(user_id: str, full_name: str | None, phone_number: str | None) -> dict[str, Any]:
+    """Update full_name/phone_number. Resets `phone_verified` when the number actually changes."""
+    client = get_supabase_admin()
+    current = client.table("users").select("phone_number").eq("id", user_id).limit(1).execute()
+    if not current.data:
+        raise ValueError("User not found")
+    current_phone = current.data[0].get("phone_number")
+
+    payload: dict[str, Any] = {}
+    if full_name is not None:
+        payload["full_name"] = full_name
+    if phone_number is not None:
+        normalized = phone_number or None
+        payload["phone_number"] = normalized
+        if normalized != current_phone:
+            payload["phone_verified"] = False
+
+    if payload:
+        client.table("users").update(payload).eq("id", user_id).execute()
+        mirror = {k: v for k, v in payload.items() if k in ("full_name", "phone_number")}
+        if mirror:
+            try:
+                client.table("profiles").update(mirror).eq("id", user_id).execute()
+            except Exception:
+                pass  # profiles row may not exist for every user
+
+    profile = get_profile(user_id)
+    if not profile:
+        raise ValueError("Profile not found")
+    return profile
+
+
+def change_password(user_id: str, current_password: str, new_password: str) -> None:
+    from auth.service import hash_password, verify_password
+
+    client = get_supabase_admin()
+    res = client.table("users").select("password_hash").eq("id", user_id).limit(1).execute()
+    if not res.data:
+        raise ValueError("User not found")
+    if not verify_password(current_password, res.data[0].get("password_hash", "")):
+        raise ValueError("Current password is incorrect")
+    client.table("users").update({"password_hash": hash_password(new_password)}).eq("id", user_id).execute()
+

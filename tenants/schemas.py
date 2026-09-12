@@ -79,6 +79,7 @@ class ShopResponse(BaseModel):
     logo_url: str | None
     shop_email: str | None
     whatsapp_number: str | None
+    whatsapp_verified: bool = False
     contacts: list[dict] | None
     social_links: list[dict] | None
     location: dict | None
@@ -100,6 +101,14 @@ class ShopResponse(BaseModel):
     last_seen_at: str | None = None
     viewer_following: bool | None = None
     viewer_liked_shop: bool | None = None
+
+
+class SendShopWhatsAppCodeRequest(BaseModel):
+    whatsapp_number: str
+
+
+class ConfirmShopWhatsAppCodeRequest(BaseModel):
+    code: str
 
 
 class ShopListItem(BaseModel):

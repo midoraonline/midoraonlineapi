@@ -8,6 +8,7 @@ from core.authz import ensure_product_owner, ensure_shop_owner
 from core.schemas import PaginationParams
 from db.supabase import get_supabase_admin, get_supabase_client
 from core.security import TokenPayload, get_current_claims, get_current_user_id, get_optional_user_id
+from payments import plan_service
 from ranking.service import calculate_listing_score
 from shop import engagement_service, service as shop_service
 from shop.events import (
@@ -44,6 +45,11 @@ async def create_product(
         ensure_shop_owner(client, shop_id, user_id)
     except LookupError:
         raise HTTPException(status_code=404, detail="Shop not found")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    try:
+        plan_service.assert_can_create_product(client, shop_id, user_id)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 

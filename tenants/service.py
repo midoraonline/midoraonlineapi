@@ -276,7 +276,7 @@ def create_shop(client: Any, owner_id: str, data: ShopCreate) -> dict:
 # Columns needed for public shop pages (avoid select *).
 _SHOP_DETAIL_COLS = (
     "id,owner_id,name,slug,category,description,about,logo_url,shop_email,"
-    "whatsapp_number,contacts,social_links,location,availability,theme_config,"
+    "whatsapp_number,whatsapp_verified,contacts,social_links,location,availability,theme_config,"
     "shop_type,is_active,subscription_end_date,created_at,updated_at,view_count,"
     "trust_score,seller_score,fraud_score,trust_badges,available_now,last_seen_at"
 )
@@ -333,6 +333,11 @@ def update_shop(client: Any, shop_id: str, data: ShopUpdate, viewer_id: str | No
     payload.pop("available_now", None)
     if "theme_config" in payload:
         payload["theme_config"] = _theme_config_for_db(data.theme_config)
+    if "whatsapp_number" in payload:
+        current = client.table("shops").select("whatsapp_number").eq("id", shop_id).limit(1).execute()
+        current_number = current.data[0].get("whatsapp_number") if current.data else None
+        if payload["whatsapp_number"] != current_number:
+            payload["whatsapp_verified"] = False
     if not payload:
         return get_shop(client, shop_id, viewer_id=viewer_id)
     r = client.table("shops").update(payload).eq("id", shop_id).execute()
@@ -354,6 +359,7 @@ def _row_to_shop_response(row: dict) -> dict:
         "logo_url": row.get("logo_url"),
         "shop_email": row.get("shop_email"),
         "whatsapp_number": row.get("whatsapp_number"),
+        "whatsapp_verified": bool(row.get("whatsapp_verified") or False),
         "contacts": row.get("contacts"),
         "social_links": row.get("social_links"),
         "location": row.get("location"),

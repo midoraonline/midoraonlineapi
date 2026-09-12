@@ -8,6 +8,7 @@ from auth.cookies import set_auth_cookies
 from core.schemas import PaginationParams
 from core.security import get_current_user_id
 from db.supabase import get_supabase_client
+from payments import plan_service
 from tenants import service as tenants_service
 from tenants.routes import discovery, shops, verifications
 from tenants.schemas import ShopCreate, ShopResponse
@@ -77,6 +78,7 @@ async def create_shop(
 ):
     """Create a shop. Both /api/v1/shops and /api/v1/shops/ accept POST
     (avoids 405 when proxies strip the trailing slash)."""
+    plan_service.assert_can_create_shop(client, user_id)
     try:
         shop = tenants_service.create_shop(client, user_id, body)
     except Exception as e:

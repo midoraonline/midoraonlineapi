@@ -69,6 +69,16 @@ class Settings(BaseSettings):
     # Admin API (optional): set ADMIN_API_KEY to protect admin routes
     admin_api_key: str = Field(default="", alias="ADMIN_API_KEY")
 
+    # Africa's Talking — SMS (phone verification) + WhatsApp (WhatsApp verification)
+    africastalking_api_key: str = Field(default="", alias="AFRICASTALKING_API_KEY")
+    africastalking_username: str = Field(default="", alias="AFRICASTALKING_USERNAME")
+    africastalking_sender_id: str = Field(default="", alias="AFRICASTALKING_SENDER_ID")
+    # WhatsApp Business number (E.164) registered with Africa's Talking that
+    # sends OTP messages. Required only for WhatsApp verification.
+    africastalking_whatsapp_number: str = Field(
+        default="", alias="AFRICASTALKING_WHATSAPP_NUMBER"
+    )
+
     # App-auth JWT settings (for custom auth)
     app_jwt_secret: str = Field(default="CHANGE_ME_IN_PROD", alias="APP_JWT_SECRET")
     app_jwt_algorithm: str = Field(default="HS256", alias="APP_JWT_ALGORITHM")
