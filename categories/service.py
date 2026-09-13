@@ -33,7 +33,7 @@ def list_categories(client: Any) -> list[dict]:
     try:
         r = (
             client.table("categories")
-            .select("slug,label,sort_order,parent_slug")
+            .select("slug,label,sort_order,parent_slug,metadata")
             .order("sort_order")
             .execute()
         )
@@ -44,6 +44,7 @@ def list_categories(client: Any) -> list[dict]:
                     "label": row["label"],
                     "sort_order": int(row.get("sort_order") or 0),
                     "parent_slug": row.get("parent_slug"),
+                    "metadata": row.get("metadata") or [],
                 }
                 for row in r.data
             ]
@@ -55,6 +56,12 @@ def list_categories(client: Any) -> list[dict]:
 
     _CAT_LIST_CACHE = (now, res)
     return res
+
+
+def invalidate_categories_cache() -> None:
+    """Bust the in-process category list cache after an admin write."""
+    global _CAT_LIST_CACHE
+    _CAT_LIST_CACHE = None
 
 
 def fallback_categories() -> list[dict]:

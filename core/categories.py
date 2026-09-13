@@ -146,6 +146,7 @@ _CATEGORY_TREE: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "Part-time Jobs",
             "Gigs & Freelance",
             "Internships",
+            "Maids & Domestic Work",
             "Tenders & Contracts",
             "Partnerships & Collaborations",
             "Volunteer & Unpaid",
