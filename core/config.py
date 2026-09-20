@@ -68,6 +68,8 @@ class Settings(BaseSettings):
 
     # Admin API (optional): set ADMIN_API_KEY to protect admin routes
     admin_api_key: str = Field(default="", alias="ADMIN_API_KEY")
+    # Vercel cron / pg_cron drain for listing moderation.
+    cron_secret: str = Field(default="", alias="CRON_SECRET")
 
     # Africa's Talking — SMS (phone verification) + WhatsApp (WhatsApp verification)
     africastalking_api_key: str = Field(default="", alias="AFRICASTALKING_API_KEY")

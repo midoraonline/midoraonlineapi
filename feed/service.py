@@ -10,8 +10,9 @@ The heavy lifting is delegated to:
     - `feed.placement` → post-ranking composition & vendor-diversity rules
 
 Authenticated users are cached for one hour in `user_feed_cache` as an
-ordered ID list (+ optional preference vector). Request-time exclusions /
-fatigue filter that ID list; only the page slice is hydrated into card rows.
+ordered ID list (+ optional preference vector). Pagination slices that
+list; fatigue may drop already-seen IDs on later pages. Only the page
+slice is hydrated into card rows.
 
 Cold rebuild path:
     1. Build user preference vector from interaction product embeddings.
@@ -259,15 +260,17 @@ def _page_ids_from_ranked(
     exclude_ids: list[str] | None,
     user_id: str | None,
     session_id: str | None,
-) -> list[str]:
+) -> tuple[list[str], bool]:
     """Slice the ranked ID list for this request.
 
+    Returns (page_ids, has_more). `has_more` is based on remaining ranked IDs,
+    not on how many of this page hydrates into cards.
+
     Contract:
-      - Initial / cursor pagination (`exclude_ids` empty): page window into the
-        full ranked list. No session exclusions on first paint.
-      - Load-more continuation (`exclude_ids` set): drop already-shown IDs, then
-        return the next `limit` from the head of what remains. Page offset is
-        ignored so we never double-skip (exclude + page 2).
+      - Cursor / page pagination (`exclude_ids` empty): window into the ranked
+        list. `(page-1)*limit … page*limit`.
+      - Legacy `exclude_ids` (no cursor): drop those IDs, then take `limit`
+        from the remaining head. Do not combine with page.
       - Fatigue only applies when continuing past the first screen.
     """
     using_exclude = bool(exclude_ids)
@@ -280,9 +283,10 @@ def _page_ids_from_ranked(
         apply_fatigue=apply_fatigue,
     )
     if using_exclude:
-        return filtered[:limit]
+        return filtered[:limit], len(filtered) > limit
     start_idx = max(0, (page - 1) * limit)
-    return filtered[start_idx : start_idx + limit]
+    sliced = filtered[start_idx : start_idx + limit]
+    return sliced, start_idx + limit < len(filtered)
 
 
 def _merge_recent_unseen_ids(
@@ -379,11 +383,12 @@ def _get_latest_feed_page(
     *,
     page: int,
     limit: int,
-) -> list[ProductResponse]:
+) -> tuple[list[ProductResponse], bool]:
     from db.supabase import get_supabase_admin, with_supabase_retry
 
     start_idx = max(0, (page - 1) * limit)
-    end_idx = start_idx + limit - 1
+    # Inclusive range of limit+1 rows so we know if another page exists.
+    end_idx = start_idx + limit
 
     def _run():
         db = get_supabase_admin()
@@ -396,10 +401,11 @@ def _get_latest_feed_page(
 
     try:
         resp = with_supabase_retry(_run, label="latest_feed_page")
-        return [_to_response(item) for item in resp.data or []]
+        rows = [_to_response(item) for item in resp.data or []]
+        return rows[:limit], len(rows) > limit
     except Exception as exc:
         logger.warning("_get_latest_feed_page failed: %s", exc)
-        return []
+        return [], False
 
 
 # ---------------------------------------------------------------------------
@@ -631,14 +637,14 @@ def get_algorithm_feed(
     *,
     exclude_ids: list[str] | None = None,
     session_id: str | None = None,
-) -> list[ProductResponse]:
+) -> tuple[list[ProductResponse], bool]:
     """Personalized feed with layered composition and vendor-diversity rules.
 
     Ranking lifecycle (per authenticated user):
       * Cold / TTL expired (`refreshed_at` older than 1 hour): full score + place,
         then upsert `user_feed_cache` with new ranked IDs.
-      * Hot (within 1 hour): serve cached ranked IDs → apply load-more exclusions
-        → hydrate card columns only. No re-score.
+        * Hot (within 1 hour): serve cached ranked IDs, slice by page/cursor,
+          hydrate card columns only. No re-score.
       * Within TTL, newly created listings are merged via `_merge_recent_unseen_ids`.
 
     Authenticated users never short-circuit to pure latest solely because they
@@ -661,7 +667,7 @@ def get_algorithm_feed(
     cached_ids, is_fresh, refreshed_at = _load_cached_ranked_ids(db, user_id)
     if cached_ids and is_fresh:
         cached_ids = _merge_recent_unseen_ids(db, cached_ids, refreshed_at)
-        page_ids = _page_ids_from_ranked(
+        page_ids, has_more = _page_ids_from_ranked(
             cached_ids,
             page=page,
             limit=limit,
@@ -669,17 +675,21 @@ def get_algorithm_feed(
             user_id=user_id,
             session_id=session_id,
         )
+        if not page_ids:
+            return [], False
         cached_rows = _fetch_products_by_ids(db, page_ids)
         if cached_rows:
             logger.info(
                 "feed:path=cache_hit user=%s page=%s n=%s cached=%s ttl_s=%s",
                 user_id, page, len(cached_rows), len(cached_ids), FEED_CACHE_TTL_SECONDS,
             )
-            return [_to_response(row) for row in cached_rows]
+            return [_to_response(row) for row in cached_rows], has_more
         logger.info(
             "feed:path=cache_miss_empty_page user=%s page=%s ids=%s",
             user_id, page, len(page_ids),
         )
+        if page > 1:
+            return [], has_more
 
     signals = sig.collect_user_signals(db, user_id)
     # Soft signals from recent impressions so scroll-only users still
@@ -736,7 +746,7 @@ def get_algorithm_feed(
 
     if not candidates:
         logger.warning("feed:path=fallback_latest user=%s reason=no_candidates", user_id)
-        return get_latest_feed(db, limit)
+        return _get_latest_feed_page(db, page=page, limit=limit)
 
     if user_vector and not taste_scores:
         sample_ids = [str(c["id"]) for c in candidates[:120] if c.get("id")]
@@ -808,7 +818,7 @@ def get_algorithm_feed(
         FEED_CACHE_TTL_SECONDS,
     )
 
-    page_ids = _page_ids_from_ranked(
+    page_ids, has_more = _page_ids_from_ranked(
         ranked_ids,
         page=page,
         limit=limit,
@@ -818,11 +828,11 @@ def get_algorithm_feed(
     )
     page_rows = _fetch_products_by_ids(db, page_ids)
     if page_rows:
-        return [_to_response(row) for row in page_rows]
+        return [_to_response(row) for row in page_rows], has_more
 
     by_id = {
         str(item["product"].get("id")): item["product"]
         for item in placed
         if item.get("product") and item["product"].get("id")
     }
-    return [_to_response(by_id[pid]) for pid in page_ids if pid in by_id]
+    return [_to_response(by_id[pid]) for pid in page_ids if pid in by_id], has_more

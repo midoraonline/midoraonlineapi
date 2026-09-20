@@ -1,14 +1,16 @@
 import asyncio
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from supabase import Client
 
+from core.authz import ensure_shop_owner
 from db.supabase import get_supabase_client
 from core.security import get_optional_user_id
+from core.rate_limit import RateLimitAi
 from ai import service as ai_service
-from ai.schemas import ChatSessionCreate
+from ai.schemas import ChatSessionCreate, MessageCreate
 
 router = APIRouter()
 
@@ -29,8 +31,28 @@ def _rate_limit_error(exc: ai_service.AIRateLimitError) -> HTTPException:
     )
 
 
+def _assert_session_access(session: dict[str, Any], client: Client, user_id: str | None) -> None:
+    """Guest sessions (no customer_id) are reachable by UUID; owned sessions are not public."""
+    customer_id = session.get("customer_id")
+    shop_id = session.get("shop_id")
+    if not customer_id:
+        return
+    if user_id and user_id == str(customer_id):
+        return
+    if user_id and shop_id:
+        try:
+            ensure_shop_owner(client, str(shop_id), user_id)
+            return
+        except (LookupError, PermissionError):
+            pass
+    raise HTTPException(status_code=403, detail="Forbidden")
+
+
 @router.post("/midora", response_model=MidoraChatResponse)
-async def midora_info_chat(body: MidoraChatRequest) -> MidoraChatResponse:
+async def midora_info_chat(
+    body: MidoraChatRequest,
+    _: RateLimitAi,
+) -> MidoraChatResponse:
     """Midora Online info bot (no sessions, no shop context)."""
     try:
         reply = await ai_service.chat_midora_info(body.message)
@@ -70,39 +92,62 @@ async def list_chat_sessions(
     shop_id: str | None = None,
     user_id: str | None = Depends(get_optional_user_id),
 ):
-    def _query():
-        q = client.table("chat_sessions").select("*")
-        if shop_id:
-            q = q.eq("shop_id", shop_id)
-        if user_id:
-            q = q.eq("customer_id", user_id)
-        return q.execute()
+    if shop_id:
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        ensure_shop_owner(client, shop_id, user_id)
 
-    r = await asyncio.to_thread(_query)
+        def _shop_query():
+            return (
+                client.table("chat_sessions")
+                .select("*")
+                .eq("shop_id", shop_id)
+                .execute()
+            )
+
+        r = await asyncio.to_thread(_shop_query)
+        return r.data or []
+
+    if not user_id:
+        return []
+
+    def _mine():
+        return (
+            client.table("chat_sessions")
+            .select("*")
+            .eq("customer_id", user_id)
+            .execute()
+        )
+
+    r = await asyncio.to_thread(_mine)
     return r.data or []
 
 
 @router.post("/sessions/{session_id}/messages")
 async def send_message(
     session_id: str,
-    body: dict,
+    body: MessageCreate,
     client: Annotated[Client, Depends(get_supabase_client)],
+    user_id: str | None = Depends(get_optional_user_id),
 ):
-    message = body.get("message", "")
+    message = (body.message or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="message required")
 
     sess = await asyncio.to_thread(
         lambda: client.table("chat_sessions")
-        .select("shop_id, intent")
+        .select("shop_id, intent, customer_id")
         .eq("id", session_id)
         .execute()
     )
     if not sess.data or len(sess.data) == 0:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    shop_id = sess.data[0].get("shop_id")
-    intent = sess.data[0].get("intent")
+    session = sess.data[0]
+    _assert_session_access(session, client, user_id)
+
+    shop_id = session.get("shop_id")
+    intent = session.get("intent")
 
     hist = await asyncio.to_thread(
         lambda: client.table("chat_messages")
@@ -157,7 +202,19 @@ async def send_message(
 async def get_messages(
     session_id: str,
     client: Annotated[Client, Depends(get_supabase_client)],
+    user_id: str | None = Depends(get_optional_user_id),
 ):
+    sess = await asyncio.to_thread(
+        lambda: client.table("chat_sessions")
+        .select("shop_id, customer_id")
+        .eq("id", session_id)
+        .limit(1)
+        .execute()
+    )
+    if not sess.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+    _assert_session_access(sess.data[0], client, user_id)
+
     r = await asyncio.to_thread(
         lambda: client.table("chat_messages")
         .select("*")

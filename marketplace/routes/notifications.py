@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from core.security import get_current_user_id
 from notifications.service import (
@@ -46,9 +46,9 @@ async def read_notification(
     current_user_id: str = Depends(get_current_user_id),
 ) -> dict[str, Any]:
     """Mark a notification as read."""
-    result = mark_as_read(notification_id)
+    result = mark_as_read(notification_id, current_user_id)
     if not result:
-        return {"error": "Notification not found"}
+        raise HTTPException(status_code=404, detail="Notification not found")
     return result
 
 

@@ -7,9 +7,6 @@ from shop import engagement_service
 from core.categories import normalize_category
 from shop.events import CONTENT_MODERATION_FIELDS
 from shop.schemas import (
-    OrderCreate,
-    OrderListItem,
-    OrderResponse,
     ProductCreate,
     ProductDetailResponse,
     ProductListItem,
@@ -19,16 +16,15 @@ from shop.schemas import (
 )
 
 
-_PRODUCT_LIST_COLS_WITH_VIEWS = (
+_PRODUCT_LIST_PUBLIC = (
+    "id,shop_id,title,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,status,"
+    "listing_score,location_name,is_published,is_negotiable,stock_quantity,listing_meta,"
+    "created_at,view_count"
+)
+_PRODUCT_LIST_OWNER = (
     "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,status,"
     "listing_score,location_name,is_published,is_negotiable,stock_quantity,listing_meta,"
-    "created_at,view_count,review_notes,reviewed_at,"
-    "shops(id,name,slug,logo_url,whatsapp_number,is_active,trust_score,available_now,location,trust_badges)"
-)
-_PRODUCT_LIST_COLS_BASE = (
-    "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
-    "is_published,is_negotiable,stock_quantity,listing_meta,created_at,review_notes,reviewed_at,"
-    "shops(id,name,slug,logo_url,whatsapp_number,is_active,trust_score,available_now,location,trust_badges)"
+    "created_at,view_count,review_notes,reviewed_at"
 )
 
 
@@ -63,11 +59,15 @@ def list_products(
             q = q.eq("status", status)
         return q.range(offset, offset + limit - 1).order("created_at", desc=True).execute()
 
+    cols = _PRODUCT_LIST_OWNER if is_owner else _PRODUCT_LIST_PUBLIC
     try:
-        r = _run_list(_PRODUCT_LIST_COLS_WITH_VIEWS)
+        r = _run_list(cols)
     except APIError as exc:
         if is_undefined_column_error(exc):
-            r = _run_list(_PRODUCT_LIST_COLS_BASE)
+            r = _run_list(
+                "id,shop_id,title,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
+                "is_published,is_negotiable,stock_quantity,listing_meta,created_at"
+            )
         else:
             raise
     total = r.count if hasattr(r, "count") and r.count is not None else len(r.data or [])
@@ -161,7 +161,7 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
         r = (
             client.table("products")
             .select("id,shop_id,title,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
-                    "listing_score,location_name,is_published,is_negotiable,stock_quantity,listing_meta,"
+                    "listing_score,location_name,is_published,is_negotiable,stock_quantity,"
                     "created_at,view_count")
             .eq("category", category)
             .eq("is_published", True)
@@ -176,7 +176,7 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
         r = (
             client.table("products")
             .select("id,shop_id,title,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
-                    "is_negotiable,stock_quantity,listing_meta,is_published,created_at")
+                    "is_negotiable,stock_quantity,is_published,created_at")
             .eq("category", category)
             .eq("is_published", True)
             .eq("status", "active")
@@ -195,29 +195,6 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             ).in_("id", shop_ids).execute()
             for s in sr.data or []:
                 shops_map[str(s["id"])] = s
-        except Exception:
-            pass
-    product_ids = [str(row["id"]) for row in (r.data or [])]
-    avg_ratings: dict[str, float] = {}
-    review_counts: dict[str, int] = {}
-    if product_ids:
-        try:
-            rev_r = (
-                client.table("product_reviews")
-                .select("product_id,rating")
-                .in_("product_id", product_ids)
-                .execute()
-            )
-            sums: dict[str, float] = {}
-            for rev in rev_r.data or []:
-                pid = str(rev.get("product_id"))
-                rating = rev.get("rating")
-                if pid and rating:
-                    sums[pid] = sums.get(pid, 0) + float(rating)
-                    review_counts[pid] = review_counts.get(pid, 0) + 1
-            for pid in product_ids:
-                if review_counts.get(pid, 0) > 0:
-                    avg_ratings[pid] = round(sums[pid] / review_counts[pid], 2)
         except Exception:
             pass
     for row in (r.data or []):
@@ -243,9 +220,9 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             "view_count": int(row.get("view_count") or 0),
             "is_negotiable": row.get("is_negotiable", True) is not False,
             "stock_quantity": int(row["stock_quantity"]) if row.get("stock_quantity") is not None else None,
-            "listing_meta": row.get("listing_meta") if isinstance(row.get("listing_meta"), dict) else {},
-            "average_rating": avg_ratings.get(pid, 0.0),
-            "review_count": review_counts.get(pid, 0),
+            "listing_meta": {},
+            "average_rating": 0.0,
+            "review_count": 0,
             "shop_name": s.get("name"),
             "shop_slug": s.get("slug"),
             "owner_id": str(s.get("owner_id")) if s.get("owner_id") else None,
@@ -278,29 +255,18 @@ def get_product_detail(
     product_id: str,
     viewer_id: str | None = None,
 ) -> ProductDetailResponse | None:
-    """Batched product detail fetch — 3 queries instead of 7.
-
-    Query plan:
-      Q1  products      — full product row (includes view_count, status, etc.)
-      Q2  shops         — shop snapshot + owner_id for visibility check
-      Q3  product_likes — like count (count=exact) + viewer_liked in one pass
-      Q4  listing_events — whatsapp_clicks + messages in a single grouped query
-      Q5  listing_boosts — active boost check (lightweight, single row expected)
-
-    The shop snapshot is embedded in the response, eliminating the separate
-    frontend shop fetch that previously caused an extra round-trip.
-    """
+    """Product + shop + likes/boost/ratings in a short parallel pass."""
     from datetime import datetime, timezone
+    from concurrent.futures import ThreadPoolExecutor
 
-    # -------------------------------------------------------------------
-    # Q1: Product row
-    # -------------------------------------------------------------------
     prod_r = (
         client.table("products")
         .select(
             "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,stock_quantity,image_urls,"
             "category,item_type,status,is_published,is_negotiable,listing_score,location_name,listing_meta,"
-            "ai_seo_tags,ai_generated_desc,review_notes,reviewed_at,created_at,view_count"
+            "ai_seo_tags,ai_generated_desc,review_notes,reviewed_at,created_at,view_count,"
+            "shops(id,name,slug,logo_url,owner_id,whatsapp_number,"
+            "is_active,trust_score,available_now,location,trust_badges)"
         )
         .eq("id", product_id)
         .limit(1)
@@ -310,58 +276,38 @@ def get_product_detail(
         return None
     row = prod_r.data[0]
 
-    # -------------------------------------------------------------------
-    # Q2: Shop row — owner check + embedded snapshot
-    # -------------------------------------------------------------------
     shop_id = str(row.get("shop_id", ""))
     shop_snapshot: ShopSummary | None = None
     is_owner = False
+    nested = row.get("shops")
+    if isinstance(nested, list):
+        nested = nested[0] if nested else None
+    if isinstance(nested, dict):
+        loc = nested.get("location")
+        location_str = loc.get("display") if isinstance(loc, dict) else loc
+        is_owner = bool(viewer_id and str(nested.get("owner_id", "")) == viewer_id)
+        shop_snapshot = ShopSummary(
+            id=str(nested["id"]),
+            name=nested.get("name", ""),
+            slug=nested.get("slug"),
+            logo_url=nested.get("logo_url"),
+            owner_id=str(nested["owner_id"]) if nested.get("owner_id") else None,
+            whatsapp_number=nested.get("whatsapp_number"),
+            is_active=bool(nested.get("is_active", True)),
+            trust_score=int(nested.get("trust_score") or 0),
+            trust_badges=nested.get("trust_badges") or ["shop_listed"],
+            available_now=bool(nested.get("available_now", False)),
+            location=location_str,
+        )
 
-    if shop_id:
-        try:
-            shop_r = (
-                client.table("shops")
-                .select(
-                    "id,name,slug,logo_url,owner_id,whatsapp_number,"
-                    "is_active,trust_score,available_now,location,trust_badges"
-                )
-                .eq("id", shop_id)
-                .limit(1)
-                .execute()
-            )
-            if shop_r.data:
-                s = shop_r.data[0]
-                loc = s.get("location")
-                location_str = loc.get("display") if isinstance(loc, dict) else loc
-                is_owner = bool(viewer_id and str(s.get("owner_id", "")) == viewer_id)
-                shop_snapshot = ShopSummary(
-                    id=str(s["id"]),
-                    name=s.get("name", ""),
-                    slug=s.get("slug"),
-                    logo_url=s.get("logo_url"),
-                    owner_id=str(s["owner_id"]) if s.get("owner_id") else None,
-                    whatsapp_number=s.get("whatsapp_number"),
-                    is_active=bool(s.get("is_active", True)),
-                    trust_score=int(s.get("trust_score") or 0),
-                    trust_badges=s.get("trust_badges") or ["shop_listed"],
-                    available_now=bool(s.get("available_now", False)),
-                    location=location_str,
-                )
-        except Exception:
-            pass
-
-    # Visibility gate — non-owners can't see inactive/unpublished listings
     if not is_owner and (row.get("status") != "active" or not row.get("is_published")):
         return None
 
-    # -------------------------------------------------------------------
-    # Q3–Q5: likes, listing-event counts, boost — parallel
-    # -------------------------------------------------------------------
     like_count = 0
     viewer_liked: bool | None = None
-    whatsapp_clicks = 0
-    messages = 0
     boosted = False
+    average_rating = 0.0
+    review_count = 0
 
     def _likes() -> tuple[int, bool | None]:
         try:
@@ -388,20 +334,6 @@ def get_product_detail(
         except Exception:
             return 0, None
 
-    def _event_count(event_type: str) -> int:
-        try:
-            er = (
-                client.table("listing_events")
-                .select("id", count="exact")
-                .eq("listing_id", product_id)
-                .eq("event_type", event_type)
-                .limit(1)
-                .execute()
-            )
-            return int(er.count or 0)
-        except Exception:
-            return 0
-
     def _boost() -> bool:
         try:
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -418,21 +350,30 @@ def get_product_detail(
         except Exception:
             return False
 
-    from concurrent.futures import ThreadPoolExecutor
+    def _ratings() -> tuple[float, int]:
+        try:
+            rr = (
+                client.table("product_reviews")
+                .select("rating")
+                .eq("product_id", product_id)
+                .limit(200)
+                .execute()
+            )
+            ratings = [float(rev["rating"]) for rev in (rr.data or []) if rev.get("rating")]
+            if not ratings:
+                return 0.0, 0
+            return round(sum(ratings) / len(ratings), 2), len(ratings)
+        except Exception:
+            return 0.0, 0
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=3) as pool:
         fut_likes = pool.submit(_likes)
-        fut_wa = pool.submit(_event_count, "whatsapp_clicked")
-        fut_msg = pool.submit(_event_count, "messaged")
         fut_boost = pool.submit(_boost)
+        fut_ratings = pool.submit(_ratings)
         like_count, viewer_liked = fut_likes.result()
-        whatsapp_clicks = fut_wa.result()
-        messages = fut_msg.result()
         boosted = fut_boost.result()
+        average_rating, review_count = fut_ratings.result()
 
-    # -------------------------------------------------------------------
-    # Assemble response
-    # -------------------------------------------------------------------
     image_urls = row.get("image_urls") or []
     if isinstance(image_urls, str):
         image_urls = [s.strip() for s in image_urls.split(",") if s.strip()]
@@ -465,9 +406,11 @@ def get_product_detail(
         like_count=like_count,
         view_count=int(row.get("view_count") or 0),
         viewer_liked=viewer_liked,
-        whatsapp_clicks=whatsapp_clicks,
-        messages=messages,
+        whatsapp_clicks=0,
+        messages=0,
         boosted=boosted,
+        average_rating=average_rating,
+        review_count=review_count,
         shop=shop_snapshot,
     )
 
@@ -560,68 +503,4 @@ def _row_to_product_response(row: dict) -> dict:
         "like_count": 0,
         "view_count": int(row.get("view_count") or 0),
         "viewer_liked": None,
-    }
-
-
-def list_orders(
-    client: Any,
-    page: int = 1,
-    limit: int = 20,
-    shop_id: str | None = None,
-    customer_id: str | None = None,
-) -> dict:
-    limit = min(limit, 100)
-    offset = (page - 1) * limit
-    q = client.table("orders").select("id,customer_id,shop_id,total_amount,order_status,created_at", count="exact")
-    if shop_id:
-        q = q.eq("shop_id", shop_id)
-    if customer_id:
-        q = q.eq("customer_id", customer_id)
-    q = q.range(offset, offset + limit - 1).order("created_at", desc=True)
-    r = q.execute()
-    total = r.count if hasattr(r, "count") and r.count is not None else len(r.data or [])
-    total_pages = (total + limit - 1) // limit if limit else 0
-    items = [
-        OrderListItem(
-            id=str(row["id"]),
-            shop_id=str(row["shop_id"]),
-            total_amount=float(row.get("total_amount", 0)),
-            order_status=row.get("order_status", "pending"),
-            created_at=str(row["created_at"]) if row.get("created_at") else None,
-        )
-        for row in (r.data or [])
-    ]
-    return {"items": items, "total": total, "page": page, "limit": limit, "total_pages": total_pages}
-
-
-def create_order(client: Any, customer_id: str, data: OrderCreate) -> dict:
-    r = client.table("orders").insert(
-        {"customer_id": customer_id, "shop_id": data.shop_id, "total_amount": data.total_amount}
-    ).execute()
-    if not r.data or len(r.data) == 0:
-        raise ValueError("Failed to create order")
-    row = r.data[0]
-    return {
-        "id": str(row["id"]),
-        "customer_id": str(row["customer_id"]),
-        "shop_id": str(row["shop_id"]),
-        "total_amount": float(row.get("total_amount", 0)),
-        "order_status": row.get("order_status", "pending"),
-        "pesapal_tracking_id": row.get("pesapal_tracking_id"),
-        "created_at": str(row["created_at"]) if row.get("created_at") else None,
-    }
-
-
-def update_order_status(client: Any, order_id: str, order_status: str) -> dict | None:
-    r = client.table("orders").update({"order_status": order_status}).eq("id", order_id).execute()
-    if not r.data or len(r.data) == 0:
-        return None
-    row = r.data[0]
-    return {
-        "id": str(row["id"]),
-        "customer_id": str(row["customer_id"]),
-        "shop_id": str(row["shop_id"]),
-        "total_amount": float(row.get("total_amount", 0)),
-        "order_status": row.get("order_status", "pending"),
-        "created_at": str(row["created_at"]) if row.get("created_at") else None,
     }

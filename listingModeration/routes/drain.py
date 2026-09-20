@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException, status
 
+from core.config import get_settings
 from .. import pipeline
 from ..config import config
 from ..schemas import DrainResponse
@@ -27,20 +29,20 @@ router = APIRouter()
 
 
 def _authorize(authorization: Optional[str]) -> None:
-    secret = os.getenv("CRON_SECRET", "").strip()
-    env = os.getenv("VERCEL_ENV") or os.getenv("ENVIRONMENT", "development")
+    settings = get_settings()
+    secret = (settings.cron_secret or os.getenv("CRON_SECRET", "")).strip()
+    env = os.getenv("VERCEL_ENV") or settings.environment
 
     if not secret:
-        # Production without a secret is a footgun — refuse.
-        if env == "production":
+        if settings.is_production or env == "production":
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="CRON_SECRET is not configured on this deployment",
             )
-        return  # dev / local: allow unauthenticated drain for convenience
+        return
 
-    expected = f"Bearer {secret}"
-    if authorization != expected:
+    presented = (authorization or "").removeprefix("Bearer ").strip()
+    if not presented or not secrets.compare_digest(presented, secret):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid cron authorization",

@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from core.categories import validate_category_field
 
@@ -33,7 +33,7 @@ class SuggestedShop(BaseModel):
 
 
 class MessageCreate(BaseModel):
-    message: str
+    message: str = Field(min_length=1, max_length=8000)
 
 
 class MessageResponse(BaseModel):

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from auth.schemas import ConfirmCodeRequest, MessageResponse, ProfileResponse, SendPhoneCodeRequest
 from core.security import get_current_user_id
+from core.rate_limit import RateLimitOtp
 
 router = APIRouter()
 
@@ -9,6 +10,7 @@ router = APIRouter()
 @router.post("/phone/send-code", response_model=MessageResponse)
 async def send_phone_code(
     body: SendPhoneCodeRequest,
+    _: RateLimitOtp,
     user_id: str = Depends(get_current_user_id),
 ):
     from common.verification_service import send_verification_code

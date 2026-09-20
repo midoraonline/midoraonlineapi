@@ -1,16 +1,14 @@
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Cookie, Depends, Header, Query, Response
-from pydantic import BaseModel, Field
 from supabase import Client
 
 from core.schemas import PaginationParams
-from core.security import get_optional_user_id, get_current_user_id
+from core.security import get_optional_user_id
 from db.supabase import get_supabase_client
 from shop.schemas import ProductResponse
 from feed import service as feed_service
 from feed.composite import get_home_feed
-from feed import impressions as feed_impressions
 
 router = APIRouter(prefix="/feed", tags=["feed"])
 
@@ -51,39 +49,9 @@ def _decode_page_cursor(raw: str | None) -> int | None:
     return page if page >= 1 else None
 
 
-class SearchQuery(BaseModel):
-    query: str
-
-
-class ImpressionItem(BaseModel):
-    listing_id: str = Field(min_length=1, max_length=64)
-    pool: str | None = None
-    position: int | None = None
-
-
-class ImpressionBatch(BaseModel):
-    items: list[ImpressionItem] = Field(default_factory=list, max_length=200)
-    session_id: str | None = Field(default=None, max_length=128)
-    device_hash: str | None = Field(default=None, max_length=128)
-
-
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-
-@router.post("/search-history")
-async def log_search(
-    body: SearchQuery,
-    client: Annotated[Client, Depends(get_supabase_client)],
-    user_id: str = Depends(get_current_user_id),
-):
-    """Log a search query to tailor the algorithm feed."""
-    from search.service import log_search
-
-    log_search(client, body.query, user_id=user_id)
-    feed_service.invalidate_user_feed_cache(client, user_id)
-    return {"status": "ok"}
-
 
 @router.get("/home")
 async def home_feed(
@@ -96,7 +64,7 @@ async def home_feed(
     ),
     exclude_ids: str | None = Query(
         None,
-        description="Comma-separated listing IDs already shown on this session.",
+        description="Legacy. Prefer cursor. Ignored when cursor is present.",
     ),
     user_id: str | None = Depends(get_optional_user_id),
     session_id: str | None = Cookie(default=None, alias="midora_session_id"),
@@ -108,18 +76,17 @@ async def home_feed(
       * Rank once, store IDs in `user_feed_cache` for **1 hour TTL**.
       * Within TTL: hydrate cards from cached order (no re-score).
       * After TTL: full algorithm runs again and refreshes the cache.
-      * Load-more uses `exclude_ids` only; does not trigger re-score.
 
-    Exclusion (load-more only):
-      * Initial SSR / first paint: do NOT send `exclude_ids` — return top ranks.
-      * Load-more / soft refresh: send `exclude_ids` of cards already on screen.
-        Server drops those IDs then returns the next `limit` from the head of
-        the remaining ranked list (page/cursor ignored when exclude is set).
-      * Fatigue (≥3 impressions / 48h) only applies on continuation, not page 1.
+    Pagination:
+      * First paint: `GET /feed/home?limit=36` (no cursor, no exclude_ids).
+      * Load-more: `GET /feed/home?limit=36&cursor=p:2` using `next_cursor`.
+      * `exclude_ids` is legacy; ignored when `cursor` is present so clients
+        cannot double-skip a page.
     """
     session = session_id_header or session_id
     cursor_page = _decode_page_cursor(cursor)
     effective_page = cursor_page or page
+    excluded = [] if cursor_page is not None else _split_ids(exclude_ids)
     if not user_id:
         # Anonymous home feed is safe to edge-cache briefly.
         response.headers["Cache-Control"] = "public, s-maxage=60, stale-while-revalidate=120"
@@ -127,37 +94,7 @@ async def home_feed(
         limit=limit,
         page=effective_page,
         user_id=user_id,
-        exclude_ids=_split_ids(exclude_ids),
-        session_id=session,
-    )
-
-
-@router.get("/algorithm", response_model=list[ProductResponse])
-async def get_algorithm_feed(
-    client: Annotated[Client, Depends(get_supabase_client)],
-    params: Annotated[PaginationParams, Depends()],
-    user_id: str | None = Depends(get_optional_user_id),
-    page: int = Query(1, ge=1, description="Page number for paginated feed."),
-    exclude_ids: str | None = Query(None),
-    session_id: str | None = Cookie(default=None, alias="midora_session_id"),
-    session_id_header: str | None = Header(default=None, alias="X-Midora-Session"),
-):
-    """Personalized feed.
-
-    For authenticated users, ranked IDs are cached for **1 hour** (`user_feed_cache`).
-    Reloads and load-more reuse that ranking until the TTL expires, then the
-    algorithm is recalculated once and written back.
-
-    Accepts `exclude_ids` for client-driven pagination de-duplication and
-    honours the same fatigue rules as `/feed/home`.
-    """
-    session = session_id_header or session_id
-    return feed_service.get_algorithm_feed(
-        client,
-        user_id=user_id,
-        page=page,
-        limit=params.limit,
-        exclude_ids=_split_ids(exclude_ids),
+        exclude_ids=excluded,
         session_id=session,
     )
 
@@ -171,31 +108,3 @@ async def get_latest_feed(
     """Latest products. Public + cache-friendly via Cache-Control (edge cache)."""
     response.headers["Cache-Control"] = _PUBLIC_CACHE_HEADER
     return feed_service.get_latest_feed(client, limit=params.limit)
-
-
-# ---------------------------------------------------------------------------
-# Impression tracking — batched writes from the client
-# ---------------------------------------------------------------------------
-
-@router.post("/impressions")
-async def record_impressions(
-    body: ImpressionBatch,
-    user_id: str | None = Depends(get_optional_user_id),
-    session_cookie: str | None = Cookie(default=None, alias="midora_session_id"),
-    session_header: str | None = Header(default=None, alias="X-Midora-Session"),
-) -> dict[str, int]:
-    """Persist a batch of viewport-visible listing impressions.
-
-    Called by `useImpressionTracker` on the client. Anonymous callers are
-    identified by `session_id` (cookie or `X-Midora-Session` header). A
-    10-minute cooldown per (viewer, listing) prevents duplicate rows when
-    the same card re-enters the viewport during scrolling.
-    """
-    session_id = body.session_id or session_header or session_cookie
-    count = feed_impressions.record_impressions(
-        [item.model_dump() for item in body.items],
-        buyer_id=user_id,
-        session_id=session_id,
-        device_hash=body.device_hash,
-    )
-    return {"recorded": count}

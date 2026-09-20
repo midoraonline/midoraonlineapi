@@ -7,6 +7,7 @@ from auth.providers.emailpassword import sign_up
 from auth.schemas import RegisterRequest, TokenResponse
 from auth.service import access_ttl_seconds, refresh_ttl_seconds
 from core.config import get_settings
+from core.rate_limit import RateLimitRegister
 from mail.send import send_verification_email
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,7 @@ async def register(
     body: RegisterRequest,
     request: Request,
     response: Response,
+    _: RateLimitRegister,
 ):
     try:
         result = sign_up(
@@ -28,8 +30,11 @@ async def register(
             user_agent=request.headers.get("user-agent"),
             ip=request.client.host if request.client else None,
         )
-    except Exception as e:
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("register failed")
+        raise HTTPException(status_code=400, detail="Registration failed")
 
     settings = get_settings()
     base_url = settings.api_base_url.rstrip("/")

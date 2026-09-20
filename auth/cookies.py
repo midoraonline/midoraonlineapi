@@ -56,4 +56,6 @@ def clear_auth_cookies(response: Response) -> None:
     settings = get_settings()
     kwargs = _cookie_kwargs(settings.is_production)
     response.delete_cookie(ACCESS_COOKIE, path="/", **kwargs)
+    # Browser cookies may be Path=/ (Next proxy rewrite) or the API path.
     response.delete_cookie(REFRESH_COOKIE, path=REFRESH_COOKIE_PATH, **kwargs)
+    response.delete_cookie(REFRESH_COOKIE, path="/", **kwargs)

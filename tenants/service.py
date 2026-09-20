@@ -297,7 +297,7 @@ def get_shop(client: Any, shop_id: str, viewer_id: str | None = None) -> dict | 
     # Skip expensive listing_events lead scans on public shop fetch.
     out.update(
         engagement_service.get_shop_engagement(
-            client, shop_id, viewer_id, include_lead_counts=False
+            client, shop_id, viewer_id, include_lead_counts=False, include_view_count=False
         )
     )
     return out
@@ -318,7 +318,7 @@ def get_shop_by_slug(client: Any, slug: str, viewer_id: str | None = None) -> di
     out = _row_to_shop_response(row)
     out.update(
         engagement_service.get_shop_engagement(
-            client, str(row["id"]), viewer_id, include_lead_counts=False
+            client, str(row["id"]), viewer_id, include_lead_counts=False, include_view_count=False
         )
     )
     return out

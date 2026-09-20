@@ -85,14 +85,15 @@ def get_unread_count(user_id: str) -> int:
         return 0
 
 
-def mark_as_read(notification_id: str) -> dict | None:
-    """Mark a single notification as read."""
+def mark_as_read(notification_id: str, user_id: str) -> dict | None:
+    """Mark a single notification as read. Scoped to the owning user."""
     admin = get_supabase_admin()
     try:
         r = (
             admin.table("notifications")
             .update({"status": "read"})
             .eq("id", notification_id)
+            .eq("user_id", user_id)
             .execute()
         )
         return r.data[0] if r.data else None

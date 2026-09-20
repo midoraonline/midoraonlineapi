@@ -157,32 +157,6 @@ class ProductListItem(BaseModel):
     view_count: int = 0
 
 
-class OrderCreate(BaseModel):
-    shop_id: str
-    total_amount: float
-
-
-class OrderUpdate(BaseModel):
-    order_status: str | None = None
-
-
-class OrderResponse(BaseModel):
-    id: str
-    customer_id: str
-    shop_id: str
-    total_amount: float
-    order_status: str
-    created_at: str | None
-
-
-class OrderListItem(BaseModel):
-    id: str
-    shop_id: str
-    total_amount: float
-    order_status: str
-    created_at: str | None
-
-
 class ShopEngagementState(BaseModel):
     follower_count: int
     like_count: int
@@ -264,6 +238,8 @@ class ProductDetailResponse(BaseModel):
 
     # Boost status — resolved in the same call
     boosted: bool = False
+    average_rating: float = 0.0
+    review_count: int = 0
 
     # Embedded shop snapshot — eliminates a separate shop fetch on the frontend
     shop: ShopSummary | None = None

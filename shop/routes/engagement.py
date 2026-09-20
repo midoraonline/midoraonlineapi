@@ -6,6 +6,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from supabase import Client
 
+from core.authz import ensure_shop_owner
 from db.supabase import get_supabase_admin, get_supabase_client
 from core.security import get_current_user_id, get_optional_user_id
 from payments import plan_service
@@ -218,10 +219,20 @@ async def shop_dashboard(
     """
     admin = get_supabase_admin()
 
+    try:
+        ensure_shop_owner(admin, shop_id, user_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
     if not plan_service.has_analytics_access(admin, user_id):
         raise HTTPException(
             status_code=403,
-            detail="Shop analytics are available on the Standard plan and above. Upgrade your plan to view them.",
+            detail={
+                "detail": plan_service.ANALYTICS_UPGRADE_DETAIL,
+                "code": plan_service.ANALYTICS_UPGRADE_CODE,
+            },
         )
 
     shop_data: dict[str, Any] | None = None
@@ -466,7 +477,10 @@ async def my_shops_analytics(
     if not plan_service.has_analytics_access(admin, user_id):
         raise HTTPException(
             status_code=403,
-            detail="Shop analytics are available on the Standard plan and above. Upgrade your plan to view them.",
+            detail={
+                "detail": plan_service.ANALYTICS_UPGRADE_DETAIL,
+                "code": plan_service.ANALYTICS_UPGRADE_CODE,
+            },
         )
 
     now = datetime.now(timezone.utc)

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import html
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from core.config import get_settings
 from core.security import get_current_user_id, get_optional_user_id
@@ -35,9 +36,12 @@ async def report_product(
 ) -> dict[str, Any]:
     """Report a product listing."""
     if reason not in REPORT_REASONS:
-        return {"error": f"Invalid reason. Must be one of: {', '.join(REPORT_REASONS)}"}
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid reason. Must be one of: {', '.join(REPORT_REASONS)}",
+        )
     if not current_user_id:
-        return {"error": "Authentication required"}
+        raise HTTPException(status_code=401, detail="Authentication required")
 
     admin = get_supabase_admin()
     try:
@@ -103,7 +107,7 @@ async def report_product(
                 if reporter_r.data and reporter_r.data[0].get("email"):
                     reporter_email = reporter_r.data[0]["email"]
                     confirm_inner = f"""
-                    <p>Thank you for letting us know. We've received your report regarding <strong>{product_title}</strong>.</p>
+                    <p>Thank you for letting us know. We've received your report regarding <strong>{html.escape(str(product_title))}</strong>.</p>
                     <p>Our team will review it and take appropriate action. We appreciate your help keeping Midora safe.</p>
                     """
                     await enqueue_mail(
@@ -125,9 +129,9 @@ async def report_product(
                     inner = f"""
                     <p>A product has been reported:</p>
                     <ul>
-                      <li><strong>Product:</strong> {product_title}</li>
-                      <li><strong>Reason:</strong> {reason}</li>
-                      <li><strong>Reporter:</strong> {current_user_id}</li>
+                      <li><strong>Product:</strong> {html.escape(str(product_title))}</li>
+                      <li><strong>Reason:</strong> {html.escape(str(reason))}</li>
+                      <li><strong>Reporter:</strong> {html.escape(str(current_user_id))}</li>
                     </ul>
                     <p style="margin-top:24px;">
                       <a href="{settings.frontend_public_url}/admin/reports" style="display:inline-block;padding:10px 18px;background:#0f172a;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:600;">View in admin panel</a>
@@ -146,4 +150,4 @@ async def report_product(
         return r.data[0] if r.data else {"status": "reported"}
     except Exception as exc:
         logger.warning("report_product failed: %s", exc)
-        return {"error": "Failed to submit report"}
+        raise HTTPException(status_code=500, detail="Failed to submit report") from exc

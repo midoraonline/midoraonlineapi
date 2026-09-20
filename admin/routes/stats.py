@@ -154,26 +154,11 @@ def admin_stats_overview() -> dict[str, Any]:
     active_shops_count = _count("shops", filters={"is_active": True})
     total_products = _count("products")
     total_users = _count("users")
-    total_orders = _count("orders")
     pending_verifications = _count("shop_verifications", filters={"status": "pending"})
     verified_shops = _count("shop_verifications", filters={"status": "verified"})
     rejected_shops = _count("shop_verifications", filters={"status": "rejected"})
 
-    # ── Revenue ──────────────────────────────────────────────────────────
-    try:
-        orders_raw = (
-            admin.table("orders")
-            .select("total_amount, order_status, created_at")
-            .not_.eq("order_status", "cancelled")
-            .execute()
-        )
-        orders_list = orders_raw.data or []
-    except Exception as exc:
-        logger.warning("admin stats orders failed: %s", exc)
-        orders_list = []
-
-    total_revenue = sum(_safe_float(o.get("total_amount")) for o in orders_list)
-
+    # ── Revenue (subscriptions only — checkout orders are not part of the product) ──
     try:
         subs_raw = (
             admin.table("subscriptions")
@@ -223,16 +208,9 @@ def admin_stats_overview() -> dict[str, Any]:
     recent_products = _get_since("products", "id, created_at")
     recent_users = _get_since("users", "id, created_at")
 
-    cutoff = (now - timedelta(days=window_days)).isoformat()
-    recent_orders = [
-        o for o in orders_list
-        if (o.get("created_at") or "") >= cutoff
-    ]
-
     shops_series = _series(recent_shops, window_start, window_days)
     products_series = _series(recent_products, window_start, window_days)
     users_series = _series(recent_users, window_start, window_days)
-    orders_series = _series(recent_orders, window_start, window_days)
 
     # ── Top shops (DB-level sort + limit) ────────────────────────────────
     top_shops_raw = _get_top(
@@ -306,11 +284,6 @@ def admin_stats_overview() -> dict[str, Any]:
     unverified_count = total_shops - sum(verification_status_counts.values())
     if unverified_count > 0:
         verification_status_counts["unverified"] = unverified_count
-
-    order_status_all = _get("orders", "order_status")
-    order_status_counts: Counter = Counter(
-        (o.get("order_status") or "unknown") for o in order_status_all
-    )
 
     # ── Additional metrics (best-effort) ─────────────────────────────────
     whatsapp_clicks_today = 0
@@ -506,8 +479,6 @@ def admin_stats_overview() -> dict[str, Any]:
             "inactive_shops": total_shops - active_shops_count,
             "total_products": total_products,
             "total_users": total_users,
-            "total_orders": total_orders,
-            "total_revenue_ugx": total_revenue,
             "total_subscription_revenue_ugx": total_sub_revenue,
             "total_shop_views": total_shop_views,
             "total_product_views": total_product_views,
@@ -535,7 +506,6 @@ def admin_stats_overview() -> dict[str, Any]:
             "shops": shops_series,
             "products": products_series,
             "users": users_series,
-            "orders": orders_series,
             "impressions": impressions_series,
             "whatsapp": whatsapp_series,
             "messages": messages_series,
@@ -557,9 +527,6 @@ def admin_stats_overview() -> dict[str, Any]:
             "verification_status": [
                 {"label": k, "value": v}
                 for k, v in verification_status_counts.most_common()
-            ],
-            "order_status": [
-                {"label": k, "value": v} for k, v in order_status_counts.most_common()
             ],
             "impression_pools": [
                 {"label": k, "value": v} for k, v in pool_counts.most_common()

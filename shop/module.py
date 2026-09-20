@@ -1,4 +1,4 @@
-"""Shop module — products, orders, engagement.
+"""Shop module — products and engagement.
 
 Emits product lifecycle events from the write routes. Does not subscribe:
 side effects (moderation, mail, ranking, embeddings) live in other modules.

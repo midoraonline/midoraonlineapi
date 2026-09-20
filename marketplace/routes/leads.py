@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from core.authz import ensure_shop_owner
 from core.security import get_current_user_id, get_optional_user_id
 from db.supabase import get_supabase_admin
 from ranking.lead_service import (
@@ -18,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+_VALID_SOURCES = {"whatsapp", "call", "contact_form", "email"}
+_VALID_STATUSES = {"responded", "ignored", "closed"}
+
 
 @router.post("/{shop_id}/products/{product_id}/leads")
 async def create_lead(
@@ -27,14 +31,16 @@ async def create_lead(
     current_user_id: str | None = Depends(get_optional_user_id),
 ) -> dict[str, Any]:
     """Record a lead event (buyer contacted seller about a listing)."""
-    valid_sources = {"whatsapp", "call", "contact_form", "email"}
-    if source not in valid_sources:
-        return {"error": f"Invalid source. Must be one of: {', '.join(sorted(valid_sources))}"}
+    if source not in _VALID_SOURCES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid source. Must be one of: {', '.join(sorted(_VALID_SOURCES))}",
+        )
 
     admin = get_supabase_admin()
     shop_r = admin.table("shops").select("owner_id").eq("id", shop_id).execute()
     if not shop_r.data:
-        return {"error": "Shop not found"}
+        raise HTTPException(status_code=404, detail="Shop not found")
     seller_id = str(shop_r.data[0]["owner_id"])
 
     try:
@@ -50,7 +56,7 @@ async def create_lead(
         return {"status": "duplicate", "message": "Lead already recorded"}
     except Exception as exc:
         logger.warning("create_lead failed: %s", exc)
-        return {"error": "Failed to record lead"}
+        raise HTTPException(status_code=500, detail="Failed to record lead") from exc
 
 
 @router.get("/{shop_id}/leads/stats")
@@ -60,12 +66,7 @@ async def get_shop_lead_stats(
 ) -> dict[str, Any]:
     """Seller dashboard: get lead stats for a shop."""
     admin = get_supabase_admin()
-    shop_r = admin.table("shops").select("owner_id").eq("id", shop_id).execute()
-    if not shop_r.data:
-        return {"error": "Shop not found"}
-    if str(shop_r.data[0]["owner_id"]) != current_user_id:
-        return {"error": "You do not own this shop"}
-
+    ensure_shop_owner(admin, shop_id, current_user_id)
     return get_lead_stats_for_seller(current_user_id)
 
 
@@ -79,12 +80,7 @@ async def get_shop_leads(
 ) -> dict[str, Any]:
     """Seller dashboard: paginated list of leads for a shop."""
     admin = get_supabase_admin()
-    shop_r = admin.table("shops").select("owner_id").eq("id", shop_id).execute()
-    if not shop_r.data:
-        return {"error": "Shop not found"}
-    if str(shop_r.data[0]["owner_id"]) != current_user_id:
-        return {"error": "You do not own this shop"}
-
+    ensure_shop_owner(admin, shop_id, current_user_id)
     return list_leads_for_seller(
         seller_id=current_user_id,
         page=page,
@@ -101,18 +97,16 @@ async def change_lead_status(
     current_user_id: str = Depends(get_current_user_id),
 ) -> dict[str, Any]:
     """Seller: update lead status."""
-    valid = {"responded", "ignored", "closed"}
-    if status not in valid:
-        return {"error": f"Invalid status. Must be one of: {', '.join(sorted(valid))}"}
+    if status not in _VALID_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status. Must be one of: {', '.join(sorted(_VALID_STATUSES))}",
+        )
 
     admin = get_supabase_admin()
-    shop_r = admin.table("shops").select("owner_id").eq("id", shop_id).execute()
-    if not shop_r.data:
-        return {"error": "Shop not found"}
-    if str(shop_r.data[0]["owner_id"]) != current_user_id:
-        return {"error": "You do not own this shop"}
+    ensure_shop_owner(admin, shop_id, current_user_id)
 
-    result = update_lead_status(lead_id, status)
+    result = update_lead_status(lead_id, status, current_user_id)
     if not result:
-        return {"error": "Lead not found"}
+        raise HTTPException(status_code=404, detail="Lead not found")
     return result

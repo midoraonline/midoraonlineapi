@@ -1,4 +1,5 @@
 from typing import Annotated
+import secrets
 
 import jwt
 from fastapi import Cookie, Depends, Header, HTTPException, status
@@ -7,6 +8,7 @@ from pydantic import BaseModel
 
 from auth.cookies import ACCESS_COOKIE
 from core.config import get_settings
+from core.request_context import bind_user_id
 
 security = HTTPBearer(auto_error=False)
 
@@ -74,6 +76,7 @@ def get_current_user_id(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token",
         )
+    bind_user_id(payload.sub)
     return payload.sub
 
 
@@ -84,8 +87,9 @@ def get_optional_user_id(
         return None
     try:
         payload = _decode_auth_token(token)
-        if payload.type != "access":
+        if payload.type != "access" or not payload.sub:
             return None
+        bind_user_id(payload.sub)
         return payload.sub
     except HTTPException:
         return None
@@ -140,7 +144,11 @@ def require_admin_role(
     settings = get_settings()
 
     # Script / ops fallback: X-Admin-Key without a bearer/cookie still works.
-    if settings.admin_api_key and x_admin_key and x_admin_key == settings.admin_api_key:
+    if (
+        settings.admin_api_key
+        and x_admin_key
+        and secrets.compare_digest(x_admin_key, settings.admin_api_key)
+    ):
         return None
 
     if not token:

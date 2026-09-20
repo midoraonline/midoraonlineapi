@@ -59,9 +59,10 @@ def list_categories(client: Any) -> list[dict]:
 
 
 def invalidate_categories_cache() -> None:
-    """Bust the in-process category list cache after an admin write."""
-    global _CAT_LIST_CACHE
+    """Bust the in-process category list and count caches after an admin write."""
+    global _CAT_LIST_CACHE, _CAT_COUNTS_CACHE
     _CAT_LIST_CACHE = None
+    _CAT_COUNTS_CACHE = None
 
 
 def fallback_categories() -> list[dict]:

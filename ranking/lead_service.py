@@ -121,13 +121,14 @@ def get_lead_stats_for_seller(seller_id: str) -> dict:
         return {"total_leads": 0, "today_leads": 0, "new_leads": 0}
 
 
-def update_lead_status(lead_id: str, status: str) -> dict | None:
-    """Update the status of a lead (responded, ignored, closed)."""
+def update_lead_status(lead_id: str, status: str, seller_id: str) -> dict | None:
+    """Update the status of a lead owned by this seller (responded, ignored, closed)."""
     admin = get_supabase_admin()
     r = (
         admin.table("lead_events")
         .update({"lead_status": status})
         .eq("id", lead_id)
+        .eq("seller_id", seller_id)
         .execute()
     )
     return r.data[0] if r.data else None

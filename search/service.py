@@ -248,13 +248,14 @@ def _vector_search(
         return [], 0, "keyword"
 
     scored = [
-        (product, _score_product(product, query, query_vector))
+        (product, score)
         for product in products
+        if (score := _score_product(product, query, query_vector)) >= 12.0
     ]
     scored.sort(key=lambda item: -item[1])
     total = len(scored)
     page = scored[offset : offset + limit]
-    mode = "hybrid" if any(item[1] >= 15 for item in page) else "vector"
+    mode = "hybrid" if any(item[1] >= 30 for item in page) else "vector"
     return page, total, mode
 
 
@@ -399,12 +400,13 @@ def search_products(
     limit = min(max(limit, 1), 100)
     offset = (page - 1) * limit
 
-    scored, total, mode = _vector_search(
+    # Keyword first so "head" matches Headphones. Vector only fills gaps —
+    # it used to report total=all embeddings, which skipped keyword entirely.
+    scored, total, mode = _keyword_search(
         client, q, category=category, limit=limit, offset=offset
     )
-
     if total == 0:
-        scored, total, mode = _keyword_search(
+        scored, total, mode = _vector_search(
             client, q, category=category, limit=limit, offset=offset
         )
 

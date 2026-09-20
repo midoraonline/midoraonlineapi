@@ -46,4 +46,4 @@ async def list_subscriptions(
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
-    return payments_service.list_subscriptions_for_user(client)
+    return payments_service.list_subscriptions_for_user(client, user_id)

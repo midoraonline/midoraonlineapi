@@ -1,20 +1,34 @@
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 UserRole = Literal["customer", "merchant", "admin", "staff"]
+PublicUserRole = Literal["customer", "merchant"]
+
+_MIN_PASSWORD_LEN = 8
+_MAX_PASSWORD_LEN = 128
 
 
 class RegisterRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(min_length=_MIN_PASSWORD_LEN, max_length=_MAX_PASSWORD_LEN)
     full_name: str | None = None
-    user_role: UserRole = "customer"
+    user_role: PublicUserRole = "customer"
+
+    @field_validator("user_role", mode="before")
+    @classmethod
+    def _public_role_only(cls, v: object) -> str:
+        role = str(v or "customer").strip().lower()
+        if role in ("admin", "staff"):
+            return "customer"
+        if role not in ("customer", "merchant"):
+            return "customer"
+        return role
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(min_length=1, max_length=_MAX_PASSWORD_LEN)
 
 
 class TokenResponse(BaseModel):
@@ -66,8 +80,8 @@ class UpdateProfileRequest(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str
+    current_password: str = Field(min_length=1, max_length=_MAX_PASSWORD_LEN)
+    new_password: str = Field(min_length=_MIN_PASSWORD_LEN, max_length=_MAX_PASSWORD_LEN)
 
 
 class MessageResponse(BaseModel):

@@ -1,7 +1,7 @@
 from typing import Annotated
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from supabase import Client
 
 from core.authz import ensure_product_owner, ensure_shop_owner
@@ -72,20 +72,24 @@ async def create_product(
 @router.get("/{shop_id}/products")
 async def list_products(
   shop_id: str,
+  response: Response,
   client: Annotated[Client, Depends(get_supabase_client)],
   params: Annotated[PaginationParams, Depends()],
   category: str | None = None,
   search: str | None = None,
   status: str | None = None,
+  include_unpublished: bool = Query(False),
   user_id: str | None = Depends(get_optional_user_id),
 ):
     is_owner = False
-    if user_id:
+    if user_id and (include_unpublished or status):
         try:
             ensure_shop_owner(client, shop_id, user_id)
             is_owner = True
         except (LookupError, PermissionError):
             pass
+    if not is_owner and not search and not status:
+        response.headers["Cache-Control"] = "public, s-maxage=30, stale-while-revalidate=120"
     return shop_service.list_products(
         client, shop_id, page=params.page, limit=params.limit,
         category=category, search=search, status=status,
@@ -306,34 +310,28 @@ async def get_trending_products(
 @router_products.get("/{product_id}/similar")
 async def get_similar_products(
     product_id: str,
+    response: Response,
     client: Annotated[Client, Depends(get_supabase_client)],
     limit: int = 8,
 ):
     """Fetch similar products in the same category."""
+    response.headers["Cache-Control"] = "public, s-maxage=60, stale-while-revalidate=180"
     return shop_service.get_similar_products(client, product_id, limit=limit)
 
 
 @router_products.get("/{product_id}", response_model=ProductDetailResponse)
 async def get_product(
     product_id: str,
+    response: Response,
     client: Annotated[Client, Depends(get_supabase_client)],
     viewer_id: str | None = Depends(get_optional_user_id),
 ):
-    """Fetch a single product with shop snapshot and engagement data bundled.
-
-    Returns `ProductDetailResponse` — a composite payload that includes:
-    - Full product fields
-    - Embedded shop summary (name, slug, logo, whatsapp, etc.)
-    - Engagement counters: like_count, view_count, whatsapp_clicks, messages
-    - viewer_liked flag (requires authentication)
-    - boosted flag (active boost status)
-
-    Runs 5 targeted DB queries instead of the previous 7 sequential round-trips.
-    The frontend no longer needs a separate shop fetch for the product detail page.
-    """
+    """Fetch a single product with shop snapshot and engagement data bundled."""
     detail = shop_service.get_product_detail(client, product_id, viewer_id=viewer_id)
     if not detail:
         raise HTTPException(status_code=404, detail="Product not found")
+    if not viewer_id:
+        response.headers["Cache-Control"] = "public, s-maxage=30, stale-while-revalidate=120"
     return detail
 
 

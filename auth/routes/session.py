@@ -5,6 +5,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from auth.cookies import REFRESH_COOKIE, clear_auth_cookies, set_auth_cookies
 from auth.schemas import ProfileResponse, RefreshRequest, TokenResponse
 from auth.service import access_ttl_seconds, refresh_ttl_seconds, revoke_refresh_token
+from core.rate_limit import RateLimitRefresh
 from core.security import get_current_user_id
 
 router = APIRouter()
@@ -12,6 +13,7 @@ router = APIRouter()
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(
+    _: RateLimitRefresh,
     request: Request,
     response: Response,
     body: RefreshRequest | None = None,
@@ -29,10 +31,10 @@ async def refresh(
             user_agent=request.headers.get("user-agent"),
             ip=request.client.host if request.client else None,
         )
-    except Exception as e:
-        # Any rotation failure invalidates the cookies for the browser.
-        clear_auth_cookies(response)
-        raise HTTPException(status_code=401, detail=str(e))
+    except Exception:
+        # Do not clear cookies here: a stale refresh from an expired tab can
+        # race a successful login and wipe the new session.
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
 
     set_auth_cookies(
         response,

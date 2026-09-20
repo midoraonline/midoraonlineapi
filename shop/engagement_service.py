@@ -131,19 +131,24 @@ def get_shop_engagement(
     viewer_user_id: str | None,
     *,
     include_lead_counts: bool = False,
+    include_view_count: bool = True,
 ) -> dict[str, Any]:
     """Shop social counters.
 
     Lead counts (whatsapp/messages) scan listing_events across every product
     in the shop — expensive. Skip them on public SSR slug lookups; load via
     the dedicated engagement endpoint or analytics when needed.
+    View count is already on the shops row — skip the extra lookup when the
+    caller already hydrated it.
     """
     from concurrent.futures import ThreadPoolExecutor
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         fut_followers = pool.submit(_count_by_shop, client, "shop_follows", shop_id)
         fut_likes = pool.submit(_count_by_shop, client, "shop_likes", shop_id)
-        fut_views = pool.submit(_shop_view_count, client, shop_id)
+        fut_views = (
+            pool.submit(_shop_view_count, client, shop_id) if include_view_count else None
+        )
         fut_wa = (
             pool.submit(_count_shop_listing_events, client, shop_id, "whatsapp_clicked")
             if include_lead_counts
@@ -156,7 +161,7 @@ def get_shop_engagement(
         )
         follower_count = fut_followers.result()
         like_count = fut_likes.result()
-        view_count = fut_views.result()
+        view_count = fut_views.result() if fut_views else None
         whatsapp_clicks = fut_wa.result() if fut_wa else 0
         messages = fut_msg.result() if fut_msg else 0
 
@@ -183,15 +188,17 @@ def get_shop_engagement(
             viewer_following = bool(fut_f.result().data)
             viewer_liked_shop = bool(fut_l.result().data)
 
-    return {
+    out = {
         "follower_count": follower_count,
         "like_count": like_count,
-        "view_count": view_count,
         "viewer_following": viewer_following,
         "viewer_liked_shop": viewer_liked_shop,
         "whatsapp_clicks": whatsapp_clicks,
         "messages": messages,
     }
+    if view_count is not None:
+        out["view_count"] = view_count
+    return out
 
 
 def _count_listing_events(client: Any, product_id: str, event_type: str) -> int:

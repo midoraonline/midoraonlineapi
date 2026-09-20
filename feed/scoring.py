@@ -6,7 +6,7 @@ score for a single product. No I/O, no DB — easy to unit-test.
 The scoring formula follows the Midora Feed Composition spec:
 
     FeedScore =
-        + Taste Match (cosine × 80)
+        + Taste Match (cosine x 80)
         + Category Match Bonus     (fallback when no vectors)  up to +30
         + Search Match Bonus       (+20 per match, max +40)
         + Followed Shop Bonus      (+50)

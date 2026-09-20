@@ -67,28 +67,11 @@ async def admin_list_sellers(
         except Exception as exc:
             logger.warning("product count failed: %s", exc)
 
-    orders_map: dict[str, float] = {}
-    if shop_ids := [s["id"] for shops in shops_map.values() for s in shops]:
-        try:
-            or_ = (
-                admin.table("orders")
-                .select("shop_id, total_amount")
-                .in_("shop_id", shop_ids)
-                .neq("order_status", "cancelled")
-                .execute()
-            )
-            for o in or_.data or []:
-                sid = str(o.get("shop_id"))
-                orders_map[sid] = orders_map.get(sid, 0) + float(o.get("total_amount", 0))
-        except Exception as exc:
-            logger.warning("order revenue failed: %s", exc)
-
     enriched = []
     for user in users_list:
         uid = str(user["id"])
         shops = shops_map.get(uid, [])
         total_listings = sum(product_counts.get(s["id"], 0) for s in shops)
-        total_revenue = sum(orders_map.get(s["id"], 0.0) for s in shops)
 
         max_trust = max((s.get("trust_score") or 0) for s in shops) if shops else 0
         max_fraud = max((s.get("fraud_score") or 0) for s in shops) if shops else 0
@@ -99,7 +82,6 @@ async def admin_list_sellers(
             "shops": shops,
             "shop_count": len(shops),
             "total_listings": total_listings,
-            "total_revenue_ugx": total_revenue,
             "trust_score": float(max_trust),
             "fraud_score": float(max_fraud),
             "seller_score": float(max_score),

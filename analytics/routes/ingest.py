@@ -8,8 +8,6 @@ Accepts a batch of events from the browser and appends them to
   * client-supplied `ts` is accepted but capped at "now" (no future dates)
   * unknown event types are stored anyway; new insights should be new
     queries, not new schema migrations
-
-Rate limiting is TODO — for now this scales with Supabase inserts.
 """
 from __future__ import annotations
 
@@ -21,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, ValidationError
 
 from core.security import get_optional_user_id
+from core.rate_limit import RateLimitIngest
 from db.supabase import get_supabase_admin
 
 logger = logging.getLogger(__name__)
@@ -67,6 +66,7 @@ def _clean_properties(props: dict[str, Any]) -> dict[str, Any]:
 @router.post("/events", response_model=AnalyticsAck, status_code=status.HTTP_202_ACCEPTED)
 async def ingest_events(
     batch: AnalyticsBatch,
+    _: RateLimitIngest,
     current_user_id: Annotated[str | None, Depends(get_optional_user_id)] = None,
 ) -> AnalyticsAck:
     if not batch.events:
@@ -114,5 +114,12 @@ async def ingest_events(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="analytics ingest unavailable",
         ) from exc
+
+    try:
+        from analytics.materialize import materialize_ingested_events
+
+        materialize_ingested_events(rows, actor_id=current_user_id)
+    except Exception as exc:
+        logger.warning("analytics materialize failed for %d rows: %s", len(rows), exc)
 
     return AnalyticsAck(accepted=len(rows), rejected=rejected)

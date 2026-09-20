@@ -48,11 +48,12 @@ DEFAULT_PLAN = BASIC
 
 
 def is_valid_tier(tier: str | None) -> bool:
-    return tier in PLANS
+    return (tier or "").strip().lower() in PLANS
 
 
 def get_plan(tier: str | None) -> dict:
-    return PLANS.get(tier or DEFAULT_PLAN, PLANS[DEFAULT_PLAN])
+    key = (tier or DEFAULT_PLAN).strip().lower()
+    return PLANS.get(key, PLANS[DEFAULT_PLAN])
 
 
 def list_plans() -> list[dict]:

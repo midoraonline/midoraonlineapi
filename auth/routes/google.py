@@ -11,20 +11,24 @@ from auth.providers.googleauth import (
 from auth.schemas import GoogleCodeExchangeRequest, GoogleOAuthUrlResponse
 from auth.service import access_ttl_seconds, refresh_ttl_seconds
 from core.config import get_settings
+from core.rate_limit import RateLimitGoogle
 
 router = APIRouter()
 
 
 @router.get("/google/url", response_model=GoogleOAuthUrlResponse)
-async def google_oauth_url(state: str | None = Query(default=None)):
+async def google_oauth_url(
+    _: RateLimitGoogle,
+    state: str | None = Query(default=None),
+):
     try:
         safe_state = state or generate_state_token()
         return GoogleOAuthUrlResponse(
             url=get_redirect_url(state=safe_state),
             state=safe_state,
         )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Google sign-in is unavailable")
 
 
 @router.get("/google/callback")
@@ -45,10 +49,8 @@ async def google_oauth_callback(
                 url=f"{frontend_callback_url}#"
                 + urlencode(
                     {
-                        "access_token": result["access_token"],
-                        "refresh_token": result["refresh_token"],
-                        "token_type": "bearer",
                         "provider": "google",
+                        "verified": "true",
                     }
                 ),
                 status_code=302,
@@ -68,19 +70,19 @@ async def google_oauth_callback(
             "refresh_token": result["refresh_token"],
             "token_type": "bearer",
         }
-    except Exception as e:
+    except Exception:
         if frontend_callback_url:
-            fragment = urlencode({"error": str(e), "provider": "google"})
+            fragment = urlencode({"error": "google_signin_failed", "provider": "google"})
             return RedirectResponse(url=f"{frontend_callback_url}#{fragment}", status_code=302)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="Google sign-in failed")
 
 
 @router.post("/google/exchange")
 async def google_oauth_exchange(body: GoogleCodeExchangeRequest, response: Response):
     try:
         result = handle_callback(code=body.code, state=body.state)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Google sign-in failed")
     set_auth_cookies(
         response,
         access_token=result["access_token"],

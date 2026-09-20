@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import random
+import secrets
 from datetime import datetime, timedelta, timezone
 
 from db.supabase import get_supabase_admin
@@ -28,7 +28,7 @@ def _hash_code(code: str, phone_number: str) -> str:
 
 
 def _generate_code() -> str:
-    return f"{random.randint(0, 999999):06d}"
+    return f"{secrets.randbelow(1_000_000):06d}"
 
 
 def _parse_ts(value: str) -> datetime:

@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from core.config import get_settings
+from core.request_context import RequestContext
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +24,28 @@ def _envelope(message: str, code: str, status_code: int) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"detail": message, "code": code})
 
 
+def _http_detail_parts(detail: object, status_code: int) -> tuple[str, str]:
+    if isinstance(detail, dict):
+        message = detail.get("detail") or detail.get("message") or "Request failed"
+        code = detail.get("code") or f"http_{status_code}"
+        return str(message), str(code)
+    if isinstance(detail, str) and detail.strip():
+        code = "rate_limited" if status_code == 429 else f"http_{status_code}"
+        return detail, code
+    return "Request failed", f"http_{status_code}"
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     settings = get_settings()
 
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(_: Request, exc: StarletteHTTPException) -> JSONResponse:
-        detail = exc.detail if isinstance(exc.detail, str) else "Request failed"
-        return _envelope(detail, f"http_{exc.status_code}", exc.status_code)
+        detail, code = _http_detail_parts(exc.detail, exc.status_code)
+        response = _envelope(detail, code, exc.status_code)
+        if exc.headers:
+            for key, value in exc.headers.items():
+                response.headers[key] = value
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
@@ -50,9 +66,18 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def lookup_error_handler(_: Request, exc: LookupError) -> JSONResponse:
         return _envelope(str(exc) or "Not found", "not_found", status.HTTP_404_NOT_FOUND)
 
+    @app.exception_handler(ValueError)
+    async def value_error_handler(_: Request, exc: ValueError) -> JSONResponse:
+        return _envelope(str(exc) or "Invalid request", "bad_request", status.HTTP_400_BAD_REQUEST)
+
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-        logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+        logger.exception(
+            "Unhandled error on %s %s cid=%s",
+            request.method,
+            request.url.path,
+            RequestContext.get_correlation_id(),
+        )
         if settings.is_production:
             message = "Internal server error"
         else:

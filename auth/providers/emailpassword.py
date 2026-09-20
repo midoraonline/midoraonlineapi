@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from auth import service as auth_service
 from db.supabase import get_supabase_admin
+from payments.plan_service import effective_plan_tier
 
 
 def sign_up(
@@ -18,6 +19,8 @@ def sign_up(
 
     Also creates an email verification token record for custom verification flow.
     """
+    if user_role not in ("customer", "merchant"):
+        user_role = "customer"
     user = auth_service.create_user(
         email=email,
         password=password,
@@ -177,6 +180,7 @@ def get_profile(user_id: str) -> dict[str, Any] | None:
     if not user_res.data:
         return None
     user = user_res.data[0]
+    plan_tier = effective_plan_tier(user.get("plan_tier"), user.get("plan_expires_at"))
 
     prof_res = client.table("profiles").select("full_name, avatar_url, phone_number").eq("id", user_id).limit(1).execute()
     # `users.user_role` is the canonical source of truth. `profiles.user_role`
@@ -194,7 +198,7 @@ def get_profile(user_id: str) -> dict[str, Any] | None:
             "phone_number": p.get("phone_number") or user.get("phone_number"),
             "phone_verified": bool(user.get("phone_verified")),
             "user_role": user.get("user_role", "customer"),
-            "plan_tier": user.get("plan_tier") or "basic",
+            "plan_tier": plan_tier,
             "plan_expires_at": user.get("plan_expires_at"),
         }
 
@@ -207,7 +211,7 @@ def get_profile(user_id: str) -> dict[str, Any] | None:
         "phone_number": user.get("phone_number"),
         "phone_verified": bool(user.get("phone_verified")),
         "user_role": user.get("user_role", "customer"),
-        "plan_tier": user.get("plan_tier") or "basic",
+        "plan_tier": plan_tier,
         "plan_expires_at": user.get("plan_expires_at"),
     }
 

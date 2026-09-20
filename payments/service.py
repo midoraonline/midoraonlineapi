@@ -268,12 +268,7 @@ def create_subscription_intent(shop_id: str, plan_tier: str) -> dict:
             "plan_tier": plan_tier,
         }
 
-    base = settings.pesapal_api_base_url.rstrip("/")
-    return {
-        "redirect_url": f"{base}/pay?ref={merchant_reference}",
-        "merchant_reference": merchant_reference,
-        "plan_tier": plan_tier,
-    }
+    raise ValueError("Payment provider is unavailable. Please try again shortly.")
 
 
 def _apply_plan_to_owner(admin: Any, shop_id: str, plan_tier: str) -> None:
@@ -293,11 +288,21 @@ def _apply_plan_to_owner(admin: Any, shop_id: str, plan_tier: str) -> None:
     ).eq("id", owner_id).execute()
 
 
-def list_subscriptions_for_user(client: Any) -> list:
-    """List subscriptions (RLS: merchant sees own shop's). When client has user JWT, RLS filters."""
+def list_subscriptions_for_user(client: Any, user_id: str) -> list:
+    """List subscriptions for shops owned by `user_id`. Never rely on RLS here."""
+    shops = (
+        client.table("shops")
+        .select("id")
+        .eq("owner_id", user_id)
+        .execute()
+    )
+    shop_ids = [str(s["id"]) for s in (shops.data or []) if s.get("id")]
+    if not shop_ids:
+        return []
     r = (
         client.table("subscriptions")
         .select("*")
+        .in_("shop_id", shop_ids)
         .order("created_at", desc=True)
         .execute()
     )
@@ -344,7 +349,7 @@ def _fetch_live_status(tracking_id: str) -> str | None:
     """Query Pesapal GetTransactionStatus for the live payment status.
 
     Returns the uppercased status string, or `None` if credentials are absent
-    or the request fails (in which case we fall back to the IPN payload).
+    or the request fails. Callers in production must not fall back to the IPN body.
     """
     settings = get_settings()
     if not (settings.pesapal_consumer_key and settings.pesapal_consumer_secret):
@@ -501,7 +506,19 @@ def process_webhook(payload: dict) -> bool:
         return True
 
     live_status = _fetch_live_status(tracking_id) if tracking_id else None
-    derived_status = live_status or _extract_status(payload) or ""
+    settings = get_settings()
+    if live_status:
+        derived_status = live_status
+    elif settings.is_production:
+        # Never activate a paid plan from an unverified IPN body.
+        logger.warning(
+            "pesapal webhook: refusing activation for ref %s without live status",
+            reference,
+        )
+        _mark_log_processed(admin, log_id)
+        return False
+    else:
+        derived_status = _extract_status(payload) or ""
 
     if derived_status in COMPLETED_STATUSES:
         admin.table("subscriptions").update(
