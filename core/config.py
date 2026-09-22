@@ -158,11 +158,29 @@ class Settings(BaseSettings):
         raw = self.cors_allowed_origins.strip()
         if not raw:
             # Dev default: allow the common Next.js local origins
-            return [
+            origins = [
                 "http://localhost:3000",
                 "http://127.0.0.1:3000",
             ]
-        return [o.strip() for o in raw.split(",") if o.strip()]
+        else:
+            origins = [o.strip() for o in raw.split(",") if o.strip()]
+
+        # Always include FRONTEND_PUBLIC_URL and its www/apex twin so a
+        # Vercel CORS list that only has one hostname still works for both.
+        front = (self.frontend_public_url or "").strip().rstrip("/")
+        if front:
+            extras = {front}
+            if "://" in front:
+                scheme, rest = front.split("://", 1)
+                host = rest.split("/", 1)[0]
+                if host.startswith("www."):
+                    extras.add(f"{scheme}://{host[4:]}")
+                else:
+                    extras.add(f"{scheme}://www.{host}")
+            for o in extras:
+                if o not in origins:
+                    origins.append(o)
+        return origins
 
 
 @lru_cache(maxsize=1)
