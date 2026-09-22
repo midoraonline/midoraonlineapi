@@ -26,6 +26,7 @@ from .stages import (
     image_moderation,
     keywords,
     metadata,
+    near_duplicate,
     openai_moderation,
     phash,
     profanity,
@@ -106,6 +107,55 @@ async def moderate(row: ModerationRow, known_bad_hashes: list[int]) -> Moderatio
         row.id,
         len(image_cache),
     )
+
+    # Stage 2b: near-duplicate (catalog pHash + same-seller title/price).
+    # Soft gate — needs_review, not hard reject.
+    try:
+        from db.supabase import get_supabase_admin
+
+        admin = get_supabase_admin()
+        price_ugx = None
+        if row.product_id:
+            try:
+                pr = (
+                    admin.table("products")
+                    .select("price_ugx")
+                    .eq("id", str(row.product_id))
+                    .limit(1)
+                    .execute()
+                )
+                if pr.data:
+                    price_ugx = pr.data[0].get("price_ugx")
+            except Exception:
+                price_ugx = None
+
+        title_hit = near_duplicate.check_title_price_repost(
+            admin,
+            seller_id=str(row.seller_id) if row.seller_id else None,
+            product_id=str(row.product_id) if row.product_id else None,
+            title=row.title,
+            price_ugx=price_ugx,
+        )
+        hash_hit = near_duplicate.check_phash_against_catalog(
+            admin,
+            product_id=str(row.product_id) if row.product_id else None,
+            image_hashes=[h for _, h, _ in image_cache],
+        )
+        dupe_reason = title_hit or hash_hit
+        if dupe_reason:
+            logger.warning(
+                "[Moderation][Stage 2b: NearDupe] NEEDS_REVIEW row %s - %s",
+                row.id,
+                dupe_reason,
+            )
+            return ModerationDecision(
+                status=ModerationStatus.NEEDS_REVIEW,
+                reason=f"near_duplicate: {dupe_reason}",
+                scores={"stage": "near_duplicate", "match": dupe_reason},
+            )
+        logger.info("[Moderation][Stage 2b: NearDupe] PASSED for row %s", row.id)
+    except Exception as exc:
+        logger.debug("near_duplicate stage skipped: %s", exc)
 
     # Stage 3: image metadata inspection. Reuses the already-downloaded
     # bytes to look for foreign URLs / watermarks / AI-generator markers
@@ -218,6 +268,17 @@ async def moderate(row: ModerationRow, known_bad_hashes: list[int]) -> Moderatio
         reason or "Clean",
         scores,
     )
+    if status == ModerationStatus.APPROVED and row.product_id:
+        try:
+            from db.supabase import get_supabase_admin
+
+            near_duplicate.persist_listing_hashes(
+                get_supabase_admin(),
+                product_id=str(row.product_id),
+                image_hashes=[h for _, h, _ in image_cache],
+            )
+        except Exception as exc:
+            logger.debug("persist listing hashes skipped: %s", exc)
     return ModerationDecision(status=status, reason=reason, scores=scores)
 
 

@@ -92,6 +92,7 @@ class ListingQualityRequest(BaseModel):
 
 class ListingQualityResponse(BaseModel):
     ok: bool
+    critical: bool = False
     score: int
     title_matches: bool
     description_quality: str  # "poor" | "fair" | "good"

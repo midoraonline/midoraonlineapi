@@ -120,6 +120,7 @@ class ModerationConfig:
 # Kept in code (not the DB) because these are policy, not data — they should
 # be reviewed in PRs, not by SQL edits.
 BANNED_KEYWORDS: frozenset[str] = frozenset({
+    # Original deny-list
     "counterfeit",
     "replica",
     "fake rolex",
@@ -132,6 +133,32 @@ BANNED_KEYWORDS: frozenset[str] = frozenset({
     "cocaine for sale",
     "gun for sale",
     "ak-47 for sale",
+    # Jobs / fake opportunities (Phase 1 Should)
+    "work from home guaranteed",
+    "make money fast",
+    "get rich quick",
+    "no experience high pay",
+    "earn dollars daily",
+    "forex signals free",
+    "binary options guaranteed",
+    "investment opportunity guaranteed",
+    "double your money",
+    "send money registration fee",
+    "pay to apply",
+    "visa lottery agent",
+    "embassy job placement",
+    "online job paying usd",
+    # Brand-stuffed / trademark spam patterns
+    "authentic louis vuitton cheap",
+    "1:1 replica",
+    "aaa replica",
+    "super fake",
+    "mirror quality replica",
+    "oem watches wholesale",
+    "branded sneakers replica",
+    "gucci belt fake",
+    "chanel bag replica",
+    "nike dunk replica",
 })
 
 

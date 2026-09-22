@@ -468,6 +468,7 @@ async def check_listing_quality(
     client = _get_genai_client()
     fallback = {
         "ok": True,
+        "critical": False,
         "score": 100,
         "title_matches": True,
         "description_quality": "good",
@@ -600,15 +601,22 @@ async def check_listing_quality(
         if raw_sub and raw_sub.lower() != "null" and raw_sub in valid_children:
             suggested_subcategory = raw_sub
 
+    # Coach signal (ok) vs hard wall (critical). Phase 1 Should: only critically
+    # low quality blocks publish — everything else is Improve / coach.
     ok = (
         score >= 60
         and title_matches
         and images_match
         and quality != "poor"
     )
+    critical = (
+        score < 25
+        or (not title_matches and not images_match and score < 40)
+    )
 
     return {
         "ok": ok,
+        "critical": critical,
         "score": score,
         "title_matches": title_matches,
         "description_quality": quality,

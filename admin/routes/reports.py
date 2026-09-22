@@ -88,3 +88,82 @@ def resolve_seller_report(report_id: str) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("resolve_seller_report failed: %s", exc)
         return {"error": "Failed to resolve seller report"}
+
+
+@router.get("/trust-queue")
+def list_trust_queue(
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, Any]:
+    """Thin admin queue: open product reports, seller reports, and near-dupes."""
+    admin = get_supabase_admin()
+    product_reports: list[dict[str, Any]] = []
+    seller_reports: list[dict[str, Any]] = []
+    near_dupes: list[dict[str, Any]] = []
+    try:
+        pr = (
+            admin.table("product_reports")
+            .select("id, product_id, reason, description, created_at, resolved, product:product_id(title)")
+            .eq("resolved", False)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        product_reports = pr.data or []
+    except Exception as exc:
+        logger.warning("trust-queue product_reports failed: %s", exc)
+    try:
+        sr = (
+            admin.table("seller_reports")
+            .select("id, seller_id, reason, description, created_at, resolved")
+            .eq("resolved", False)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        seller_reports = sr.data or []
+    except Exception as exc:
+        logger.warning("trust-queue seller_reports failed: %s", exc)
+    try:
+        nd = (
+            admin.table("listing_moderation_queue")
+            .select("id, product_id, seller_id, title, reason, status, created_at, scores")
+            .eq("status", "needs_review")
+            .ilike("reason", "%near_duplicate%")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        near_dupes = nd.data or []
+    except Exception as exc:
+        logger.warning("trust-queue near_dupes failed: %s", exc)
+    return {
+        "product_reports": product_reports,
+        "seller_reports": seller_reports,
+        "near_dupes": near_dupes,
+        "counts": {
+            "product_reports": len(product_reports),
+            "seller_reports": len(seller_reports),
+            "near_dupes": len(near_dupes),
+        },
+    }
+
+
+@router.get("/near-duplicates")
+def list_near_duplicates(
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, Any]:
+    admin = get_supabase_admin()
+    try:
+        r = (
+            admin.table("listing_moderation_queue")
+            .select("id, product_id, seller_id, title, reason, status, created_at, scores")
+            .eq("status", "needs_review")
+            .ilike("reason", "%near_duplicate%")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return {"items": r.data or [], "total": len(r.data or [])}
+    except Exception as exc:
+        logger.warning("list_near_duplicates failed: %s", exc, exc_info=True)
+        return {"items": [], "total": 0}
