@@ -12,7 +12,7 @@ The scoring formula follows the Midora Feed Composition spec:
         + Followed Shop Bonus      (+50)
         + Freshness Bonus          (0-24h +40 down to 14d+ 0)
         + Velocity Bonus           (saturating, cap +40)
-        + New Seller Bonus         (+30 if age<30d OR views<500)
+        + New Seller Bonus         (+30 if age<30d AND views below N)
         + Seller Quality Bonus     (up to +25)
         + Global Popularity Score  (capped at +30)
         + Premium Store Bonus      (+15 if active subscription)
@@ -133,7 +133,8 @@ def new_seller_bonus(
             is_young = True
     impressions = int(product.get("view_count") or 0)
     low_exposure = impressions < C.NEW_SELLER_MAX_IMPRESSIONS
-    if is_young or low_exposure:
+    # Cold-start only: young shop AND still low exposure (not forever via views alone).
+    if is_young and low_exposure:
         return C.NEW_SELLER_BONUS
     return 0.0
 

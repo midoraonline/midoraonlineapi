@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone, timedelta
+from collections import deque
 from functools import partial
 from typing import Any
 
@@ -354,28 +355,137 @@ def invalidate_user_feed_cache_now(client: Any, user_id: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Category filter + guest diversity
+# ---------------------------------------------------------------------------
+
+def resolve_category_filter_labels(category: str | None) -> list[str] | None:
+    """Map a category query (label or slug-ish string) to product.category values.
+
+    Parent labels expand to their subcategory labels (what listings usually store).
+    Subcategory / leaf labels stay a single equality match. Returns None when
+    unset or unrecognized so callers skip filtering.
+    """
+    if not category or not str(category).strip():
+        return None
+    raw = str(category).strip()
+    try:
+        from core.categories import (
+            normalize_category,
+            subcategories_for_parent,
+            ALL_CATEGORIES,
+        )
+    except Exception:
+        return [raw]
+
+    label = None
+    try:
+        label = normalize_category(raw)
+    except ValueError:
+        # Accept raw label / slug case-insensitively against the tree.
+        lowered = raw.lower()
+        for c in ALL_CATEGORIES:
+            if c.label.lower() == lowered or c.slug.lower() == lowered:
+                label = c.label
+                break
+        if label is None:
+            return [raw]
+
+    if not label:
+        return None
+    children = subcategories_for_parent(label)
+    if children:
+        # Parent selected: match any child subcategory (and the parent label itself).
+        return [label, *children]
+    return [label]
+
+
+def _apply_category_to_query(q: Any, category: str | None) -> Any:
+    labels = resolve_category_filter_labels(category)
+    if not labels:
+        return q
+    if len(labels) == 1:
+        return q.eq("category", labels[0])
+    return q.in_("category", labels)
+
+
+def _product_matches_category(product: dict[str, Any], category: str | None) -> bool:
+    labels = resolve_category_filter_labels(category)
+    if not labels:
+        return True
+    cat = (product.get("category") or "").strip()
+    if not cat:
+        return False
+    wanted = {x.lower() for x in labels}
+    return cat.lower() in wanted
+
+
+def _diversify_by_shop(
+    rows: list[dict[str, Any]],
+    *,
+    limit: int,
+    window_size: int | None = None,
+    max_per_seller: int | None = None,
+) -> list[dict[str, Any]]:
+    """Light max-N-per-shop over a sliding window; prefers input order (recency).
+
+    Diversity is best-effort: if every remaining row is window-blocked, take the
+    next newest so we still fill up to `limit`.
+    """
+    if not rows or limit <= 0:
+        return []
+    wsize = C.VENDOR_WINDOW_SIZE if window_size is None else window_size
+    cap = C.VENDOR_WINDOW_MAX_PER_SELLER if max_per_seller is None else max_per_seller
+    window: deque[str] = deque(maxlen=max(1, wsize))
+    remaining = list(rows)
+    placed: list[dict[str, Any]] = []
+
+    while len(placed) < limit and remaining:
+        picked_idx = None
+        for i, row in enumerate(remaining):
+            shop_id = str(row.get("shop_id") or "")
+            if not shop_id:
+                picked_idx = i
+                break
+            if sum(1 for s in window if s == shop_id) < cap:
+                picked_idx = i
+                break
+        if picked_idx is None:
+            # Relax: keep filling, but prefer the most underrepresented shop
+            # still in remaining so one seller cannot monopolize after the cap.
+            best_i = 0
+            best_count = 10**9
+            for i, row in enumerate(remaining):
+                shop_id = str(row.get("shop_id") or "")
+                count = sum(1 for s in window if s == shop_id)
+                if count < best_count:
+                    best_count = count
+                    best_i = i
+            picked_idx = best_i
+        row = remaining.pop(picked_idx)
+        window.append(str(row.get("shop_id") or ""))
+        placed.append(row)
+    return placed
+
+
+# ---------------------------------------------------------------------------
 # Anonymous fallback
 # ---------------------------------------------------------------------------
 
-def get_latest_feed(client: Client, limit: int = 20) -> list[ProductResponse]:
-    """Recency-sorted feed used when no personalization signals exist."""
-    from db.supabase import get_supabase_admin, with_supabase_retry
+def get_latest_feed(
+    client: Client,
+    limit: int = 20,
+    *,
+    category: str | None = None,
+) -> list[ProductResponse]:
+    """Recency-sorted feed used when no personalization signals exist.
 
-    def _run():
-        db = get_supabase_admin()
-        return (
-            _lean_active_products_query(db)
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
-
-    try:
-        resp = with_supabase_retry(_run, label="get_latest_feed")
-        return [_to_response(item) for item in resp.data or []]
-    except Exception as exc:
-        logger.warning("get_latest_feed failed: %s", exc)
-        return []
+    Applies light shop diversity (max-2-per-shop / window) so one seller cannot
+    dominate the anonymous homepage, while still preferring newer items.
+    """
+    items, _ = _get_latest_feed_page(
+        client, page=1, limit=limit, category=category
+    )
+    return items
 
 
 def _get_latest_feed_page(
@@ -383,26 +493,40 @@ def _get_latest_feed_page(
     *,
     page: int,
     limit: int,
+    category: str | None = None,
 ) -> tuple[list[ProductResponse], bool]:
+    """Guest/latest page with diversity lite + optional category filter.
+
+    Pagination stays cursor-compatible (`p:N` / page): we always diversify from
+    the head of the recency stream, then slice `[start, start+limit)`. Over-fetch
+    absorbs skips from the window rule.
+    """
     from db.supabase import get_supabase_admin, with_supabase_retry
 
     start_idx = max(0, (page - 1) * limit)
-    # Inclusive range of limit+1 rows so we know if another page exists.
-    end_idx = start_idx + limit
+    need = start_idx + limit + 1  # +1 probes has_more after diversity
+    fetch_n = min(max(need * 4, need + 48), 800)
 
     def _run():
         db = get_supabase_admin()
-        return (
+        q = (
             _lean_active_products_query(db)
             .order("created_at", desc=True)
-            .range(start_idx, end_idx)
-            .execute()
+            .limit(fetch_n)
         )
+        q = _apply_category_to_query(q, category)
+        return q.execute()
 
     try:
         resp = with_supabase_retry(_run, label="latest_feed_page")
-        rows = [_to_response(item) for item in resp.data or []]
-        return rows[:limit], len(rows) > limit
+        raw = list(resp.data or [])
+        diversified = _diversify_by_shop(raw, limit=need)
+        page_rows = diversified[start_idx : start_idx + limit]
+        has_more = len(diversified) > start_idx + limit
+        if not has_more and len(raw) >= fetch_n:
+            # Inventory may continue past the over-fetch window.
+            has_more = True
+        return [_to_response(item) for item in page_rows], has_more
     except Exception as exc:
         logger.warning("_get_latest_feed_page failed: %s", exc)
         return [], False
@@ -637,6 +761,7 @@ def get_algorithm_feed(
     *,
     exclude_ids: list[str] | None = None,
     session_id: str | None = None,
+    category: str | None = None,
 ) -> tuple[list[ProductResponse], bool]:
     """Personalized feed with layered composition and vendor-diversity rules.
 
@@ -656,15 +781,23 @@ def get_algorithm_feed(
     db = get_supabase_admin()
 
     if not user_id:
-        logger.info("feed:path=guest_latest page=%s limit=%s", page, limit)
-        return _get_latest_feed_page(db, page=page, limit=limit)
+        logger.info(
+            "feed:path=guest_latest page=%s limit=%s category=%s",
+            page, limit, category or "-",
+        )
+        return _get_latest_feed_page(
+            db, page=page, limit=limit, category=category
+        )
 
     try:
         C.refresh_from_db()
     except Exception:
         pass
 
-    cached_ids, is_fresh, refreshed_at = _load_cached_ranked_ids(db, user_id)
+    # Category-scoped feeds must not reuse the unfiltered ranked-ID cache.
+    cached_ids, is_fresh, refreshed_at = ([], False, None)
+    if not category:
+        cached_ids, is_fresh, refreshed_at = _load_cached_ranked_ids(db, user_id)
     if cached_ids and is_fresh:
         cached_ids = _merge_recent_unseen_ids(db, cached_ids, refreshed_at)
         page_ids, has_more = _page_ids_from_ranked(
@@ -743,10 +876,20 @@ def get_algorithm_feed(
     candidates = _fetch_candidates(db, signals)
     if vector_rows:
         candidates = _hydrate_candidate_details(db, vector_rows + candidates)
+    if category:
+        candidates = [c for c in candidates if _product_matches_category(c, category)]
+        if taste_scores:
+            keep = {str(c.get("id")) for c in candidates if c.get("id")}
+            taste_scores = {pid: sc for pid, sc in taste_scores.items() if pid in keep}
 
     if not candidates:
-        logger.warning("feed:path=fallback_latest user=%s reason=no_candidates", user_id)
-        return _get_latest_feed_page(db, page=page, limit=limit)
+        logger.warning(
+            "feed:path=fallback_latest user=%s reason=no_candidates category=%s",
+            user_id, category or "-",
+        )
+        return _get_latest_feed_page(
+            db, page=page, limit=limit, category=category
+        )
 
     if user_vector and not taste_scores:
         sample_ids = [str(c["id"]) for c in candidates[:120] if c.get("id")]
@@ -798,13 +941,14 @@ def get_algorithm_feed(
         for item in placed
         if item.get("product") and item["product"].get("id")
     ]
-    _save_cached_ranked_ids(
-        db,
-        user_id,
-        ranked_ids,
-        preference_vector=user_vector,
-        candidate_count=len(candidates),
-    )
+    if not category:
+        _save_cached_ranked_ids(
+            db,
+            user_id,
+            ranked_ids,
+            preference_vector=user_vector,
+            candidate_count=len(candidates),
+        )
 
     logger.info(
         "feed:path=scored_cached user=%s pool=%d ranked=%d taste=%d vector=%s signals=%s ann=%d ttl_s=%s",

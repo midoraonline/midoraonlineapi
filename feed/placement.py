@@ -6,8 +6,9 @@ Given the pre-scored candidate pool, produce the final ordered feed by:
   2. Placing reserved slots at deterministic cadences (every N positions).
   3. Filling residual positions from the organic pool.
   4. Applying a progressive vendor-diversity penalty during placement.
-  5. Enforcing the 12-position sliding-window rule
-     (max 2 listings per seller).
+  5. Applying the 12-position sliding-window rule
+     (max 2 listings per seller) as best-effort — relaxes when
+     needed so the feed still fills to `limit`.
 
 Placement is intentionally separate from scoring — the same score can end
 up in a different position depending on marketplace composition targets.
@@ -93,8 +94,9 @@ def bucketize(
             if seller_created else None
         )
         is_new_seller = (
-            (seller_age_days is not None and seller_age_days < C.NEW_SELLER_MAX_AGE_DAYS)
-            or int(product.get("view_count") or 0) < C.NEW_SELLER_MAX_IMPRESSIONS
+            seller_age_days is not None
+            and seller_age_days < C.NEW_SELLER_MAX_AGE_DAYS
+            and int(product.get("view_count") or 0) < C.NEW_SELLER_MAX_IMPRESSIONS
         )
         if is_fresh_listing or is_new_seller:
             pools["fresh"].append(entry); placed = True
@@ -177,8 +179,18 @@ def place(
                 break
         position_kind.append(kind)
 
-    def _pick_from(pool_name: str, allow_fallback: bool = True) -> dict[str, Any] | None:
+    def _pick_from(
+        pool_name: str,
+        allow_fallback: bool = True,
+        *,
+        max_per_seller: int | None = None,
+    ) -> dict[str, Any] | None:
         pool = pools.get(pool_name, [])
+        cap = (
+            C.VENDOR_WINDOW_MAX_PER_SELLER
+            if max_per_seller is None
+            else max_per_seller
+        )
         # Try primary pool; if empty and allow_fallback, drop to organic
         for pool_ref in ([pool] if not allow_fallback else [pool, pools.get("organic", [])]):
             for i, entry in enumerate(pool_ref):
@@ -186,7 +198,7 @@ def place(
                 if pid in used_product_ids:
                     continue
                 shop_id = str(entry["product"].get("shop_id", ""))
-                if _seller_at_window_capacity(window, shop_id, C.VENDOR_WINDOW_MAX_PER_SELLER):
+                if cap > 0 and _seller_at_window_capacity(window, shop_id, cap):
                     continue
                 # Apply progressive vendor penalty to see if it still ranks
                 penalty = _progressive_vendor_penalty(seller_rank_so_far.get(shop_id, 0) + 1)
@@ -197,21 +209,38 @@ def place(
                 return entry_out
         return None
 
+    def _pick_any(kind: str, *, max_per_seller: int | None = None) -> dict[str, Any] | None:
+        pick = _pick_from(kind, allow_fallback=True, max_per_seller=max_per_seller)
+        if pick is not None:
+            return pick
+        # No candidate found (all pools drained or window-blocked). Try
+        # scanning any pool to fill this slot rather than leaving a gap.
+        for name in ("organic", "boosted", "sponsored", "super_boost",
+                     "premium_store", "fresh", "exploration"):
+            if name == kind:
+                continue
+            pick = _pick_from(name, allow_fallback=False, max_per_seller=max_per_seller)
+            if pick:
+                return pick
+        return None
+
     placed: list[dict[str, Any]] = []
+    # Diversity is best-effort: strict window first, then progressively allow
+    # more listings per shop so we fill until `limit` or inventory is exhausted.
+    relax_caps = (
+        C.VENDOR_WINDOW_MAX_PER_SELLER,
+        max(C.VENDOR_WINDOW_MAX_PER_SELLER + 1, 3),
+        max(C.VENDOR_WINDOW_SIZE // 2, 4),
+        0,  # 0 => skip window capacity entirely
+    )
     for kind in position_kind:
-        pick = _pick_from(kind, allow_fallback=True)
+        pick = None
+        for cap in relax_caps:
+            pick = _pick_any(kind, max_per_seller=cap)
+            if pick is not None:
+                break
         if pick is None:
-            # No candidate found (all pools drained or window-blocked). Try
-            # scanning any pool to fill this slot rather than leaving a gap.
-            for name in ("organic", "boosted", "sponsored", "super_boost",
-                        "premium_store", "fresh", "exploration"):
-                if name == kind:
-                    continue
-                pick = _pick_from(name, allow_fallback=False)
-                if pick:
-                    break
-        if pick is None:
-            break  # nothing left anywhere
+            break  # inventory exhausted
 
         pid = str(pick["product"].get("id", ""))
         shop_id = str(pick["product"].get("shop_id", ""))

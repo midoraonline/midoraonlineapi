@@ -66,6 +66,14 @@ async def home_feed(
         None,
         description="Legacy. Prefer cursor. Ignored when cursor is present.",
     ),
+    category: str | None = Query(
+        None,
+        description=(
+            "Optional category label or slug. Parent labels expand to their "
+            "subcategories. Filters candidates server-side so pagination stays "
+            "in-category."
+        ),
+    ),
     user_id: str | None = Depends(get_optional_user_id),
     session_id: str | None = Cookie(default=None, alias="midora_session_id"),
     session_id_header: str | None = Header(default=None, alias="X-Midora-Session"),
@@ -96,6 +104,7 @@ async def home_feed(
         user_id=user_id,
         exclude_ids=excluded,
         session_id=session,
+        category=category,
     )
 
 

@@ -65,8 +65,10 @@ VELOCITY_HALF_LIFE = 20.0
 # ---------------------------------------------------------------------------
 # New seller cold-start
 # ---------------------------------------------------------------------------
+# Bonus requires BOTH: shop younger than MAX_AGE_DAYS AND product view_count
+# below MAX_IMPRESSIONS. Low views alone must not boost forever.
 NEW_SELLER_MAX_AGE_DAYS = 30
-NEW_SELLER_MAX_IMPRESSIONS = 500
+NEW_SELLER_MAX_IMPRESSIONS = 500  # exposure ceiling for the AND rule
 NEW_SELLER_GUARANTEED_IMPRESSIONS = 500  # tracked externally
 
 

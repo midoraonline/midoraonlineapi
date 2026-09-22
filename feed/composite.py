@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 MAX_CARDS = 72
 _GUEST_HOME_TTL_S = 60.0
-_guest_home_cache: dict[tuple[int, int], tuple[float, dict[str, Any]]] = {}
+_guest_home_cache: dict[tuple[int, int, str], tuple[float, dict[str, Any]]] = {}
 
 
 def _safe_int(x: Any) -> int:
@@ -47,6 +47,7 @@ def get_home_feed(
     user_id: str | None = None,
     exclude_ids: list[str] | None = None,
     session_id: str | None = None,
+    category: str | None = None,
 ) -> dict[str, Any]:
     """Return the ranked home algorithm feed with shop + boost data embedded.
 
@@ -57,7 +58,12 @@ def get_home_feed(
 
     admin = get_supabase_admin()
     is_guest = not user_id
-    guest_cache_key = (page, limit) if is_guest and page == 1 and not exclude_ids else None
+    cat_key = (category or "").strip().lower()
+    guest_cache_key = (
+        (page, limit, cat_key)
+        if is_guest and page == 1 and not exclude_ids
+        else None
+    )
     if guest_cache_key:
         hit = _guest_home_cache.get(guest_cache_key)
         if hit and (time.monotonic() - hit[0]) < _GUEST_HOME_TTL_S:
@@ -70,6 +76,7 @@ def get_home_feed(
         limit=limit,
         exclude_ids=exclude_ids,
         session_id=session_id,
+        category=category,
     )
     shop_ids = list({str(p.shop_id) for p in algorithm_paged if p.shop_id})
 
