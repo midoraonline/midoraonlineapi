@@ -216,6 +216,28 @@ def get_profile(user_id: str) -> dict[str, Any] | None:
     }
 
 
+
+def assert_phone_available(phone_number: str, user_id: str) -> None:
+    """Raise ValueError when another account already owns this phone number."""
+    phone = (phone_number or "").strip()
+    if not phone:
+        return
+    client = get_supabase_admin()
+    r = (
+        client.table("users")
+        .select("id")
+        .eq("phone_number", phone)
+        .neq("id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if r.data:
+        raise ValueError(
+            "This phone number is already linked to another Midora account. "
+            "Sign in with that account, or use a different number."
+        )
+
+
 def update_profile(user_id: str, full_name: str | None, phone_number: str | None) -> dict[str, Any]:
     """Update full_name/phone_number. Resets `phone_verified` when the number actually changes."""
     client = get_supabase_admin()
@@ -229,6 +251,8 @@ def update_profile(user_id: str, full_name: str | None, phone_number: str | None
         payload["full_name"] = full_name
     if phone_number is not None:
         normalized = phone_number or None
+        if normalized and normalized != current_phone:
+            assert_phone_available(normalized, user_id)
         payload["phone_number"] = normalized
         if normalized != current_phone:
             payload["phone_verified"] = False

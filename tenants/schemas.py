@@ -99,6 +99,7 @@ class ShopResponse(BaseModel):
     trust_badges: list[str] = []
     available_now: bool = False
     last_seen_at: str | None = None
+    owner_phone_verified: bool = False
     viewer_following: bool | None = None
     viewer_liked_shop: bool | None = None
 

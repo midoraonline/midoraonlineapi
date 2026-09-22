@@ -266,7 +266,7 @@ def get_product_detail(
             "category,item_type,status,is_published,is_negotiable,listing_score,location_name,listing_meta,"
             "ai_seo_tags,ai_generated_desc,review_notes,reviewed_at,created_at,view_count,"
             "shops(id,name,slug,logo_url,owner_id,whatsapp_number,"
-            "is_active,trust_score,available_now,location,trust_badges)"
+            "is_active,trust_score,available_now,location,trust_badges,created_at,last_seen_at)"
         )
         .eq("id", product_id)
         .limit(1)
@@ -298,7 +298,18 @@ def get_product_detail(
             trust_badges=nested.get("trust_badges") or ["shop_listed"],
             available_now=bool(nested.get("available_now", False)),
             location=location_str,
+            created_at=str(nested["created_at"]) if nested.get("created_at") else None,
+            last_seen_at=str(nested["last_seen_at"]) if nested.get("last_seen_at") else None,
+            owner_phone_verified=False,
         )
+
+    if shop_snapshot and shop_snapshot.owner_id:
+        from shop.publish_gates import assert_owner_phone_for_whatsapp
+        verified = assert_owner_phone_for_whatsapp(client, shop_snapshot.owner_id)
+        shop_snapshot.owner_phone_verified = verified
+        if not verified:
+            shop_snapshot.whatsapp_number = None
+
 
     if not is_owner and (row.get("status") != "active" or not row.get("is_published")):
         return None

@@ -34,6 +34,68 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _enforce_publish_gates(
+    client,
+    *,
+    user_id: str,
+    shop_id: str,
+    body_or_row,
+    existing: dict | None = None,
+) -> None:
+    """Run Phase-1 publish gates when the listing will be public."""
+    from shop.publish_gates import assert_can_publish, assert_media_limits
+
+    if hasattr(body_or_row, "model_dump"):
+        data = body_or_row.model_dump(exclude_unset=True)
+    else:
+        data = dict(body_or_row)
+
+    publishing = data.get("is_published")
+    if publishing is None and existing is not None:
+        publishing = bool(existing.get("is_published"))
+    if publishing is None:
+        publishing = True
+
+    image_urls = data.get("image_urls")
+    if image_urls is None and existing is not None:
+        image_urls = existing.get("image_urls")
+    price = data.get("price_ugx")
+    if price is None and existing is not None:
+        price = existing.get("price_ugx")
+    item_type = data.get("item_type")
+    if item_type is None and existing is not None:
+        item_type = existing.get("item_type")
+    location_name = data.get("location_name")
+    if location_name is None and existing is not None:
+        location_name = existing.get("location_name")
+    category = data.get("category")
+    if category is None and existing is not None:
+        category = existing.get("category")
+    description = data.get("description")
+    if description is None and existing is not None:
+        description = existing.get("description")
+
+    # Always cap media count (even drafts).
+    assert_media_limits(image_urls if isinstance(image_urls, list) else None, publishing=False)
+
+    if not publishing:
+        return
+
+    assert_can_publish(
+        client,
+        user_id=user_id,
+        shop_id=shop_id,
+        image_urls=image_urls if isinstance(image_urls, list) else None,
+        price_ugx=price,
+        item_type=item_type,
+        location_name=location_name,
+        category=category,
+        description=description,
+    )
+
+
+
+
 @router.post("/{shop_id}/products", response_model=ProductResponse)
 async def create_product(
   shop_id: str,
@@ -52,6 +114,8 @@ async def create_product(
         plan_service.assert_can_create_product(client, shop_id, user_id)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+    _enforce_publish_gates(client, user_id=user_id, shop_id=shop_id, body_or_row=body)
 
     try:
         product = shop_service.create_product(client, shop_id, body)
@@ -349,6 +413,24 @@ async def update_product(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
+    existing_r = (
+        client.table("products")
+        .select("shop_id,is_published,image_urls,price_ugx,item_type,location_name,category,description")
+        .eq("id", product_id)
+        .limit(1)
+        .execute()
+    )
+    if not existing_r.data:
+        raise HTTPException(status_code=404, detail="Product not found")
+    existing = existing_r.data[0]
+    _enforce_publish_gates(
+        client,
+        user_id=user_id,
+        shop_id=str(existing["shop_id"]),
+        body_or_row=body,
+        existing=existing,
+    )
+
     updated = shop_service.update_product(client, product_id, body)
     if not updated:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -457,11 +539,26 @@ async def toggle_product_availability(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
-    current = client.table("products").select("is_published").eq("id", product_id).limit(1).execute()
+    current = (
+        client.table("products")
+        .select("shop_id,is_published,image_urls,price_ugx,item_type,location_name,category,description")
+        .eq("id", product_id)
+        .limit(1)
+        .execute()
+    )
     if not current.data:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    new_val = not bool(current.data[0].get("is_published", True))
+    existing = current.data[0]
+    new_val = not bool(existing.get("is_published", True))
+    if new_val:
+        _enforce_publish_gates(
+            client,
+            user_id=user_id,
+            shop_id=str(existing["shop_id"]),
+            body_or_row={"is_published": True},
+            existing=existing,
+        )
     r = client.table("products").update({"is_published": new_val}).eq("id", product_id).execute()
     if not r.data:
         raise HTTPException(status_code=404, detail="Product not found")

@@ -151,3 +151,124 @@ async def report_product(
     except Exception as exc:
         logger.warning("report_product failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to submit report") from exc
+
+
+SELLER_REPORT_REASONS = [
+    "Scam or fraud",
+    "Harassment or abuse",
+    "Fake identity",
+    "Spam",
+    "Unresponsive after deal",
+    "Other",
+]
+
+
+@router.post("/sellers/{seller_id}/reports")
+async def report_seller(
+    seller_id: str,
+    reason: str,
+    description: str | None = None,
+    shop_id: str | None = None,
+    current_user_id: str = Depends(get_optional_user_id),
+) -> dict[str, Any]:
+    """Report a seller (thin trust path for admins)."""
+    if reason not in SELLER_REPORT_REASONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid reason. Must be one of: {', '.join(SELLER_REPORT_REASONS)}",
+        )
+    if not current_user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if current_user_id == seller_id:
+        raise HTTPException(status_code=400, detail="You cannot report yourself")
+
+    admin = get_supabase_admin()
+    try:
+        existing = (
+            admin.table("seller_reports")
+            .select("id")
+            .eq("seller_id", seller_id)
+            .eq("reporter_id", current_user_id)
+            .eq("resolved", False)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            return {"status": "already_reported", "message": "You have already reported this seller"}
+
+        payload = {
+            "seller_id": seller_id,
+            "reporter_id": current_user_id,
+            "reason": reason,
+            "description": description,
+        }
+        if shop_id:
+            payload["shop_id"] = shop_id
+        r = admin.table("seller_reports").insert(payload).execute()
+        return r.data[0] if r.data else {"status": "reported"}
+    except Exception as exc:
+        logger.warning("report_seller failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to submit seller report") from exc
+
+
+@router.post("/sellers/{seller_id}/block")
+async def block_seller(
+    seller_id: str,
+    current_user_id: str = Depends(get_current_user_id),
+) -> dict[str, Any]:
+    """Buyer-side block: hide seller / stop contact for this account."""
+    if current_user_id == seller_id:
+        raise HTTPException(status_code=400, detail="You cannot block yourself")
+    admin = get_supabase_admin()
+    try:
+        existing = (
+            admin.table("seller_blocks")
+            .select("id")
+            .eq("blocker_id", current_user_id)
+            .eq("seller_id", seller_id)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            return {"status": "already_blocked", "blocked": True}
+        admin.table("seller_blocks").insert({
+            "blocker_id": current_user_id,
+            "seller_id": seller_id,
+        }).execute()
+        return {"status": "blocked", "blocked": True}
+    except Exception as exc:
+        logger.warning("block_seller failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to block seller") from exc
+
+
+@router.delete("/sellers/{seller_id}/block")
+async def unblock_seller(
+    seller_id: str,
+    current_user_id: str = Depends(get_current_user_id),
+) -> dict[str, Any]:
+    admin = get_supabase_admin()
+    try:
+        admin.table("seller_blocks").delete().eq("blocker_id", current_user_id).eq("seller_id", seller_id).execute()
+        return {"status": "unblocked", "blocked": False}
+    except Exception as exc:
+        logger.warning("unblock_seller failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to unblock seller") from exc
+
+
+@router.get("/me/blocked-sellers")
+async def list_blocked_sellers(
+    current_user_id: str = Depends(get_current_user_id),
+) -> dict[str, Any]:
+    admin = get_supabase_admin()
+    try:
+        r = (
+            admin.table("seller_blocks")
+            .select("seller_id,created_at")
+            .eq("blocker_id", current_user_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return {"items": r.data or []}
+    except Exception as exc:
+        logger.warning("list_blocked_sellers failed: %s", exc)
+        return {"items": []}

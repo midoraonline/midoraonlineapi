@@ -300,6 +300,11 @@ def get_shop(client: Any, shop_id: str, viewer_id: str | None = None) -> dict | 
             client, shop_id, viewer_id, include_lead_counts=False, include_view_count=False
         )
     )
+    from shop.publish_gates import assert_owner_phone_for_whatsapp
+    verified = assert_owner_phone_for_whatsapp(client, out.get("owner_id"))
+    out["owner_phone_verified"] = verified
+    if not verified:
+        out["whatsapp_number"] = None
     return out
 
 
@@ -381,4 +386,5 @@ def _row_to_shop_response(row: dict) -> dict:
         "trust_badges": row.get("trust_badges") or ["shop_listed"],
         "available_now": bool(row.get("available_now") or False),
         "last_seen_at": str(row["last_seen_at"]) if row.get("last_seen_at") else None,
+        "owner_phone_verified": False,
     }

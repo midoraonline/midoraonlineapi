@@ -17,7 +17,10 @@ async def update_me(
     try:
         profile = update_profile(user_id, body.full_name, body.phone_number)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        msg = str(e)
+        if "already linked" in msg.lower():
+            raise HTTPException(status_code=409, detail={"detail": msg, "code": "phone_taken"})
+        raise HTTPException(status_code=400, detail=msg)
 
     return ProfileResponse(
         id=str(profile.get("id", "")),

@@ -193,6 +193,9 @@ class ShopSummary(BaseModel):
     trust_badges: list[str] = []
     available_now: bool = False
     location: str | None = None
+    created_at: str | None = None
+    last_seen_at: str | None = None
+    owner_phone_verified: bool = False
 
 
 class ProductDetailResponse(BaseModel):

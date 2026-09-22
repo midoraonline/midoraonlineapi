@@ -15,6 +15,13 @@ async def send_phone_code(
 ):
     from common.verification_service import send_verification_code
 
+    from auth.providers.emailpassword import assert_phone_available
+
+    try:
+        assert_phone_available(body.phone_number, user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail={"detail": str(e), "code": "phone_taken"})
+
     try:
         send_verification_code(
             user_id=user_id,
@@ -49,7 +56,13 @@ async def verify_phone_code(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    from auth.providers.emailpassword import assert_phone_available, get_profile
     from db.supabase import get_supabase_admin
+
+    try:
+        assert_phone_available(phone_number, user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail={"detail": str(e), "code": "phone_taken"})
 
     get_supabase_admin().table("users").update(
         {"phone_number": phone_number, "phone_verified": True}
