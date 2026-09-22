@@ -53,9 +53,20 @@ def set_auth_cookies(
 
 
 def clear_auth_cookies(response: Response) -> None:
-    settings = get_settings()
-    kwargs = _cookie_kwargs(settings.is_production)
-    response.delete_cookie(ACCESS_COOKIE, path="/", **kwargs)
-    # Browser cookies may be Path=/ (Next proxy rewrite) or the API path.
-    response.delete_cookie(REFRESH_COOKIE, path=REFRESH_COOKIE_PATH, **kwargs)
-    response.delete_cookie(REFRESH_COOKIE, path="/", **kwargs)
+    """Delete auth cookies across Path / SameSite / Secure variants.
+
+    Production sets SameSite=None;Secure. The Next.js proxy may rewrite those
+    to Lax on the frontend host. Emit deletes for both so neither host keeps
+    a stale refresh cookie that can revive the session after logout.
+    """
+    paths = ("/", REFRESH_COOKIE_PATH)
+    variants = (
+        {"httponly": True, "secure": True, "samesite": "none"},
+        {"httponly": True, "secure": True, "samesite": "lax"},
+        {"httponly": True, "secure": False, "samesite": "lax"},
+        {"httponly": True, "secure": False, "samesite": "none"},
+    )
+    for path in paths:
+        for kwargs in variants:
+            response.delete_cookie(ACCESS_COOKIE, path=path, **kwargs)
+            response.delete_cookie(REFRESH_COOKIE, path=path, **kwargs)

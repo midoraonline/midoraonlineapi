@@ -75,11 +75,18 @@ async def me(user_id: str = Depends(get_current_user_id)):
 @router.post("/logout")
 async def logout(
     response: Response,
+    body: RefreshRequest | None = None,
     cookie_refresh: Annotated[str | None, Cookie(alias=REFRESH_COOKIE)] = None,
 ) -> dict:
-    """Revoke the current refresh token (if present) and clear auth cookies."""
-    if cookie_refresh:
-        revoke_refresh_token(cookie_refresh)
+    """Revoke the current refresh token (if present) and clear auth cookies.
+
+    Accepts the refresh token from the cookie *or* the JSON body so the
+    Next.js frontend can revoke even when the API-domain cookie is missing
+    (cookies live on the frontend host after `/api/auth/set-cookies`).
+    """
+    token = (body.refresh_token if body and body.refresh_token else None) or cookie_refresh
+    if token:
+        revoke_refresh_token(token)
     clear_auth_cookies(response)
     return {"message": "Logged out"}
 
