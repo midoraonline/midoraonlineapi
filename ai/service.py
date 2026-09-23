@@ -166,7 +166,13 @@ def generate_product_copy_from_image(
 def remove_background(
     image_url: str | None = None, image_base64: str | None = None
 ) -> str | None:
-    return image_url
+    # Product listing BG removal runs in the browser via @imgly/background-removal.
+    # This API endpoint is intentionally unimplemented (no remove.bg / Photoroom key).
+    raise AIUnavailableError(
+        "Server-side background removal is not configured. "
+        "Use the Midora web app Auto-remove background checkbox "
+        "(client-side @imgly/background-removal)."
+    )
 
 
 def generate_logo(
