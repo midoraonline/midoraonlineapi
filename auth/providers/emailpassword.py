@@ -238,8 +238,15 @@ def assert_phone_available(phone_number: str, user_id: str) -> None:
         )
 
 
-def update_profile(user_id: str, full_name: str | None, phone_number: str | None) -> dict[str, Any]:
-    """Update full_name/phone_number. Resets `phone_verified` when the number actually changes."""
+def update_profile(
+    user_id: str,
+    full_name: str | None,
+    phone_number: str | None,
+    avatar_url: str | None = None,
+    *,
+    update_avatar: bool = False,
+) -> dict[str, Any]:
+    """Update full_name/phone_number/avatar_url. Resets `phone_verified` when the number changes."""
     client = get_supabase_admin()
     current = client.table("users").select("phone_number").eq("id", user_id).limit(1).execute()
     if not current.data:
@@ -259,12 +266,38 @@ def update_profile(user_id: str, full_name: str | None, phone_number: str | None
 
     if payload:
         client.table("users").update(payload).eq("id", user_id).execute()
-        mirror = {k: v for k, v in payload.items() if k in ("full_name", "phone_number")}
-        if mirror:
-            try:
-                client.table("profiles").update(mirror).eq("id", user_id).execute()
-            except Exception:
-                pass  # profiles row may not exist for every user
+
+    # avatar_url lives on `profiles` (not `users`). Empty string clears it.
+    profile_mirror: dict[str, Any] = {
+        k: v for k, v in payload.items() if k in ("full_name", "phone_number")
+    }
+    if update_avatar:
+        cleaned = (avatar_url or "").strip() or None
+        if cleaned and not (
+            cleaned.startswith("https://") or cleaned.startswith("http://")
+        ):
+            raise ValueError("avatar_url must be an http(s) URL")
+        profile_mirror["avatar_url"] = cleaned
+
+    if profile_mirror:
+        try:
+            client.table("profiles").update(profile_mirror).eq("id", user_id).execute()
+        except Exception:
+            pass  # profiles row may not exist for every user
+        if update_avatar and "avatar_url" in profile_mirror:
+            existing = (
+                client.table("profiles").select("id").eq("id", user_id).limit(1).execute()
+            )
+            if not existing.data:
+                row = {"id": user_id, "avatar_url": profile_mirror["avatar_url"]}
+                if "full_name" in profile_mirror:
+                    row["full_name"] = profile_mirror["full_name"]
+                if "phone_number" in profile_mirror:
+                    row["phone_number"] = profile_mirror["phone_number"]
+                try:
+                    client.table("profiles").insert(row).execute()
+                except Exception:
+                    pass
 
     profile = get_profile(user_id)
     if not profile:

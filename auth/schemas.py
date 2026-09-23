@@ -77,6 +77,8 @@ class ProfileResponse(BaseModel):
 class UpdateProfileRequest(BaseModel):
     full_name: str | None = None
     phone_number: str | None = None
+    # Empty string clears the avatar; omit to leave unchanged.
+    avatar_url: str | None = None
 
 
 class ChangePasswordRequest(BaseModel):

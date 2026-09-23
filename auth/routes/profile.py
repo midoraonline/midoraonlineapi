@@ -15,7 +15,14 @@ async def update_me(
     from auth.service import create_supabase_realtime_jwt
 
     try:
-        profile = update_profile(user_id, body.full_name, body.phone_number)
+        update_avatar = "avatar_url" in body.model_fields_set
+        profile = update_profile(
+            user_id,
+            body.full_name,
+            body.phone_number,
+            body.avatar_url,
+            update_avatar=update_avatar,
+        )
     except ValueError as e:
         msg = str(e)
         if "already linked" in msg.lower():
