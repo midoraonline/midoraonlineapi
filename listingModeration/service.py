@@ -127,6 +127,44 @@ def mark_failed(row_id: UUID, error: str) -> None:
     }).eq("id", str(row_id)).execute()
 
 
+def escalate_to_manual_review(
+    row_id: UUID,
+    reason: str,
+    product_id: UUID | str | None = None,
+) -> None:
+    """Park a stuck/failed auto-moderation run for human review.
+
+    Keeps products.status at pending_review (via NEEDS_REVIEW sync) and
+    opens a needs_review queue row for the admin trust / listings queue.
+    """
+    decision = ModerationDecision(
+        status=ModerationStatus.NEEDS_REVIEW,
+        reason=reason,
+        scores={"stage": "escalate", "manual": True},
+    )
+    # Only escalate rows still open — never overwrite approved/rejected.
+    admin = get_supabase_admin()
+    try:
+        admin.table(_TABLE).update({
+            "status": decision.status.value,
+            "reason": decision.reason,
+            "scores": decision.scores,
+            "decided_at": datetime.now(timezone.utc).isoformat(),
+            "error": None,
+        }).eq("id", str(row_id)).in_(
+            "status", ["pending", "processing", "failed"]
+        ).execute()
+    except Exception as exc:
+        logger.warning("escalate_to_manual_review write failed for %s: %s", row_id, exc)
+        return
+    pid = product_id
+    if pid is None:
+        row = get_by_id(row_id)
+        pid = row.product_id if row else None
+    if pid:
+        sync_product_status(UUID(str(pid)) if not isinstance(pid, UUID) else pid, decision)
+
+
 def sync_product_status(product_id: UUID, decision: ModerationDecision) -> None:
     """Push the moderation outcome back onto the products row (if any).
 

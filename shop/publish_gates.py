@@ -13,7 +13,7 @@ from fastapi import HTTPException
 
 # Still photos required to publish; videos do not count toward the minimum.
 MIN_PUBLISH_PHOTOS = 2
-MAX_LISTING_MEDIA = 8
+MAX_LISTING_MEDIA = 3
 
 # Quote-style (price 0) allowed only for these kinds.
 QUOTE_OK_ITEM_TYPES = frozenset({"service", "job", "opportunity"})

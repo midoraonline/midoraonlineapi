@@ -78,7 +78,8 @@ async def moderate_now(row_id: UUID) -> None:
 
     Bounded by `config.inline_timeout_seconds` so a slow Gemini call cannot
     blow the caller's serverless function budget. On timeout / error the
-    row stays `pending` and the cron drain retries it.
+    row is escalated to `needs_review` so admins can decide; product stays
+    `pending_review`.
 
     Callers must `await` this from an async context (typically a FastAPI
     route handler). Do NOT wrap this in `BackgroundTasks` or
@@ -95,9 +96,21 @@ async def moderate_now(row_id: UUID) -> None:
         )
     except asyncio.TimeoutError:
         logger.info(
-            "inline moderation timed out for row %s after %.1fs; cron drain will retry",
+            "inline moderation timed out for row %s after %.1fs; escalating to manual review",
             row_id,
             config.inline_timeout_seconds,
         )
+        row = service.get_by_id(row_id)
+        service.escalate_to_manual_review(
+            row_id,
+            "auto-moderation timed out — awaiting admin review",
+            product_id=row.product_id if row else None,
+        )
     except Exception as exc:
         logger.warning("inline moderation failed for row %s: %s", row_id, exc)
+        row = service.get_by_id(row_id)
+        service.escalate_to_manual_review(
+            row_id,
+            f"auto-moderation failed — awaiting admin review ({type(exc).__name__})",
+            product_id=row.product_id if row else None,
+        )

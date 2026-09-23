@@ -317,8 +317,12 @@ async def process_batch(batch_size: int) -> dict[str, int]:
             counts[decision.status.value] = counts.get(decision.status.value, 0) + 1
         except Exception as exc:
             logger.exception("[Moderation] Batch moderation failed for row %s", row.id)
-            service.mark_failed(row.id, repr(exc))
-            counts["failed"] += 1
+            service.escalate_to_manual_review(
+                row.id,
+                f"auto-moderation failed — awaiting admin review ({type(exc).__name__})",
+                product_id=row.product_id,
+            )
+            counts["needs_review"] = counts.get("needs_review", 0) + 1
 
     logger.info("[Moderation] Batch process complete: %s", counts)
     return counts
@@ -393,7 +397,11 @@ async def process_row(row_id: UUID | str) -> ModerationDecision | None:
         decision = await moderate(row, known_bad_hashes)
     except Exception as exc:
         logger.exception("[Moderation] Inline moderation failed for row %s", row.id)
-        service.mark_failed(row.id, repr(exc))
+        service.escalate_to_manual_review(
+            row.id,
+            f"auto-moderation failed — awaiting admin review ({type(exc).__name__})",
+            product_id=row.product_id,
+        )
         return None
 
     service.write_decision(row.id, decision)

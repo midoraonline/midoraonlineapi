@@ -94,11 +94,12 @@ def resolve_seller_report(report_id: str) -> dict[str, Any]:
 def list_trust_queue(
     limit: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
-    """Thin admin queue: open product reports, seller reports, and near-dupes."""
+    """Thin admin queue: reports, near-dupes, and auto-moderation manual review."""
     admin = get_supabase_admin()
     product_reports: list[dict[str, Any]] = []
     seller_reports: list[dict[str, Any]] = []
     near_dupes: list[dict[str, Any]] = []
+    manual_review: list[dict[str, Any]] = []
     try:
         pr = (
             admin.table("product_reports")
@@ -124,26 +125,31 @@ def list_trust_queue(
     except Exception as exc:
         logger.warning("trust-queue seller_reports failed: %s", exc)
     try:
-        nd = (
+        mr = (
             admin.table("listing_moderation_queue")
             .select("id, product_id, seller_id, title, reason, status, created_at, scores")
             .eq("status", "needs_review")
-            .ilike("reason", "%near_duplicate%")
             .order("created_at", desc=True)
             .limit(limit)
             .execute()
         )
-        near_dupes = nd.data or []
+        manual_review = mr.data or []
+        near_dupes = [
+            row for row in manual_review
+            if "near_duplicate" in str(row.get("reason") or "").lower()
+        ]
     except Exception as exc:
-        logger.warning("trust-queue near_dupes failed: %s", exc)
+        logger.warning("trust-queue manual_review failed: %s", exc)
     return {
         "product_reports": product_reports,
         "seller_reports": seller_reports,
         "near_dupes": near_dupes,
+        "manual_review": manual_review,
         "counts": {
             "product_reports": len(product_reports),
             "seller_reports": len(seller_reports),
             "near_dupes": len(near_dupes),
+            "manual_review": len(manual_review),
         },
     }
 

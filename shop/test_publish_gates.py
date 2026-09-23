@@ -19,8 +19,8 @@ def test_media_allows_draft_with_one_photo():
     assert_media_limits(["https://x/a.jpg"], publishing=False)
 
 
-def test_media_max_eight():
-    urls = [f"https://x/{i}.jpg" for i in range(9)]
+def test_media_max_three():
+    urls = [f"https://x/{i}.jpg" for i in range(4)]
     with pytest.raises(HTTPException) as ei:
         assert_media_limits(urls, publishing=False)
     assert ei.value.detail["code"] == "too_many_media"
