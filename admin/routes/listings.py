@@ -111,6 +111,20 @@ async def admin_update_listing_status(
     )
     if not r.data:
         return {"error": "Listing not found"}
+
+    if status in {"active", "rejected"}:
+        queue_status = "approved" if status == "active" else "rejected"
+        try:
+            admin.table("listing_moderation_queue").update({
+                "status": queue_status,
+                "reason": r.data[0].get("review_notes") or f"admin_status_{status}",
+                "decided_at": now,
+            }).eq("product_id", listing_id).in_(
+                "status", ["pending", "processing", "needs_review"]
+            ).execute()
+        except Exception as exc:
+            logger.warning("moderation queue close failed for %s: %s", listing_id, exc)
+
     from feed.embeddings import refresh_product_embedding
     from ranking.service import calculate_listing_score
     refresh_product_embedding(listing_id)
@@ -154,6 +168,21 @@ async def admin_review_listing(
     )
     if not r.data:
         return {"error": "Listing not found"}
+
+    # Close any open moderation-queue rows so reconcile/drain cannot
+    # re-apply an automated decision over the admin verdict.
+    queue_status = "approved" if new_status == "active" else "rejected"
+    try:
+        admin.table("listing_moderation_queue").update({
+            "status": queue_status,
+            "reason": notes or f"admin_{action}",
+            "decided_at": now,
+        }).eq("product_id", listing_id).in_(
+            "status", ["pending", "processing", "needs_review"]
+        ).execute()
+    except Exception as exc:
+        logger.warning("moderation queue close failed for %s: %s", listing_id, exc)
+
     from feed.embeddings import refresh_product_embedding
     from ranking.service import calculate_listing_score
     refresh_product_embedding(listing_id)

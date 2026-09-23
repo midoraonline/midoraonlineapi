@@ -146,11 +146,20 @@ def sync_product_status(product_id: UUID, decision: ModerationDecision) -> None:
         return
 
     admin = get_supabase_admin()
-    r = admin.table("products").update({
-        "status": target,
-        "reviewed_at": datetime.now(timezone.utc).isoformat(),
-        "review_notes": decision.reason,
-    }).eq("id", str(product_id)).execute()
+    # Only sync while still awaiting review. Prevents a late/in-flight
+    # pipeline from overwriting an admin approve/reject (or a prior
+    # terminal decision) and leaving the merchant UI stuck on "Reviewing".
+    r = (
+        admin.table("products")
+        .update({
+            "status": target,
+            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+            "review_notes": decision.reason,
+        })
+        .eq("id", str(product_id))
+        .eq("status", "pending_review")
+        .execute()
+    )
 
     if r.data:
         import asyncio
