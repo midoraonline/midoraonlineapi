@@ -80,6 +80,58 @@ def _unread_for(user_id: str) -> int:
         return 0
 
 
+def _avatar_map(admin: Any, user_ids: list[str | None]) -> dict[str, str | None]:
+    """avatar_url lives on profiles; chat embeds users (full_name only)."""
+    ids = sorted({uid for uid in user_ids if uid})
+    if not ids:
+        return {}
+    try:
+        r = admin.table("profiles").select("id, avatar_url").in_("id", ids).execute()
+        return {str(row["id"]): row.get("avatar_url") for row in (r.data or [])}
+    except Exception as exc:
+        logger.warning("_avatar_map failed: %s", exc)
+        return {}
+
+
+def _enrich_conversation_avatars(admin: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    avatars = _avatar_map(
+        admin,
+        [row.get("buyer_id") for row in rows] + [row.get("seller_id") for row in rows],
+    )
+    for row in rows:
+        buyer = row.get("buyer")
+        if isinstance(buyer, dict):
+            buyer["avatar_url"] = avatars.get(str(row.get("buyer_id") or ""))
+        elif row.get("buyer_id"):
+            row["buyer"] = {
+                "full_name": None,
+                "avatar_url": avatars.get(str(row["buyer_id"])),
+            }
+        seller = row.get("seller")
+        if isinstance(seller, dict):
+            seller["avatar_url"] = avatars.get(str(row.get("seller_id") or ""))
+        elif row.get("seller_id"):
+            row["seller"] = {
+                "full_name": None,
+                "avatar_url": avatars.get(str(row["seller_id"])),
+            }
+    return rows
+
+
+def _enrich_message_avatars(admin: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    avatars = _avatar_map(admin, [row.get("sender_id") for row in rows])
+    for row in rows:
+        sender = row.get("sender")
+        if isinstance(sender, dict):
+            sender["avatar_url"] = avatars.get(str(row.get("sender_id") or ""))
+        elif row.get("sender_id"):
+            row["sender"] = {
+                "full_name": None,
+                "avatar_url": avatars.get(str(row["sender_id"])),
+            }
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # REST endpoints
 # ---------------------------------------------------------------------------
@@ -100,7 +152,7 @@ async def list_conversations(
             .limit(limit)
             .execute()
         )
-        return r.data or []
+        return _enrich_conversation_avatars(admin, list(r.data or []))
     except Exception as exc:
         logger.warning("list_conversations failed: %s", exc)
         return []
@@ -128,7 +180,7 @@ async def create_conversation(
             .execute()
         )
         if existing.data:
-            return existing.data[0]
+            return _enrich_conversation_avatars(admin, [existing.data[0]])[0]
 
         r = admin.table("conversations").insert({
             "buyer_id": current_user_id,
@@ -138,7 +190,17 @@ async def create_conversation(
         }).execute()
         if not r.data:
             raise HTTPException(status_code=502, detail="Failed to create conversation")
-        return r.data[0]
+        # Re-fetch with participant names so the client gets a full Conversation shape.
+        created_id = r.data[0]["id"]
+        hydrated = (
+            admin.table("conversations")
+            .select("*, buyer:buyer_id(full_name), seller:seller_id(full_name)")
+            .eq("id", created_id)
+            .limit(1)
+            .execute()
+        )
+        row = (hydrated.data or [r.data[0]])[0]
+        return _enrich_conversation_avatars(admin, [row])[0]
     except HTTPException:
         raise
     except Exception as exc:
@@ -170,9 +232,9 @@ async def list_messages(
         if before:
             query = query.lt("id", before)
         r = query.execute()
-        msgs = r.data or []
+        msgs = list(r.data or [])
         msgs.reverse()
-        return msgs
+        return _enrich_message_avatars(admin, msgs)
     except Exception as exc:
         logger.warning("list_messages failed: %s", exc)
         return []
@@ -227,7 +289,7 @@ async def send_message(
         except Exception as exc:  # noqa: BLE001
             logger.warning("push notify failed: %s", exc)
 
-        return msg.data[0]
+        return _enrich_message_avatars(admin, [msg.data[0]])[0]
     except HTTPException:
         raise
     except Exception as exc:
