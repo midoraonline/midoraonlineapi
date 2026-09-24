@@ -6,6 +6,7 @@ from shop.publish_gates import (
     assert_media_limits,
     assert_price_for_publish,
     location_is_usable,
+    photos_required_for_item_type,
 )
 
 
@@ -40,3 +41,17 @@ def test_location_rejects_uganda_only():
     assert location_is_usable(None, "Uganda") is False
     assert location_is_usable("Kampala", None) is True
     assert MIN_PUBLISH_PHOTOS == 2
+
+
+def test_media_optional_for_opportunity_and_service():
+    assert_media_limits([], publishing=True, item_type="opportunity")
+    assert_media_limits([], publishing=True, item_type="service")
+    assert_media_limits([], publishing=True, item_type="job")
+    assert photos_required_for_item_type("product") is True
+    assert photos_required_for_item_type("opportunity") is False
+
+
+def test_media_still_required_for_product():
+    with pytest.raises(HTTPException) as ei:
+        assert_media_limits([], publishing=True, item_type="product")
+    assert ei.value.detail["code"] == "photos_required"

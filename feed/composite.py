@@ -207,8 +207,13 @@ def get_home_feed(
                 "viewer_liked": (str(p.id) in viewer_liked_ids) if not is_guest else None,
                 "listing_score": _safe_int(p.listing_score),
                 "location_name": p.location_name,
-                "listing_meta": {},
+                "listing_meta": (
+                    getattr(p, "listing_meta", None)
+                    if isinstance(getattr(p, "listing_meta", None), dict)
+                    else {}
+                ),
                 "created_at": p.created_at,
+                "updated_at": getattr(p, "updated_at", None) or p.created_at,
                 "stock_quantity": int(getattr(p, "stock_quantity", 0) or 0),
                 "shop": shop,
                 "boosted": str(p.id) in boosted_ids,

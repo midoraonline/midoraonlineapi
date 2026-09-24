@@ -128,6 +128,7 @@ class ProductResponse(BaseModel):
     review_notes: str | None = None
     reviewed_at: str | None = None
     created_at: str | None
+    updated_at: str | None = None
     like_count: int = 0
     view_count: int = 0
     viewer_liked: bool | None = None

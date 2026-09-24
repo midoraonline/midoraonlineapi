@@ -18,6 +18,9 @@ MAX_LISTING_MEDIA = 3
 # Quote-style (price 0) allowed only for these kinds.
 QUOTE_OK_ITEM_TYPES = frozenset({"service", "job", "opportunity"})
 
+# Photos optional for services / jobs / opportunities (text-first listings).
+PHOTO_OPTIONAL_ITEM_TYPES = frozenset({"service", "job", "opportunity"})
+
 _VIDEO_HINTS = (".mp4", ".webm", ".mov", ".m4v", ".avi", "/video/")
 
 
@@ -73,14 +76,28 @@ def location_is_usable(location_name: str | None, shop_location: Any) -> bool:
     return True
 
 
-def assert_media_limits(image_urls: list[str] | None, *, publishing: bool) -> None:
+def photos_required_for_item_type(item_type: str | None) -> bool:
+    kind = (item_type or "product").strip().lower()
+    return kind not in PHOTO_OPTIONAL_ITEM_TYPES
+
+
+def assert_media_limits(
+    image_urls: list[str] | None,
+    *,
+    publishing: bool,
+    item_type: str | None = None,
+) -> None:
     media = count_media(image_urls)
     if media > MAX_LISTING_MEDIA:
         _http_gate(
             f"At most {MAX_LISTING_MEDIA} photos or videos per listing.",
             "too_many_media",
         )
-    if publishing and count_photos(image_urls) < MIN_PUBLISH_PHOTOS:
+    if (
+        publishing
+        and photos_required_for_item_type(item_type)
+        and count_photos(image_urls) < MIN_PUBLISH_PHOTOS
+    ):
         _http_gate(
             f"Add at least {MIN_PUBLISH_PHOTOS} photos before publishing (videos alone are not enough).",
             "photos_required",
@@ -130,7 +147,7 @@ def assert_can_publish(
 ) -> None:
     """Hard gates for a listing that will be publicly published."""
     assert_owner_phone_verified(client, user_id)
-    assert_media_limits(image_urls, publishing=True)
+    assert_media_limits(image_urls, publishing=True, item_type=item_type)
     assert_price_for_publish(price_ugx, item_type)
 
     if not (category or "").strip():
