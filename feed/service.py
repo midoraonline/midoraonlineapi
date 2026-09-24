@@ -49,7 +49,7 @@ VECTOR_MATCH_COUNT = 220
 _PRODUCT_CARD_SELECT = (
     "id,shop_id,title,category,item_type,price_ugx,discount_price,"
     "discount_expires_at,stock_quantity,image_urls,is_published,status,listing_score,"
-    "location_name,created_at,updated_at,view_count,listing_meta,is_negotiable"
+    "location_name,created_at,view_count,listing_meta,is_negotiable"
 )
 
 # Scoring candidates: card fields only. Taste comes from pgvector / taste_scores.
