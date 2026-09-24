@@ -199,7 +199,7 @@ async def send_stage_submission_merchant_email(
     to: str, shop_name: str, stage: int
 ) -> None:
     """Confirm to the merchant that their stage submission was received."""
-    stage_names = {2: "Identity Verification", 3: "Business Verification"}
+    stage_names = {2: "Identity Verification", 3: "Business Verification", 4: "Professional Verification"}
     stage_name = stage_names.get(stage, f"Stage {stage}")
     inner = f"""
       <p>We've received your <strong>{stage_name}</strong> submission for <strong>{shop_name}</strong>.</p>
@@ -223,7 +223,7 @@ async def send_stage_submission_admin_email(
     recipients = filter_recipients(admin_recipients, merchant_email)
     if not recipients:
         return
-    stage_names = {2: "Identity Verification", 3: "Business Verification"}
+    stage_names = {2: "Identity Verification", 3: "Business Verification", 4: "Professional Verification"}
     stage_name = stage_names.get(stage, f"Stage {stage}")
     merchant_html = (
         f"<li><strong>Merchant:</strong> {merchant_email}</li>" if merchant_email else ""
@@ -246,11 +246,11 @@ async def send_stage_approved_email(
     to: str, shop_name: str, stage: int
 ) -> None:
     """Notify the merchant that a verification stage was approved and they earned a badge."""
-    badge_names = {2: ("Identity Verified", "🪪"), 3: ("Business Verified", "🏢")}
+    badge_names = {2: ("Identity Verified", "🪪"), 3: ("Verified Business", "🏢"), 4: ("Verified Professional", "🎓")}
     badge_name, emoji = badge_names.get(stage, (f"Stage {stage} Verified", "✅"))
     next_step = ""
     if stage == 2:
-        next_step = "<p>You can now proceed to <strong>Business Verification</strong> (Stage 3) to earn the highest trust badge on Midora.</p>"
+        next_step = "<p>You can now add <strong>Business</strong> or <strong>Professional</strong> verification for more trust badges.</p>"
     inner = f"""
       <p>Great news — your <strong>{badge_name}</strong> {emoji} badge has been approved for <strong>{shop_name}</strong>!</p>
       <p>This badge now appears on your public shop page, helping customers trust your shop.</p>
@@ -264,7 +264,7 @@ async def send_stage_rejected_email(
     to: str, shop_name: str, stage: int, notes: str | None = None
 ) -> None:
     """Notify the merchant that a verification stage was rejected with reviewer notes."""
-    stage_names = {2: "Identity Verification", 3: "Business Verification"}
+    stage_names = {2: "Identity Verification", 3: "Business Verification", 4: "Professional Verification"}
     stage_name = stage_names.get(stage, f"Stage {stage}")
     notes_html = (
         f'<div style="margin-top:20px;padding:14px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;color:#334155;"><strong>Notes from our team:</strong><br/>{notes}</div>'

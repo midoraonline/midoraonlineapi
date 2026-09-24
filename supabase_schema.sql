@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS public.shop_verifications (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     shop_id             UUID NOT NULL REFERENCES public.shops(id) ON DELETE CASCADE,
     status              TEXT NOT NULL DEFAULT 'unverified'
-                            CHECK (status IN ('unverified', 'pending', 'verified', 'rejected')),
+                            CHECK (status IN ('unverified', 'submitted', 'pending', 'verified', 'rejected')),
     requested_at        TIMESTAMPTZ DEFAULT now(),
     reviewed_at         TIMESTAMPTZ,
     reviewed_by         UUID REFERENCES public.users(id),

@@ -113,7 +113,16 @@ async def create_product(
     try:
         plan_service.assert_can_create_product(client, shop_id, user_id)
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        detail = str(e)
+        code = None
+        if getattr(plan_service, "IDENTITY_REQUIRED_CODE", None) and (
+            "Identity Verified" in detail or "identity" in detail.lower()
+        ):
+            code = plan_service.IDENTITY_REQUIRED_CODE
+        raise HTTPException(
+            status_code=403,
+            detail={"detail": detail, "code": code} if code else detail,
+        )
 
     _enforce_publish_gates(client, user_id=user_id, shop_id=shop_id, body_or_row=body)
 

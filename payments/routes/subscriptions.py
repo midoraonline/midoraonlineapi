@@ -6,6 +6,7 @@ from supabase import Client
 from core.authz import ensure_shop_owner
 from db.supabase import get_supabase_client
 from core.security import get_current_user_id
+from payments import plan_service
 from payments import service as payments_service
 from payments.plans import list_plans
 from payments.schemas import PlanResponse, SubscribeRequest
@@ -30,6 +31,14 @@ async def create_subscription(
         raise HTTPException(status_code=404, detail="Shop not found")
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+    try:
+        plan_service.assert_identity_for_paid_plan(client, body.shop_id, body.plan_tier)
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=403,
+            detail={"detail": str(e), "code": plan_service.IDENTITY_REQUIRED_CODE},
+        )
 
     try:
         result = payments_service.create_subscription_intent(

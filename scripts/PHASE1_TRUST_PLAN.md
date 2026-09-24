@@ -111,25 +111,34 @@ On **product detail** and **shop storefront**, show:
 
 ## Phase 3 — Scale / verification ladder
 
+**Status:** Shipped on main (24 Sep 2026 EAT) — extend existing `shop_verifications` / `trust_badges` ladder; do not rebuild.
+
 Keep the staged model from the notes:
 
 **Stage 1 — Capture, don’t manually verify everyone**
 
-- Optional selfie + ID photo stored
-- UI: “ID submitted / verification pending”
-- No manual review of every ID or business document
+- [x] Optional selfie + ID photo stored (`request_review=false` → status `submitted`)
+- [x] UI: “ID submitted / verification pending”
+- [x] No manual review of every ID or business document (admin default queue = `pending` only)
 
 **Stage 2 — Verify only when needed**
 
-Triggers examples: more offers unlock, business profile, higher trust, paid packages, high listing volume
+Triggers wired:
+
+- [x] High listing volume: Identity Verified required after **5** products (`payments/plan_service.py`)
+- [x] Paid packages: Standard / Premium subscribe requires Identity Verified
+- [x] Business / Professional stages still require Identity Verified first
+- [x] Merchant can **Request review** from captured docs anytime
 
 Verify then:
 
-- National ID / passport / driving permit → **Identity Verified**
-- Business registration / TIN / contacts → **Verified Business**
-- Professional credentials where relevant → **Verified Professional**
+- National ID / passport / driving permit → **Identity Verified** (`identity_verified`)
+- Business registration / TIN / contacts → **Verified Business** (`business_verified`)
+- Professional credentials where relevant → **Verified Professional** (`professional_verified`)
 
-Manual review only for: high-risk categories, reported listings, users requesting higher trust, business applications.
+Manual review: `/admin/verifications` review queue (`pending`). Capture-only rows live under “Captured (no review)”.
+
+Migration: `db/migrations/041_verification_ladder.sql` (adds `submitted` status).
 
 ---
 
@@ -177,7 +186,7 @@ WhatsApp / Facebook / Jiji win on habit. Midora wins if sellers get replies and 
 | Locked | Yes — 22 Sep 2026 |
 | Repos | `midoraonline/midoraonline`, `midoraonline/midoraonlineapi` |
 | Doc path | `docs/PHASE1_TRUST_PLAN.md` (this file, under Midora project root) |
-| Implementation | Must on main (22 Sep 2026). Should in progress / shipping. |
+| Implementation | Must + Should on main. **Phase 3 verification ladder shipped 24 Sep 2026.** |
 
 When implementing, prefer local work on Joel’s machine (no cloud agent unless requested). Small PRs / commits on `main` after review, same as recent feed/trust ship style.
 
