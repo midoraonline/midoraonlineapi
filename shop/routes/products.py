@@ -1,7 +1,7 @@
 from typing import Annotated
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from supabase import Client
 
 from core.authz import ensure_product_owner, ensure_shop_owner
@@ -34,6 +34,35 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _raise_plan_limit(exc: PermissionError) -> None:
+    detail = str(exc)
+    code = None
+    if getattr(plan_service, "IDENTITY_REQUIRED_CODE", None) and (
+        "Identity Verified" in detail or "identity" in detail.lower()
+    ):
+        code = plan_service.IDENTITY_REQUIRED_CODE
+    raise HTTPException(
+        status_code=403,
+        detail={"detail": detail, "code": code} if code else detail,
+    )
+
+
+def _insert_owned_product(client, user_id: str, shop_id: str, body: ProductCreate) -> dict:
+    try:
+        plan_service.assert_can_create_product(client, shop_id, user_id)
+    except PermissionError as exc:
+        _raise_plan_limit(exc)
+
+    _enforce_publish_gates(client, user_id=user_id, shop_id=shop_id, body_or_row=body)
+
+    try:
+        product = shop_service.create_product(client, shop_id, body)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return product
+
+
 def _enforce_publish_gates(
     client,
     *,
@@ -43,6 +72,7 @@ def _enforce_publish_gates(
     existing: dict | None = None,
 ) -> None:
     """Run Phase-1 publish gates when the listing will be public."""
+    from shop.locations import is_online_location
     from shop.publish_gates import assert_can_publish, assert_media_limits
 
     if hasattr(body_or_row, "model_dump"):
@@ -68,6 +98,10 @@ def _enforce_publish_gates(
     location_name = data.get("location_name")
     if location_name is None and existing is not None:
         location_name = existing.get("location_name")
+    if data.get("is_online") is True or (
+        data.get("is_online") is None and is_online_location(location_name)
+    ):
+        location_name = "Online"
     category = data.get("category")
     if category is None and existing is not None:
         category = existing.get("category")
@@ -110,26 +144,7 @@ async def create_product(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
-    try:
-        plan_service.assert_can_create_product(client, shop_id, user_id)
-    except PermissionError as e:
-        detail = str(e)
-        code = None
-        if getattr(plan_service, "IDENTITY_REQUIRED_CODE", None) and (
-            "Identity Verified" in detail or "identity" in detail.lower()
-        ):
-            code = plan_service.IDENTITY_REQUIRED_CODE
-        raise HTTPException(
-            status_code=403,
-            detail={"detail": detail, "code": code} if code else detail,
-        )
-
-    _enforce_publish_gates(client, user_id=user_id, shop_id=shop_id, body_or_row=body)
-
-    try:
-        product = shop_service.create_product(client, shop_id, body)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    product = _insert_owned_product(client, user_id, shop_id, body)
 
     # Subscribers (mail, ranking, embeddings, moderation) run in-process.
     # The pending-review event carries the product id so moderation does
@@ -173,6 +188,83 @@ async def list_products(
 router_products = APIRouter()
 
 
+@router_products.post("", response_model=ProductResponse)
+@router_products.post("/", response_model=ProductResponse, include_in_schema=False)
+async def create_listing(
+    body: ProductCreate,
+    request: Request,
+    response: Response,
+    client: Annotated[Client, Depends(get_supabase_client)],
+    user_id: str = Depends(get_current_user_id),
+):
+    """Publish a listing without choosing a shop.
+
+    A hidden personal seller profile is created on first use. If the user
+    already has one real shop, the listing is attached to it. Several real
+    shops require POST /shops/{shop_id}/products.
+    """
+    from auth import service as auth_service
+    from auth.cookies import set_auth_cookies
+    from shop.personal import PersonalShopUnavailable, ShopChoiceRequired, resolve_shop_for_direct_post
+
+    try:
+        shop_id, created_personal = resolve_shop_for_direct_post(client, user_id)
+    except ShopChoiceRequired:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "detail": "Choose which shop this listing belongs to.",
+                "code": "shop_required",
+            },
+        )
+    except PersonalShopUnavailable:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "detail": "Run migration 043_personal_seller_shops.sql before posting without a shop.",
+                "code": "migration_required",
+            },
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    product = _insert_owned_product(client, user_id, shop_id, body)
+    await publish_product_created(product, seller_id=user_id)
+
+    if created_personal:
+        new_role, changed = auth_service.promote_to_merchant(user_id)
+        if changed and new_role:
+            access, refresh = auth_service.create_access_and_refresh_tokens(
+                user_id,
+                new_role,
+                user_agent=request.headers.get("user-agent"),
+                ip=request.client.host if request.client else None,
+            )
+            set_auth_cookies(
+                response,
+                access_token=access,
+                refresh_token=refresh,
+                access_ttl_seconds=auth_service.access_ttl_seconds(),
+                refresh_ttl_seconds=auth_service.refresh_ttl_seconds(),
+            )
+
+    refreshed = shop_service.get_product(client, product["id"], viewer_id=user_id)
+    if refreshed is not None:
+        product = refreshed
+    return product
+
+
+@router_products.get("/me")
+async def my_listings(
+    client: Annotated[Client, Depends(get_supabase_client)],
+    user_id: str = Depends(get_current_user_id),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Listings owned by the current user, with or without a real shop."""
+    return shop_service.list_owner_products(client, user_id, page=page, limit=limit)
+
+
 @router_products.get("/me/liked", response_model=PaginatedProductCards)
 async def my_liked_products(
     client: Annotated[Client, Depends(get_supabase_client)],
@@ -211,19 +303,7 @@ async def my_liked_products(
     by_id = {str(r["id"]): r for r in (pr.data or []) if r.get("id")}
 
     shop_ids = list({str(r["shop_id"]) for r in (pr.data or []) if r.get("shop_id")})
-    shops_map: dict[str, dict] = {}
-    if shop_ids:
-        try:
-            sr = (
-                admin.table("shops")
-                .select("id, name, slug, whatsapp_number, owner_id, is_active, trust_badges, available_now")
-                .in_("id", shop_ids)
-                .execute()
-            )
-            for s in sr.data or []:
-                shops_map[str(s["id"])] = s
-        except Exception as exc:
-            logger.warning("my_liked_products: shop lookup failed: %s", exc)
+    shops_map = shop_service._load_card_shops(admin, shop_ids)
 
     avg_ratings: dict[str, float] = {}
     review_counts: dict[str, int] = {}
@@ -342,19 +422,7 @@ def _fetch_carousel_products(
     products = r.data or []
     shop_ids = list({str(p["shop_id"]) for p in products if p.get("shop_id")})
 
-    shops_map: dict[str, dict] = {}
-    if shop_ids:
-        try:
-            sr = (
-                client.table("shops")
-                .select("id, name, slug")
-                .in_("id", shop_ids)
-                .execute()
-            )
-            for s in sr.data or []:
-                shops_map[str(s["id"])] = s
-        except Exception as exc:
-            logger.warning("carousel shop lookup failed (order=%s): %s", order_by, exc)
+    shops_map = shop_service._load_card_shops(client, shop_ids)
 
     return [
         serialize_product_card(p, shop_row=shops_map.get(str(p.get("shop_id", ""))))

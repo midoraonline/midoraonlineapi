@@ -2,6 +2,8 @@ from typing import Any
 
 from postgrest.exceptions import APIError
 
+from core.postgrest_compat import is_undefined_column_error
+
 from core.next_cache import revalidate_nextjs_cache_tag
 from shop import engagement_service
 from tenants.schemas import ShopCreate, ShopListItem, ShopResponse, ShopUpdate, ShopThemeConfig
@@ -9,7 +11,7 @@ from tenants.schemas import ShopCreate, ShopListItem, ShopResponse, ShopUpdate, 
 # Lean shop-card columns for the public directory (description kept for card tagline).
 _SHOP_CARD_SELECT = (
     "id,name,slug,description,logo_url,shop_type,category,location,"
-    "is_active,created_at,view_count,trust_badges"
+    "is_active,is_personal,created_at,view_count,trust_badges"
 )
 
 # When optional columns are missing (no migration yet), try narrower selects — see list_shops().
@@ -40,6 +42,7 @@ def _shop_list_item(row: dict) -> ShopListItem:
         location=row.get("location"),
         shop_type=row.get("shop_type") or "product",
         is_active=row.get("is_active", False),
+        is_personal=bool(row.get("is_personal")),
         created_at=str(row["created_at"]) if row.get("created_at") else None,
         view_count=int(row.get("view_count") or 0),
         trust_badges=row.get("trust_badges") or ["shop_listed"],
@@ -73,13 +76,15 @@ def list_shops(
     offset = 0 if use_exclude else (page - 1) * limit
     want_count = not use_exclude
 
-    def _run_list(select_cols: str):
+    def _run_list(select_cols: str, *, hide_personal: bool):
         if want_count:
             q = client.table("shops").select(select_cols, count="exact")
         else:
             q = client.table("shops").select(select_cols)
         if not include_inactive:
             q = q.eq("is_active", True)
+        if hide_personal:
+            q = q.eq("is_personal", False)
         if search:
             q = q.or_(f"name.ilike.%{search}%,slug.ilike.%{search}%")
         if shop_type and shop_type in ("product", "service", "both"):
@@ -92,13 +97,19 @@ def list_shops(
     r = None
     last_err: APIError | None = None
     for select_cols in _SHOP_LIST_COLS_TIERS:
-        try:
-            r = _run_list(select_cols)
+        for hide_personal in (True, False):
+            try:
+                r = _run_list(select_cols, hide_personal=hide_personal)
+                break
+            except APIError as exc:
+                if getattr(exc, "code", None) != "42703":
+                    raise
+                last_err = exc
+                if hide_personal:
+                    continue
+                break
+        if r is not None:
             break
-        except APIError as exc:
-            if getattr(exc, "code", None) != "42703":
-                raise
-            last_err = exc
     if r is None:
         raise last_err  # type: ignore[misc]
 
@@ -182,19 +193,8 @@ def list_my_shops(client: Any, owner_id: str, page: int = 1, limit: int = 20) ->
     return {"items": items, "total": total, "page": page, "limit": limit, "total_pages": total_pages}
 
 
-def create_shop(client: Any, owner_id: str, data: ShopCreate) -> dict:
-    """Create shop. Validate slug uniqueness. shop_type: product, service, or both.
-
-    Side effect: the owner's `user_role` is upgraded from `customer` to
-    `merchant` automatically. We surface the resulting role under
-    `_owner_role` / `_role_changed` so the route layer can re-issue auth
-    cookies with the new claim if needed.
-    """
-    # Local import keeps tenants/auth modules loosely coupled.
-    from auth import service as auth_service
-
-    insert_payload: dict[str, Any] = {
-        "owner_id": owner_id,
+def _shop_write_payload(data: ShopCreate) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "name": data.name,
         "slug": data.slug,
         "description": data.description,
@@ -211,8 +211,36 @@ def create_shop(client: Any, owner_id: str, data: ShopCreate) -> dict:
     }
     tc = _theme_config_for_db(data.theme_config)
     if tc is not None:
-        insert_payload["theme_config"] = tc
-    r = client.table("shops").insert(insert_payload).execute()
+        payload["theme_config"] = tc
+    return payload
+
+
+def create_shop(client: Any, owner_id: str, data: ShopCreate) -> dict:
+    """Create shop. Validate slug uniqueness. shop_type: product, service, or both.
+
+    Side effect: the owner's `user_role` is upgraded from `customer` to
+    `merchant` automatically. We surface the resulting role under
+    `_owner_role` / `_role_changed` so the route layer can re-issue auth
+    cookies with the new claim if needed.
+    """
+    # Local import keeps tenants/auth modules loosely coupled.
+    from auth import service as auth_service
+    from shop.personal import find_personal_shop
+
+    payload = _shop_write_payload(data)
+    personal = find_personal_shop(client, owner_id)
+    if personal and personal.get("id"):
+        payload["is_personal"] = False
+        r = (
+            client.table("shops")
+            .update(payload)
+            .eq("id", personal["id"])
+            .eq("owner_id", owner_id)
+            .execute()
+        )
+    else:
+        payload["owner_id"] = owner_id
+        r = client.table("shops").insert(payload).execute()
     if not r.data or len(r.data) == 0:
         raise ValueError("Failed to create shop")
     row = r.data[0]
@@ -277,20 +305,43 @@ def create_shop(client: Any, owner_id: str, data: ShopCreate) -> dict:
 _SHOP_DETAIL_COLS = (
     "id,owner_id,name,slug,category,description,about,logo_url,shop_email,"
     "whatsapp_number,whatsapp_verified,contacts,social_links,location,availability,theme_config,"
-    "shop_type,is_active,subscription_end_date,created_at,updated_at,view_count,"
+    "shop_type,is_active,is_personal,subscription_end_date,created_at,updated_at,view_count,"
     "trust_score,seller_score,fraud_score,trust_badges,available_now,last_seen_at"
 )
 
 
+def _fetch_one_shop(client: Any, column: str, value: str):
+    bare = _SHOP_DETAIL_COLS.replace(",is_personal", "")
+    last_exc: APIError | None = None
+    for cols in (_SHOP_DETAIL_COLS, bare):
+        try:
+            return (
+                client.table("shops")
+                .select(cols)
+                .eq(column, value)
+                .limit(1)
+                .execute()
+            )
+        except APIError as exc:
+            last_exc = exc
+            if cols != bare and is_undefined_column_error(exc, "is_personal"):
+                continue
+            raise
+    raise last_exc  # type: ignore[misc]
+
+
+def _decorate_seller(client: Any, shop: dict) -> dict:
+    if not shop.get("is_personal"):
+        return shop
+    from shop.seller_display import overlay_personal_sellers
+
+    overlay_personal_sellers(client, {str(shop.get("id")): shop})
+    return shop
+
+
 def get_shop(client: Any, shop_id: str, viewer_id: str | None = None) -> dict | None:
     """Get one shop by id, including follower/like counts and viewer flags."""
-    r = (
-        client.table("shops")
-        .select(_SHOP_DETAIL_COLS)
-        .eq("id", shop_id)
-        .limit(1)
-        .execute()
-    )
+    r = _fetch_one_shop(client, "id", shop_id)
     if not r.data or len(r.data) == 0:
         return None
     out = _row_to_shop_response(r.data[0])
@@ -300,6 +351,7 @@ def get_shop(client: Any, shop_id: str, viewer_id: str | None = None) -> dict | 
             client, shop_id, viewer_id, include_lead_counts=False, include_view_count=False
         )
     )
+    _decorate_seller(client, out)
     from shop.publish_gates import assert_owner_phone_for_whatsapp
     verified = assert_owner_phone_for_whatsapp(client, out.get("owner_id"))
     out["owner_phone_verified"] = verified
@@ -310,13 +362,7 @@ def get_shop(client: Any, shop_id: str, viewer_id: str | None = None) -> dict | 
 
 def get_shop_by_slug(client: Any, slug: str, viewer_id: str | None = None) -> dict | None:
     """Get shop by slug (lean engagement for fast SSR)."""
-    r = (
-        client.table("shops")
-        .select(_SHOP_DETAIL_COLS)
-        .eq("slug", slug)
-        .limit(1)
-        .execute()
-    )
+    r = _fetch_one_shop(client, "slug", slug)
     if not r.data or len(r.data) == 0:
         return None
     row = r.data[0]
@@ -326,7 +372,7 @@ def get_shop_by_slug(client: Any, slug: str, viewer_id: str | None = None) -> di
             client, str(row["id"]), viewer_id, include_lead_counts=False, include_view_count=False
         )
     )
-    return out
+    return _decorate_seller(client, out)
 
 
 def update_shop(client: Any, shop_id: str, data: ShopUpdate, viewer_id: str | None = None) -> dict | None:
@@ -387,4 +433,8 @@ def _row_to_shop_response(row: dict) -> dict:
         "available_now": bool(row.get("available_now") or False),
         "last_seen_at": str(row["last_seen_at"]) if row.get("last_seen_at") else None,
         "owner_phone_verified": False,
+        "is_personal": bool(row.get("is_personal")),
+        "seller_name": row.get("name"),
+        "joined_at": str(row["created_at"]) if row.get("created_at") else None,
+        "last_active_at": str(row["last_seen_at"]) if row.get("last_seen_at") else None,
     }

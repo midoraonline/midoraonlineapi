@@ -267,31 +267,32 @@ def _attach_shops(client: Any, products: list[dict[str, Any]]) -> list[dict[str,
     shops_map: dict[str, dict[str, Any]] = {}
     if shop_ids:
         try:
-            resp = (
-                client.table("shops")
-                .select("id,name,slug,logo_url,owner_id,is_active,category,trust_score,location,available_now,whatsapp_number,trust_badges")
-                .in_("id", shop_ids)
-                .execute()
-            )
-            for shop in resp.data or []:
+            from shop.locations import shop_coordinates
+            from shop.seller_display import overlay_personal_sellers
+
+            resp = None
+            for cols in (
+                "id,name,slug,logo_url,owner_id,is_active,category,trust_score,location,"
+                "available_now,whatsapp_number,trust_badges,is_personal,created_at,last_seen_at",
+                "id,name,slug,logo_url,owner_id,is_active,category,trust_score,location,"
+                "available_now,whatsapp_number,trust_badges",
+            ):
+                try:
+                    resp = client.table("shops").select(cols).in_("id", shop_ids).execute()
+                    break
+                except Exception as exc:
+                    logger.warning("search shop select failed: %s", exc)
+                    resp = None
+            for shop in (resp.data if resp else []) or []:
                 sid = str(shop["id"])
                 loc = shop.get("location")
                 badges = shop.get("trust_badges") or []
                 if not isinstance(badges, list):
                     badges = []
                 loc_display = loc.get("display") if isinstance(loc, dict) else loc
-                loc_lat = None
-                loc_lng = None
-                if isinstance(loc, dict):
-                    try:
-                        lat_v = loc.get("lat")
-                        lng_v = loc.get("lng")
-                        if lat_v is not None and lng_v is not None:
-                            loc_lat = float(lat_v)
-                            loc_lng = float(lng_v)
-                    except (TypeError, ValueError):
-                        loc_lat = None
-                        loc_lng = None
+                coords = shop_coordinates(loc)
+                loc_lat = coords[0] if coords else None
+                loc_lng = coords[1] if coords else None
                 shops_map[sid] = {
                     "id": sid,
                     "name": shop.get("name", ""),
@@ -307,7 +308,11 @@ def _attach_shops(client: Any, products: list[dict[str, Any]]) -> list[dict[str,
                     "available_now": bool(shop.get("available_now", False)),
                     "whatsapp_number": shop.get("whatsapp_number"),
                     "trust_badges": badges if badges else ["shop_listed"],
+                    "is_personal": bool(shop.get("is_personal")),
+                    "created_at": shop.get("created_at"),
+                    "last_seen_at": shop.get("last_seen_at"),
                 }
+            overlay_personal_sellers(client, shops_map)
         except Exception as exc:
             logger.warning("search shop batch fetch failed: %s", exc)
 
@@ -338,10 +343,18 @@ def _attach_shops(client: Any, products: list[dict[str, Any]]) -> list[dict[str,
         except Exception as exc:
             logger.warning("search rating batch fetch failed: %s", exc)
 
+    from shop.locations import listing_is_online
+
     out: list[dict[str, Any]] = []
     for product in products:
         pid = str(product.get("id", ""))
         sid = str(product.get("shop_id", ""))
+        shop = dict(shops_map.get(sid) or {})
+        online = listing_is_online(product.get("location_name"), product.get("listing_meta"))
+        if online:
+            shop["location_lat"] = None
+            shop["location_lng"] = None
+            shop["location"] = "Online"
         imgs = _coerce_images(product.get("image_urls"))
         out.append(
             {
@@ -359,6 +372,7 @@ def _attach_shops(client: Any, products: list[dict[str, Any]]) -> list[dict[str,
                 "listing_score": int(product.get("listing_score") or 0),
                 "view_count": int(product.get("view_count") or 0),
                 "location_name": product.get("location_name"),
+                "is_online": online,
                 "created_at": product.get("created_at"),
                 "updated_at": product.get("created_at"),
                 "average_rating": avg_ratings.get(pid, 0.0),

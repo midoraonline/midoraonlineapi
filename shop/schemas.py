@@ -16,6 +16,7 @@ class ProductCreate(BaseModel):
     is_negotiable: bool = True
     item_type: str | None = None
     location_name: str | None = None
+    is_online: bool | None = None
     listing_meta: dict | None = None
 
     @field_validator("image_urls", mode="before")
@@ -78,6 +79,7 @@ class ProductUpdate(BaseModel):
     item_type: str | None = None
     status: str | None = None
     location_name: str | None = None
+    is_online: bool | None = None
     ai_seo_tags: str | None = None
     listing_meta: dict | None = None
 
@@ -124,6 +126,7 @@ class ProductResponse(BaseModel):
     status: str | None = None
     listing_score: int = 0
     location_name: str | None = None
+    is_online: bool = False
     listing_meta: dict | None = None
     review_notes: str | None = None
     reviewed_at: str | None = None
@@ -151,6 +154,7 @@ class ProductListItem(BaseModel):
     status: str | None = None
     listing_score: int = 0
     location_name: str | None = None
+    is_online: bool = False
     listing_meta: dict | None = None
     review_notes: str | None = None
     reviewed_at: str | None = None
@@ -197,6 +201,10 @@ class ShopSummary(BaseModel):
     created_at: str | None = None
     last_seen_at: str | None = None
     owner_phone_verified: bool = False
+    is_personal: bool = False
+    seller_name: str | None = None
+    joined_at: str | None = None
+    last_active_at: str | None = None
 
 
 class ProductDetailResponse(BaseModel):
@@ -226,6 +234,7 @@ class ProductDetailResponse(BaseModel):
     is_negotiable: bool = True
     listing_score: int = 0
     location_name: str | None = None
+    is_online: bool = False
     listing_meta: dict | None = None
     ai_seo_tags: str | None = None
     ai_generated_desc: bool = False
@@ -275,6 +284,7 @@ class ProductCard(BaseModel):
     status: str = "active"
     listing_score: int = 0
     location_name: str | None = None
+    is_online: bool = False
     is_published: bool = True
     is_negotiable: bool = True
     stock_quantity: int | None = None
@@ -292,8 +302,12 @@ class ProductCard(BaseModel):
     shop_whatsapp: str | None = None
     owner_id: str | None = None
     shop_is_active: bool = True
+    shop_is_personal: bool = False
     shop_trust_badges: list[str] = []
     shop_available_now: bool = False
+    seller_name: str | None = None
+    seller_joined_at: str | None = None
+    seller_last_active_at: str | None = None
 
 
 class PaginatedProductCards(BaseModel):

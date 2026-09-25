@@ -86,34 +86,37 @@ def get_home_feed(
     shops_map: dict[str, dict[str, Any]] = {}
     if shop_ids:
         try:
-            shops_r = (
-                admin.table("shops")
-                .select(
-                    "id,name,slug,logo_url,owner_id,whatsapp_number,"
-                    "is_active,category,trust_score,trust_badges,available_now,location"
-                )
-                .in_("id", shop_ids)
-                .execute()
-            )
-            for s in (shops_r.data or []):
+            from shop.locations import shop_coordinates
+            from shop.seller_display import overlay_personal_sellers
+
+            shop_rows = None
+            for cols in (
+                "id,name,slug,logo_url,owner_id,whatsapp_number,"
+                "is_active,category,trust_score,trust_badges,available_now,location,"
+                "is_personal,created_at,last_seen_at",
+                "id,name,slug,logo_url,owner_id,whatsapp_number,"
+                "is_active,category,trust_score,trust_badges,available_now,location",
+            ):
+                try:
+                    shop_rows = (
+                        admin.table("shops").select(cols).in_("id", shop_ids).execute()
+                    ).data or []
+                    break
+                except Exception as exc:
+                    logger.warning("home feed shop select failed: %s", exc)
+                    shop_rows = None
+            if shop_rows is None:
+                shop_rows = []
+            for s in shop_rows:
                 sid = str(s["id"])
                 loc = s.get("location")
                 badges = s.get("trust_badges") or []
                 if not isinstance(badges, list):
                     badges = []
                 loc_display = loc.get("display") if isinstance(loc, dict) else loc
-                loc_lat = None
-                loc_lng = None
-                if isinstance(loc, dict):
-                    try:
-                        lat_v = loc.get("lat")
-                        lng_v = loc.get("lng")
-                        if lat_v is not None and lng_v is not None:
-                            loc_lat = float(lat_v)
-                            loc_lng = float(lng_v)
-                    except (TypeError, ValueError):
-                        loc_lat = None
-                        loc_lng = None
+                coords = shop_coordinates(loc)
+                loc_lat = coords[0] if coords else None
+                loc_lng = coords[1] if coords else None
                 shops_map[sid] = {
                     "id": sid,
                     "name": s.get("name", ""),
@@ -129,7 +132,11 @@ def get_home_feed(
                     "location": loc_display,
                     "location_lat": loc_lat,
                     "location_lng": loc_lng,
+                    "is_personal": bool(s.get("is_personal")),
+                    "created_at": s.get("created_at"),
+                    "last_seen_at": s.get("last_seen_at"),
                 }
+            overlay_personal_sellers(admin, shops_map)
         except Exception as exc:
             logger.warning("home feed batch shop fetch failed: %s", exc)
 
@@ -190,8 +197,16 @@ def get_home_feed(
 
     def _embed(products: list) -> list[dict[str, Any]]:
         out = []
+        from shop.locations import listing_is_online
+
         for p in products:
-            shop = shops_map.get(str(p.shop_id)) or {}
+            shop = dict(shops_map.get(str(p.shop_id)) or {})
+            meta = getattr(p, "listing_meta", None)
+            online = listing_is_online(p.location_name, meta)
+            if online:
+                shop["location_lat"] = None
+                shop["location_lng"] = None
+                shop["location"] = "Online"
             imgs = _coerce_images(p.image_urls)[:1]
             out.append({
                 "id": str(p.id),
@@ -211,6 +226,7 @@ def get_home_feed(
                 "viewer_liked": (str(p.id) in viewer_liked_ids) if not is_guest else None,
                 "listing_score": _safe_int(p.listing_score),
                 "location_name": p.location_name,
+                "is_online": online,
                 "listing_meta": (
                     getattr(p, "listing_meta", None)
                     if isinstance(getattr(p, "listing_meta", None), dict)
