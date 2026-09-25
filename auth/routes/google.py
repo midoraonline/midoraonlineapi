@@ -42,9 +42,7 @@ async def google_oauth_callback(
     try:
         result = handle_callback(code=code, state=state)
         if frontend_callback_url:
-            # Issue cookies scoped to the API domain. The frontend reads
-            # `verified=true` + calls /auth/me to hydrate; the token fragment
-            # remains for legacy clients during the cookie migration.
+            # Session tokens stay in cookies. The redirect only signals success.
             response = RedirectResponse(
                 url=f"{frontend_callback_url}#"
                 + urlencode(

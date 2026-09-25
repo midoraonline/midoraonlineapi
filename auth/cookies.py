@@ -52,21 +52,27 @@ def set_auth_cookies(
     )
 
 
-def clear_auth_cookies(response: Response) -> None:
-    """Delete auth cookies across Path / SameSite / Secure variants.
+# Production sets SameSite=None;Secure. The Next.js proxy may rewrite those
+# to Lax on the frontend host. Emit deletes for both so neither host keeps
+# a stale cookie.
+_COOKIE_DELETE_VARIANTS = (
+    {"httponly": True, "secure": True, "samesite": "none"},
+    {"httponly": True, "secure": True, "samesite": "lax"},
+    {"httponly": True, "secure": False, "samesite": "lax"},
+    {"httponly": True, "secure": False, "samesite": "none"},
+)
 
-    Production sets SameSite=None;Secure. The Next.js proxy may rewrite those
-    to Lax on the frontend host. Emit deletes for both so neither host keeps
-    a stale refresh cookie that can revive the session after logout.
-    """
-    paths = ("/", REFRESH_COOKIE_PATH)
-    variants = (
-        {"httponly": True, "secure": True, "samesite": "none"},
-        {"httponly": True, "secure": True, "samesite": "lax"},
-        {"httponly": True, "secure": False, "samesite": "lax"},
-        {"httponly": True, "secure": False, "samesite": "none"},
-    )
-    for path in paths:
-        for kwargs in variants:
+
+def clear_refresh_cookie(response: Response) -> None:
+    """Drop `midora_refresh` so the browser stops sending a rejected token."""
+    for path in ("/", REFRESH_COOKIE_PATH):
+        for kwargs in _COOKIE_DELETE_VARIANTS:
+            response.delete_cookie(REFRESH_COOKIE, path=path, **kwargs)
+
+
+def clear_auth_cookies(response: Response) -> None:
+    """Delete auth cookies across Path / SameSite / Secure variants."""
+    for path in ("/", REFRESH_COOKIE_PATH):
+        for kwargs in _COOKIE_DELETE_VARIANTS:
             response.delete_cookie(ACCESS_COOKIE, path=path, **kwargs)
             response.delete_cookie(REFRESH_COOKIE, path=path, **kwargs)

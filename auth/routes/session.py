@@ -1,14 +1,24 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 
-from auth.cookies import REFRESH_COOKIE, clear_auth_cookies, set_auth_cookies
+from auth.cookies import REFRESH_COOKIE, clear_auth_cookies, clear_refresh_cookie, set_auth_cookies
 from auth.schemas import ProfileResponse, RefreshRequest, TokenResponse
 from auth.service import access_ttl_seconds, refresh_ttl_seconds, revoke_refresh_token
 from core.rate_limit import RateLimitRefresh
 from core.security import get_current_user_id
 
 router = APIRouter()
+
+
+def _reject_refresh(detail: str = "Invalid refresh token") -> JSONResponse:
+    response = JSONResponse(
+        status_code=401,
+        content={"detail": detail, "code": "invalid_refresh"},
+    )
+    clear_refresh_cookie(response)
+    return response
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -23,7 +33,7 @@ async def refresh(
 
     token = (body.refresh_token if body else None) or cookie_refresh
     if not token:
-        raise HTTPException(status_code=401, detail="Missing refresh token")
+        return _reject_refresh("Missing refresh token")
 
     try:
         result = refresh_session(
@@ -32,9 +42,7 @@ async def refresh(
             ip=request.client.host if request.client else None,
         )
     except Exception:
-        # Do not clear cookies here: a stale refresh from an expired tab can
-        # race a successful login and wipe the new session.
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+        return _reject_refresh()
 
     set_auth_cookies(
         response,
