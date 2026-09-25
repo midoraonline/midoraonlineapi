@@ -36,6 +36,7 @@ from feed import impressions as imp
 from feed import scoring as S
 from feed import signals as sig
 from feed.embeddings import cosine_similarity, parse_embedding
+from feed.catalog import ListingFilters, fetch_catalog_page
 from feed.placement import rank_and_place
 from shop.schemas import ProductResponse
 
@@ -480,15 +481,29 @@ def get_latest_feed(
     client: Client,
     limit: int = 20,
     *,
+    page: int = 1,
     category: str | None = None,
+    filters: ListingFilters | None = None,
 ) -> list[ProductResponse]:
     """Recency-sorted feed used when no personalization signals exist.
 
     Applies light shop diversity (max-2-per-shop / window) so one seller cannot
     dominate the anonymous homepage, while still preferring newer items.
+    Active catalog filters skip diversity and paginate the filtered query.
     """
+    if filters is not None and filters.is_active():
+        from db.supabase import get_supabase_admin
+
+        rows, _total = fetch_catalog_page(
+            get_supabase_admin(),
+            filters,
+            select=_PRODUCT_CARD_SELECT,
+            page=page,
+            limit=limit,
+        )
+        return [_to_response(row) for row in rows]
     items, _ = _get_latest_feed_page(
-        client, page=1, limit=limit, category=category
+        client, page=page, limit=limit, category=category or (filters.category if filters else None)
     )
     return items
 
@@ -767,7 +782,8 @@ def get_algorithm_feed(
     exclude_ids: list[str] | None = None,
     session_id: str | None = None,
     category: str | None = None,
-) -> tuple[list[ProductResponse], bool]:
+    filters: ListingFilters | None = None,
+) -> tuple[list[ProductResponse], bool, int | None]:
     """Personalized feed with layered composition and vendor-diversity rules.
 
     Ranking lifecycle (per authenticated user):
@@ -784,15 +800,33 @@ def get_algorithm_feed(
     from db.supabase import get_supabase_admin
 
     db = get_supabase_admin()
+    active_filters = filters if filters is not None and filters.is_active() else None
+    if active_filters is None and category:
+        active_filters = ListingFilters(category=category)
+    if active_filters is not None:
+        logger.info(
+            "feed:path=catalog_filters page=%s limit=%s sort=%s",
+            page, limit, active_filters.sort,
+        )
+        rows, total = fetch_catalog_page(
+            db,
+            active_filters,
+            select=_PRODUCT_CARD_SELECT,
+            page=page,
+            limit=limit,
+        )
+        has_more = page * limit < total
+        return [_to_response(row) for row in rows], has_more, total
 
     if not user_id:
         logger.info(
             "feed:path=guest_latest page=%s limit=%s category=%s",
             page, limit, category or "-",
         )
-        return _get_latest_feed_page(
+        items, has_more = _get_latest_feed_page(
             db, page=page, limit=limit, category=category
         )
+        return items, has_more, None
 
     try:
         C.refresh_from_db()
@@ -821,13 +855,13 @@ def get_algorithm_feed(
                 "feed:path=cache_hit user=%s page=%s n=%s cached=%s ttl_s=%s",
                 user_id, page, len(cached_rows), len(cached_ids), FEED_CACHE_TTL_SECONDS,
             )
-            return [_to_response(row) for row in cached_rows], has_more
+            return [_to_response(row) for row in cached_rows], has_more, None
         logger.info(
             "feed:path=cache_miss_empty_page user=%s page=%s ids=%s",
             user_id, page, len(page_ids),
         )
         if page > 1:
-            return [], has_more
+            return [], has_more, None
 
     signals = sig.collect_user_signals(db, user_id)
     # Soft signals from recent impressions so scroll-only users still
@@ -892,9 +926,10 @@ def get_algorithm_feed(
             "feed:path=fallback_latest user=%s reason=no_candidates category=%s",
             user_id, category or "-",
         )
-        return _get_latest_feed_page(
+        items, has_more = _get_latest_feed_page(
             db, page=page, limit=limit, category=category
         )
+        return items, has_more, None
 
     if user_vector and not taste_scores:
         sample_ids = [str(c["id"]) for c in candidates[:120] if c.get("id")]
@@ -977,11 +1012,11 @@ def get_algorithm_feed(
     )
     page_rows = _fetch_products_by_ids(db, page_ids)
     if page_rows:
-        return [_to_response(row) for row in page_rows], has_more
+        return [_to_response(row) for row in page_rows], has_more, None
 
     by_id = {
         str(item["product"].get("id")): item["product"]
         for item in placed
         if item.get("product") and item["product"].get("id")
     }
-    return [_to_response(by_id[pid]) for pid in page_ids if pid in by_id], has_more
+    return [_to_response(by_id[pid]) for pid in page_ids if pid in by_id], has_more, None

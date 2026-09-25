@@ -9,7 +9,7 @@ from collections import Counter
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
-from core.categories import normalize_category
+from feed.catalog import ListingFilters, fetch_catalog_page, sort_rows, rating_map, trust_map
 from feed.embeddings import cosine_similarity, embed_query, parse_embedding
 
 logger = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ SEARCH_BATCH = 500
 
 _PRODUCT_FIELDS = (
     "id,shop_id,title,description,category,item_type,price_ugx,discount_price,discount_expires_at,image_urls,"
-    "listing_score,location_name,view_count,created_at,embedding"
+    "listing_score,location_name,view_count,created_at,embedding,listing_meta,is_negotiable,stock_quantity"
 )
 
 
@@ -135,21 +135,28 @@ def get_trending_searches(
 def _fetch_embedded_products(
     client: Any,
     *,
-    category: str | None = None,
+    filters: ListingFilters,
 ) -> list[dict[str, Any]]:
+    from feed.catalog import apply_listing_filters, resolve_constraints
+
+    from feed.catalog import _select_for
+
+    resolved = resolve_constraints(client, filters)
+    if resolved.impossible:
+        return []
+    select_cols = _select_for(_PRODUCT_FIELDS, resolved)
     products: list[dict[str, Any]] = []
     offset = 0
 
     while len(products) < MAX_SEARCH_POOL:
         query = (
             client.table("products")
-            .select(_PRODUCT_FIELDS)
+            .select(select_cols)
             .eq("status", "active")
             .eq("is_published", True)
             .not_.is_("embedding", "null")
         )
-        if category:
-            query = query.eq("category", category)
+        query = apply_listing_filters(query, filters, resolved)
 
         resp = query.range(offset, offset + SEARCH_BATCH - 1).execute()
         batch = resp.data or []
@@ -167,36 +174,29 @@ def _keyword_search(
     client: Any,
     query: str,
     *,
-    category: str | None,
+    filters: ListingFilters,
+    page: int,
     limit: int,
-    offset: int,
-) -> tuple[list[dict[str, Any]], int, str]:
+) -> tuple[list[tuple[dict[str, Any], float]], int, str]:
     q = _normalize_query(query)
     safe = q.replace(",", " ").replace("%", "").replace("(", "").replace(")", "")
 
-    base = (
-        client.table("products")
-        .select(_PRODUCT_FIELDS, count="exact")
-        .eq("status", "active")
-        .eq("is_published", True)
-    )
-    if category:
-        base = base.eq("category", category)
-    if safe:
-        base = base.or_(
+    def _refine(builder: Any) -> Any:
+        if not safe:
+            return builder
+        return builder.or_(
             f"title.ilike.%{safe}%,description.ilike.%{safe}%,category.ilike.%{safe}%"
         )
 
-    resp = (
-        base.order("listing_score", desc=True)
-        .order("created_at", desc=True)
-        .range(offset, offset + limit - 1)
-        .execute()
+    rows, total = fetch_catalog_page(
+        client,
+        filters,
+        select=_PRODUCT_FIELDS,
+        page=page,
+        limit=limit,
+        refine=_refine,
     )
-    total = int(resp.count or len(resp.data or []))
-    rows = resp.data or []
-    scored = [(row, 0.0) for row in rows]
-    return scored, total, "keyword"
+    return [(row, 0.0) for row in rows], total, "keyword"
 
 
 def _score_product(
@@ -235,7 +235,7 @@ def _vector_search(
     client: Any,
     query: str,
     *,
-    category: str | None,
+    filters: ListingFilters,
     limit: int,
     offset: int,
 ) -> tuple[list[tuple[dict[str, Any], float]], int, str]:
@@ -243,7 +243,7 @@ def _vector_search(
     if query_vector is None:
         return [], 0, "keyword"
 
-    products = _fetch_embedded_products(client, category=category)
+    products = _fetch_embedded_products(client, filters=filters)
     if not products:
         return [], 0, "keyword"
 
@@ -253,6 +253,8 @@ def _vector_search(
         if (score := _score_product(product, query, query_vector)) >= 12.0
     ]
     scored.sort(key=lambda item: -item[1])
+    if filters.sort != "relevance":
+        scored = _resort_scored(client, scored, filters.sort)
     total = len(scored)
     page = scored[offset : offset + limit]
     mode = "hybrid" if any(item[1] >= 30 for item in page) else "vector"
@@ -372,14 +374,36 @@ def _attach_shops(client: Any, products: list[dict[str, Any]]) -> list[dict[str,
                 "location_name": product.get("location_name"),
                 "is_online": online,
                 "created_at": product.get("created_at"),
-                "updated_at": product.get("updated_at"),
+                "updated_at": product.get("created_at"),
                 "average_rating": avg_ratings.get(pid, 0.0),
                 "review_count": review_counts.get(pid, 0),
                 "is_negotiable": product.get("is_negotiable") is not False,
-                "shop": shop,
+                "stock_quantity": product.get("stock_quantity"),
+                "listing_meta": product.get("listing_meta") if isinstance(product.get("listing_meta"), dict) else {},
+                "shop": shops_map.get(sid) or {},
             }
         )
     return out
+
+
+def _resort_scored(
+    client: Any,
+    scored: list[tuple[dict[str, Any], float]],
+    sort: str,
+) -> list[tuple[dict[str, Any], float]]:
+    rows = [row for row, _ in scored]
+    ratings = {}
+    trusts = {}
+    if sort == "best_rated":
+        ratings = rating_map(client, [str(row.get("id")) for row in rows if row.get("id")])
+    elif sort == "trust_score":
+        trusts = trust_map(
+            client,
+            list({str(row.get("shop_id")) for row in rows if row.get("shop_id")}),
+        )
+    ordered = sort_rows(rows, sort, ratings=ratings, trusts=trusts)
+    score_by_id = {str(row.get("id")): score for row, score in scored}
+    return [(row, score_by_id.get(str(row.get("id")), 0.0)) for row in ordered]
 
 
 def search_products(
@@ -389,6 +413,7 @@ def search_products(
     page: int = 1,
     limit: int = 20,
     category: str | None = None,
+    filters: ListingFilters | None = None,
     user_id: str | None = None,
     log: bool = True,
 ) -> dict[str, Any]:
@@ -405,23 +430,39 @@ def search_products(
             "mode": "none",
         }
 
-    if category:
-        try:
-            category = normalize_category(category)
-        except ValueError:
-            category = category.strip() or None
+    if filters is None:
+        filters = ListingFilters(category=(category or "").strip() or None)
+    elif category and not filters.category:
+        filters = ListingFilters(
+            category=category.strip() or None,
+            listing_type=filters.listing_type,
+            verified_only=filters.verified_only,
+            available=filters.available,
+            min_price=filters.min_price,
+            max_price=filters.max_price,
+            min_rating=filters.min_rating,
+            location=filters.location,
+            lat=filters.lat,
+            lng=filters.lng,
+            radius_km=filters.radius_km,
+            opportunity_kind=filters.opportunity_kind,
+            compensation=filters.compensation,
+            pricing_model=filters.pricing_model,
+            sort=filters.sort,
+        )
 
     limit = min(max(limit, 1), 100)
     offset = (page - 1) * limit
 
     # Keyword first so "head" matches Headphones. Vector only fills gaps —
     # it used to report total=all embeddings, which skipped keyword entirely.
+    # Filters are inside the keyword query, before range.
     scored, total, mode = _keyword_search(
-        client, q, category=category, limit=limit, offset=offset
+        client, q, filters=filters, page=page, limit=limit
     )
     if total == 0:
         scored, total, mode = _vector_search(
-            client, q, category=category, limit=limit, offset=offset
+            client, q, filters=filters, limit=limit, offset=offset
         )
 
     products = [row for row, _ in scored]
