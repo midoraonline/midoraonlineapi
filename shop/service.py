@@ -6,6 +6,7 @@ from core.postgrest_compat import is_undefined_column_error
 from shop import engagement_service
 from core.categories import normalize_category
 from shop.events import CONTENT_MODERATION_FIELDS
+from shop.locations import apply_online_location, listing_is_online
 from shop.schemas import (
     ProductCreate,
     ProductDetailResponse,
@@ -96,6 +97,7 @@ def list_products(
                 status=row.get("status"),
                 listing_score=int(row.get("listing_score") or 0),
                 location_name=row.get("location_name"),
+                is_online=listing_is_online(row.get("location_name"), row.get("listing_meta")),
                 review_notes=row.get("review_notes"),
                 reviewed_at=str(row["reviewed_at"]) if row.get("reviewed_at") else None,
                 created_at=str(row["created_at"]) if row.get("created_at") else None,
@@ -113,6 +115,11 @@ def _image_urls_for_db(value: list[str] | None) -> list[str] | None:
 
 
 def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
+    location_name, listing_meta = apply_online_location(
+        data.location_name,
+        data.listing_meta,
+        is_online=data.is_online,
+    )
     payload = {
         "shop_id": shop_id,
         "title": data.title,
@@ -125,11 +132,11 @@ def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
         "is_published": data.is_published,
         "is_negotiable": data.is_negotiable,
         "item_type": data.item_type or "product",
-        "location_name": data.location_name,
+        "location_name": location_name,
         "status": "pending_review",
     }
-    if data.listing_meta is not None:
-        payload["listing_meta"] = data.listing_meta
+    if listing_meta is not None:
+        payload["listing_meta"] = listing_meta
     imgs = _image_urls_for_db(data.image_urls)
     if imgs is not None:
         payload["image_urls"] = imgs
@@ -187,16 +194,7 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
         )
     out = []
     shop_ids = list({str(row["shop_id"]) for row in (r.data or []) if row.get("shop_id")})
-    shops_map: dict[str, dict] = {}
-    if shop_ids:
-        try:
-            sr = client.table("shops").select(
-                "id, name, slug, whatsapp_number, owner_id, is_active, trust_badges, available_now"
-            ).in_("id", shop_ids).execute()
-            for s in sr.data or []:
-                shops_map[str(s["id"])] = s
-        except Exception:
-            pass
+    shops_map = _load_card_shops(client, shop_ids)
     for row in (r.data or []):
         imgs = row.get("image_urls")
         if isinstance(imgs, str):
@@ -216,6 +214,7 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             "item_type": row.get("item_type"),
             "listing_score": int(row.get("listing_score") or 0),
             "location_name": row.get("location_name"),
+            "is_online": listing_is_online(row.get("location_name"), row.get("listing_meta")),
             "created_at": str(row["created_at"]) if row.get("created_at") else None,
             "view_count": int(row.get("view_count") or 0),
             "is_negotiable": row.get("is_negotiable", True) is not False,
@@ -223,13 +222,17 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             "listing_meta": {},
             "average_rating": 0.0,
             "review_count": 0,
-            "shop_name": s.get("name"),
+            "shop_name": s.get("seller_name") or s.get("name"),
             "shop_slug": s.get("slug"),
             "owner_id": str(s.get("owner_id")) if s.get("owner_id") else None,
             "shop_whatsapp": s.get("whatsapp_number") or None,
             "shop_is_active": bool(s.get("is_active")),
+            "shop_is_personal": bool(s.get("is_personal")),
             "shop_trust_badges": s.get("trust_badges") or [],
             "shop_available_now": bool(s.get("available_now", False)),
+            "seller_name": s.get("seller_name") or s.get("name"),
+            "seller_joined_at": s.get("joined_at"),
+            "seller_last_active_at": s.get("last_active_at"),
         })
     return out
 
@@ -259,19 +262,7 @@ def get_product_detail(
     from datetime import datetime, timezone
     from concurrent.futures import ThreadPoolExecutor
 
-    prod_r = (
-        client.table("products")
-        .select(
-            "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,stock_quantity,image_urls,"
-            "category,item_type,status,is_published,is_negotiable,listing_score,location_name,listing_meta,"
-            "ai_seo_tags,ai_generated_desc,review_notes,reviewed_at,created_at,view_count,"
-            "shops(id,name,slug,logo_url,owner_id,whatsapp_number,"
-            "is_active,trust_score,available_now,location,trust_badges,created_at,last_seen_at)"
-        )
-        .eq("id", product_id)
-        .limit(1)
-        .execute()
-    )
+    prod_r = _select_product_detail(client, product_id)
     if not prod_r.data:
         return None
     row = prod_r.data[0]
@@ -283,9 +274,19 @@ def get_product_detail(
     if isinstance(nested, list):
         nested = nested[0] if nested else None
     if isinstance(nested, dict):
+        from shop.seller_display import overlay_personal_sellers
+
+        overlay_personal_sellers(client, {str(nested.get("id") or shop_id): nested})
         loc = nested.get("location")
         location_str = loc.get("display") if isinstance(loc, dict) else loc
+        if listing_is_online(row.get("location_name"), row.get("listing_meta")) and not location_str:
+            location_str = "Online"
         is_owner = bool(viewer_id and str(nested.get("owner_id", "")) == viewer_id)
+        raw_badges = nested.get("trust_badges")
+        if isinstance(raw_badges, list) and (raw_badges or nested.get("is_personal")):
+            badges = raw_badges
+        else:
+            badges = ["shop_listed"]
         shop_snapshot = ShopSummary(
             id=str(nested["id"]),
             name=nested.get("name", ""),
@@ -295,12 +296,16 @@ def get_product_detail(
             whatsapp_number=nested.get("whatsapp_number"),
             is_active=bool(nested.get("is_active", True)),
             trust_score=int(nested.get("trust_score") or 0),
-            trust_badges=nested.get("trust_badges") or ["shop_listed"],
+            trust_badges=badges,
             available_now=bool(nested.get("available_now", False)),
-            location=location_str,
+            location=location_str if isinstance(location_str, str) else (str(location_str) if location_str else None),
             created_at=str(nested["created_at"]) if nested.get("created_at") else None,
             last_seen_at=str(nested["last_seen_at"]) if nested.get("last_seen_at") else None,
             owner_phone_verified=False,
+            is_personal=bool(nested.get("is_personal")),
+            seller_name=nested.get("seller_name") or nested.get("name"),
+            joined_at=nested.get("joined_at"),
+            last_active_at=nested.get("last_active_at"),
         )
 
     if shop_snapshot and shop_snapshot.owner_id:
@@ -408,6 +413,7 @@ def get_product_detail(
         is_negotiable=row.get("is_negotiable", True) is not False,
         listing_score=int(row.get("listing_score") or 0),
         location_name=row.get("location_name"),
+        is_online=listing_is_online(row.get("location_name"), row.get("listing_meta")),
         listing_meta=row.get("listing_meta") if isinstance(row.get("listing_meta"), dict) else {},
         ai_seo_tags=row.get("ai_seo_tags"),
         ai_generated_desc=bool(row.get("ai_generated_desc", False)),
@@ -432,6 +438,7 @@ def update_product(client: Any, product_id: str, data: ProductUpdate) -> dict | 
     payload = data.model_dump(exclude_unset=True)
     if data.image_urls is not None:
         payload["image_urls"] = _image_urls_for_db(data.image_urls) or []
+    _apply_location_update(client, product_id, payload)
 
     # Content-changing edits must go back through moderation. We reset status
     # to pending_review even if the merchant tried to set status=active, which
@@ -503,6 +510,7 @@ def _row_to_product_response(row: dict) -> dict:
         "status": row.get("status", "active"),
         "listing_score": int(row.get("listing_score") or 0),
         "location_name": row.get("location_name"),
+        "is_online": listing_is_online(row.get("location_name"), row.get("listing_meta")),
         "listing_meta": row.get("listing_meta") if isinstance(row.get("listing_meta"), dict) else {},
         "ai_seo_tags": row.get("ai_seo_tags"),
         "ai_generated_desc": row.get("ai_generated_desc", False),
@@ -515,3 +523,133 @@ def _row_to_product_response(row: dict) -> dict:
         "view_count": int(row.get("view_count") or 0),
         "viewer_liked": None,
     }
+
+
+_DETAIL_COLS = (
+    "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,stock_quantity,image_urls,"
+    "category,item_type,status,is_published,is_negotiable,listing_score,location_name,listing_meta,"
+    "ai_seo_tags,ai_generated_desc,review_notes,reviewed_at,created_at,view_count,"
+)
+_SHOP_EMBED = (
+    "shops(id,name,slug,logo_url,owner_id,whatsapp_number,"
+    "is_active,trust_score,available_now,location,trust_badges,created_at,last_seen_at"
+)
+_CARD_SHOP_COLS = (
+    "id,name,slug,whatsapp_number,owner_id,is_active,trust_badges,available_now,"
+    "created_at,last_seen_at,is_personal"
+)
+
+
+def _select_product_detail(client: Any, product_id: str):
+    for embed in (_SHOP_EMBED + ",is_personal)", _SHOP_EMBED + ")"):
+        try:
+            return (
+                client.table("products")
+                .select(_DETAIL_COLS + embed)
+                .eq("id", product_id)
+                .limit(1)
+                .execute()
+            )
+        except APIError as exc:
+            if embed.endswith(",is_personal)") and is_undefined_column_error(exc, "is_personal"):
+                continue
+            raise
+    raise RuntimeError("product detail select failed")
+
+
+def _load_card_shops(client: Any, shop_ids: list[str]) -> dict[str, dict]:
+    from shop.seller_display import overlay_personal_sellers
+
+    if not shop_ids:
+        return {}
+    rows: list[dict] = []
+    for cols in (_CARD_SHOP_COLS, _CARD_SHOP_COLS.replace(",is_personal", "")):
+        try:
+            sr = client.table("shops").select(cols).in_("id", shop_ids).execute()
+            rows = sr.data or []
+            break
+        except APIError as exc:
+            if "is_personal" in cols and is_undefined_column_error(exc, "is_personal"):
+                continue
+            return {}
+        except Exception:
+            return {}
+    shops = {str(row["id"]): row for row in rows if row.get("id")}
+    overlay_personal_sellers(client, shops)
+    return shops
+
+
+def _apply_location_update(client: Any, product_id: str, payload: dict) -> None:
+    has_flag = "is_online" in payload
+    flag = payload.pop("is_online", None)
+    if not has_flag and "location_name" not in payload and "listing_meta" not in payload:
+        return
+    current = (
+        client.table("products")
+        .select("location_name,listing_meta")
+        .eq("id", product_id)
+        .limit(1)
+        .execute()
+    )
+    row = current.data[0] if current.data else {}
+    loc = payload["location_name"] if "location_name" in payload else row.get("location_name")
+    meta = payload["listing_meta"] if "listing_meta" in payload else row.get("listing_meta")
+    if not isinstance(meta, dict):
+        meta = None
+    loc, meta = apply_online_location(loc, meta, is_online=flag if has_flag else None)
+    payload["location_name"] = loc
+    if meta is not None:
+        payload["listing_meta"] = meta
+
+
+def list_owner_products(client: Any, owner_id: str, page: int = 1, limit: int = 20) -> dict:
+    """Every listing the user owns, including ones on a personal seller profile."""
+    limit = min(max(limit, 1), 100)
+    offset = (page - 1) * limit
+    shops = client.table("shops").select("id").eq("owner_id", owner_id).execute()
+    shop_ids = [str(row["id"]) for row in (shops.data or []) if row.get("id")]
+    empty = {"items": [], "total": 0, "page": page, "limit": limit, "total_pages": 0}
+    if not shop_ids:
+        return empty
+    r = (
+        client.table("products")
+        .select(_PRODUCT_LIST_OWNER, count="exact")
+        .in_("shop_id", shop_ids)
+        .order("created_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+    total = r.count if hasattr(r, "count") and r.count is not None else len(r.data or [])
+    total_pages = (total + limit - 1) // limit if limit else 0
+    items = []
+    for row in r.data or []:
+        image_urls = row.get("image_urls")
+        if isinstance(image_urls, str):
+            image_urls = [image_urls] if image_urls else []
+        items.append(
+            ProductListItem(
+                id=str(row["id"]),
+                shop_id=str(row["shop_id"]),
+                title=row.get("title", ""),
+                description=row.get("description"),
+                price_ugx=float(row.get("price_ugx", 0)),
+                discount_price=float(row["discount_price"]) if row.get("discount_price") is not None else None,
+                discount_expires_at=str(row["discount_expires_at"]) if row.get("discount_expires_at") else None,
+                image_urls=image_urls[:1] if image_urls else None,
+                category=row.get("category"),
+                is_published=row.get("is_published", True),
+                is_negotiable=row.get("is_negotiable", True) is not False,
+                stock_quantity=int(row.get("stock_quantity") or 0),
+                listing_meta=row.get("listing_meta") if isinstance(row.get("listing_meta"), dict) else {},
+                item_type=row.get("item_type"),
+                status=row.get("status"),
+                listing_score=int(row.get("listing_score") or 0),
+                location_name=row.get("location_name"),
+                is_online=listing_is_online(row.get("location_name"), row.get("listing_meta")),
+                review_notes=row.get("review_notes"),
+                reviewed_at=str(row["reviewed_at"]) if row.get("reviewed_at") else None,
+                created_at=str(row["created_at"]) if row.get("created_at") else None,
+                view_count=int(row.get("view_count") or 0),
+            )
+        )
+    return {"items": items, "total": total, "page": page, "limit": limit, "total_pages": total_pages}

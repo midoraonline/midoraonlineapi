@@ -62,6 +62,10 @@ def get_user_plan(client: Any, user_id: str) -> dict:
     return get_plan(get_user_plan_tier(client, user_id))
 
 
+def _badges_include(raw: Any, badge: str) -> bool:
+    return isinstance(raw, list) and badge in raw
+
+
 def shop_has_trust_badge(client: Any, shop_id: str, badge: str) -> bool:
     r = (
         client.table("shops")
@@ -72,19 +76,88 @@ def shop_has_trust_badge(client: Any, shop_id: str, badge: str) -> bool:
     )
     if not r.data:
         return False
-    badges = r.data[0].get("trust_badges") or []
-    return isinstance(badges, list) and badge in badges
+    return _badges_include(r.data[0].get("trust_badges") or [], badge)
+
+
+def owner_has_trust_badge(client: Any, owner_id: str, badge: str) -> bool:
+    """Identity and other badges count for the user, across every shop they own."""
+    r = (
+        client.table("shops")
+        .select("trust_badges")
+        .eq("owner_id", owner_id)
+        .execute()
+    )
+    for row in r.data or []:
+        if _badges_include(row.get("trust_badges") or [], badge):
+            return True
+    return False
+
+
+def _shop_owner_id(client: Any, shop_id: str) -> str | None:
+    r = (
+        client.table("shops")
+        .select("owner_id")
+        .eq("id", shop_id)
+        .limit(1)
+        .execute()
+    )
+    if not r.data:
+        return None
+    owner_id = r.data[0].get("owner_id")
+    return str(owner_id) if owner_id else None
 
 
 def assert_identity_verified(client: Any, shop_id: str, *, detail: str) -> None:
     if shop_has_trust_badge(client, shop_id, "identity_verified"):
         return
+    owner_id = _shop_owner_id(client, shop_id)
+    if owner_id and owner_has_trust_badge(client, owner_id, "identity_verified"):
+        return
     raise PermissionError(detail)
+
+
+def _count_real_shops(client: Any, user_id: str) -> int:
+    """Plan shop cap ignores the hidden personal seller profile."""
+    try:
+        r = (
+            client.table("shops")
+            .select("id,is_personal")
+            .eq("owner_id", user_id)
+            .execute()
+        )
+    except Exception:
+        return _count(client, "shops", "owner_id", user_id)
+    return sum(1 for row in (r.data or []) if row.get("id") and not row.get("is_personal"))
+
+
+def _count_owner_products(client: Any, owner_id: str, shop_id: str) -> int:
+    """Listings across the user's shops. Falls back to the target shop."""
+    try:
+        shops = (
+            client.table("shops")
+            .select("id")
+            .eq("owner_id", owner_id)
+            .execute()
+        )
+        ids = [str(row["id"]) for row in (shops.data or []) if row.get("id")]
+        if not ids:
+            return 0
+        r = (
+            client.table("products")
+            .select("id", count="exact")
+            .in_("shop_id", ids)
+            .execute()
+        )
+        if hasattr(r, "count") and r.count is not None:
+            return r.count
+        return len(r.data or [])
+    except Exception:
+        return _count(client, "products", "shop_id", shop_id)
 
 
 def assert_can_create_shop(client: Any, user_id: str) -> None:
     plan = get_user_plan(client, user_id)
-    count = _count(client, "shops", "owner_id", user_id)
+    count = _count_real_shops(client, user_id)
     if count >= plan["max_shops"]:
         raise PermissionError(
             f"Your {plan['name']} plan allows up to {plan['max_shops']} shop(s). "
@@ -100,8 +173,9 @@ def assert_can_create_product(client: Any, shop_id: str, owner_id: str) -> None:
             f"Your {plan['name']} plan allows up to {plan['max_products_per_shop']} item(s) per shop. "
             "Upgrade your plan to list more items."
         )
-    # Phase 3 unlock: high listing volume requires Identity Verified.
-    if count >= IDENTITY_LISTING_UNLOCK_THRESHOLD:
+    # Phase 3 unlock: the user's 6th listing (across their shops) needs Identity Verified.
+    total = _count_owner_products(client, owner_id, shop_id)
+    if total >= IDENTITY_LISTING_UNLOCK_THRESHOLD:
         assert_identity_verified(client, shop_id, detail=IDENTITY_LISTING_DETAIL)
 
 

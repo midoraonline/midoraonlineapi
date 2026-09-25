@@ -81,11 +81,16 @@ def _lean_active_products_query(client: Client) -> Any:
 
 
 def _to_response(product: dict[str, Any]) -> ProductResponse:
+    from shop.locations import listing_is_online
+
     stripped = {
         k: v for k, v in product.items()
         if k not in ("embedding", "embedding_source_hash", "embedding_vec", "similarity")
     }
     stripped.setdefault("description", None)
+    stripped["is_online"] = listing_is_online(
+        stripped.get("location_name"), stripped.get("listing_meta")
+    )
     return ProductResponse(**stripped)
 
 

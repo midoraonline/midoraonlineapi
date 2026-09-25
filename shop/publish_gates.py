@@ -64,14 +64,21 @@ def _location_display(raw: Any) -> str:
 
 
 def location_is_usable(location_name: str | None, shop_location: Any) -> bool:
-    """Require a real place — bare country 'Uganda' alone is not enough for publish."""
+    """A city/area, or Online for remote listings. Country-only is not enough.
+
+    Online does not need lat/lng or a physical shop location.
+    """
+    from shop.locations import is_online_location
+
     loc = (location_name or "").strip()
     if not loc:
         loc = _location_display(shop_location)
     if not loc:
         return False
+    if is_online_location(loc):
+        return True
     normalized = loc.lower().strip(" ,.")
-    if normalized in {"uganda", "ug", "online", "online shop"}:
+    if normalized in {"uganda", "ug"}:
         return False
     return True
 
@@ -176,7 +183,7 @@ def assert_can_publish(
     shop_location = shop_r.data[0].get("location") if shop_r.data else None
     if not location_is_usable(location_name, shop_location):
         _http_gate(
-            "Add a real location (city/area) on the listing or shop before publishing — country-only is not enough.",
+            "Add a city or area, or choose Online for a remote listing. A country name alone is not enough.",
             "location_required",
         )
 

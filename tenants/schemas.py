@@ -102,6 +102,10 @@ class ShopResponse(BaseModel):
     owner_phone_verified: bool = False
     viewer_following: bool | None = None
     viewer_liked_shop: bool | None = None
+    is_personal: bool = False
+    seller_name: str | None = None
+    joined_at: str | None = None
+    last_active_at: str | None = None
 
 
 class SendShopWhatsAppCodeRequest(BaseModel):
@@ -122,6 +126,7 @@ class ShopListItem(BaseModel):
     location: dict[str, Any] | str | None = None
     shop_type: ShopType
     is_active: bool
+    is_personal: bool = False
     created_at: str | None
     view_count: int = 0
     trust_badges: list[str] = []

@@ -11,7 +11,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from shop.locations import listing_is_online
 from shop.schemas import ProductCard
+
+
+def _iso(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    return str(value)
 
 
 def _normalise_image_urls(raw: Any) -> list[str]:
@@ -68,6 +75,7 @@ def serialize_product_card(
         status=str(product_row.get("status") or "active"),
         listing_score=int(product_row.get("listing_score") or 0),
         location_name=product_row.get("location_name"),
+        is_online=listing_is_online(product_row.get("location_name"), product_row.get("listing_meta")),
         is_published=bool(product_row.get("is_published", True)),
         is_negotiable=product_row.get("is_negotiable", True) is not False,
         stock_quantity=(
@@ -80,11 +88,15 @@ def serialize_product_card(
         created_at=str(product_row["created_at"]) if product_row.get("created_at") else None,
         average_rating=average_rating,
         review_count=review_count,
-        shop_name=shop.get("name"),
+        shop_name=shop.get("seller_name") or shop.get("name"),
         shop_slug=shop.get("slug"),
         shop_whatsapp=shop.get("whatsapp_number") or None,
         owner_id=str(shop["owner_id"]) if shop.get("owner_id") else None,
         shop_is_active=bool(shop.get("is_active", True)),
+        shop_is_personal=bool(shop.get("is_personal")),
         shop_trust_badges=list(shop.get("trust_badges") or []),
         shop_available_now=bool(shop.get("available_now", False)),
+        seller_name=shop.get("seller_name") or shop.get("name"),
+        seller_joined_at=_iso(shop.get("joined_at") or shop.get("created_at")),
+        seller_last_active_at=_iso(shop.get("last_active_at") or shop.get("last_seen_at")),
     )
