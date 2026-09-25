@@ -6,6 +6,7 @@ from supabase import Client
 from core.schemas import PaginationParams
 from core.security import get_current_user_id, get_optional_user_id
 from db.supabase import get_supabase_admin, get_supabase_client
+from feed.catalog import ListingFilters, listing_filters
 from search import service as search_service
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -14,8 +15,8 @@ router = APIRouter(prefix="/search", tags=["search"])
 @router.get("/products")
 async def search_products(
     params: Annotated[PaginationParams, Depends()],
+    filters: Annotated[ListingFilters, Depends(listing_filters)],
     q: str = Query(..., min_length=2, max_length=200, description="Search query"),
-    category: str | None = Query(None, description="Optional category filter"),
     user_id: str | None = Depends(get_optional_user_id),
     log: bool = Query(True, description="Record query in search_history"),
 ) -> dict[str, Any]:
@@ -30,7 +31,7 @@ async def search_products(
         q,
         page=params.page,
         limit=params.limit,
-        category=category,
+        filters=filters,
         user_id=user_id,
         log=log,
     )

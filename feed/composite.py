@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from db.supabase import get_supabase_admin
+from feed.catalog import ListingFilters, rating_map
 from shop.schemas import ProductResponse
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ def get_home_feed(
     exclude_ids: list[str] | None = None,
     session_id: str | None = None,
     category: str | None = None,
+    filters: ListingFilters | None = None,
 ) -> dict[str, Any]:
     """Return the ranked home algorithm feed with shop + boost data embedded.
 
@@ -58,9 +60,9 @@ def get_home_feed(
 
     admin = get_supabase_admin()
     is_guest = not user_id
-    cat_key = (category or "").strip().lower()
+    active = filters or ListingFilters(category=(category or "").strip() or None)
     guest_cache_key = (
-        (page, limit, cat_key)
+        (page, limit, active.cache_token())
         if is_guest and page == 1 and not exclude_ids
         else None
     )
@@ -69,14 +71,15 @@ def get_home_feed(
         if hit and (time.monotonic() - hit[0]) < _GUEST_HOME_TTL_S:
             return hit[1]
 
-    algorithm_paged, algo_has_more = get_algorithm_feed(
+    algorithm_paged, algo_has_more, filtered_total = get_algorithm_feed(
         admin,
         user_id=user_id,
         page=page,
         limit=limit,
         exclude_ids=exclude_ids,
         session_id=session_id,
-        category=category,
+        category=active.category,
+        filters=active,
     )
     shop_ids = list({str(p.shop_id) for p in algorithm_paged if p.shop_id})
 
@@ -131,6 +134,7 @@ def get_home_feed(
             logger.warning("home feed batch shop fetch failed: %s", exc)
 
     product_ids = [str(p.id) for p in algorithm_paged if p.id]
+    ratings = rating_map(admin, product_ids) if product_ids and active.is_active() else {}
     boosted_ids: set[str] = set()
     viewer_liked_ids: set[str] = set()
 
@@ -217,8 +221,8 @@ def get_home_feed(
                 "stock_quantity": int(getattr(p, "stock_quantity", 0) or 0),
                 "shop": shop,
                 "boosted": str(p.id) in boosted_ids,
-                "average_rating": 0.0,
-                "review_count": 0,
+                "average_rating": ratings.get(str(p.id), (0.0, 0))[0],
+                "review_count": ratings.get(str(p.id), (0.0, 0))[1],
                 "is_negotiable": getattr(p, "is_negotiable", True) is not False,
             })
         return out
@@ -230,7 +234,7 @@ def get_home_feed(
         "fresh": [],
         "page": page,
         "limit": limit,
-        "total": ((page - 1) * limit) + len(algorithm_paged),
+        "total": filtered_total if filtered_total is not None else ((page - 1) * limit) + len(algorithm_paged),
         "has_more": algo_has_more,
         "next_cursor": f"p:{page + 1}" if algo_has_more else None,
     }

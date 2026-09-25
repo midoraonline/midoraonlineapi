@@ -8,6 +8,7 @@ from core.security import get_optional_user_id
 from db.supabase import get_supabase_client
 from shop.schemas import ProductResponse
 from feed import service as feed_service
+from feed.catalog import ListingFilters, listing_filters
 from feed.composite import get_home_feed
 
 router = APIRouter(prefix="/feed", tags=["feed"])
@@ -56,6 +57,7 @@ def _decode_page_cursor(raw: str | None) -> int | None:
 @router.get("/home")
 async def home_feed(
     response: Response,
+    filters: Annotated[ListingFilters, Depends(listing_filters)],
     limit: int = Query(72, ge=1, le=200),
     page: int = Query(1, ge=1),
     cursor: str | None = Query(
@@ -65,14 +67,6 @@ async def home_feed(
     exclude_ids: str | None = Query(
         None,
         description="Legacy. Prefer cursor. Ignored when cursor is present.",
-    ),
-    category: str | None = Query(
-        None,
-        description=(
-            "Optional category label or slug. Parent labels expand to their "
-            "subcategories. Filters candidates server-side so pagination stays "
-            "in-category."
-        ),
     ),
     user_id: str | None = Depends(get_optional_user_id),
     session_id: str | None = Cookie(default=None, alias="midora_session_id"),
@@ -104,7 +98,7 @@ async def home_feed(
         user_id=user_id,
         exclude_ids=excluded,
         session_id=session,
-        category=category,
+        filters=filters,
     )
 
 
@@ -113,7 +107,13 @@ async def get_latest_feed(
     response: Response,
     client: Annotated[Client, Depends(get_supabase_client)],
     params: Annotated[PaginationParams, Depends()],
+    filters: Annotated[ListingFilters, Depends(listing_filters)],
 ):
     """Latest products. Public + cache-friendly via Cache-Control (edge cache)."""
     response.headers["Cache-Control"] = _PUBLIC_CACHE_HEADER
-    return feed_service.get_latest_feed(client, limit=params.limit)
+    return feed_service.get_latest_feed(
+        client,
+        limit=params.limit,
+        page=params.page,
+        filters=filters,
+    )
