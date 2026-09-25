@@ -187,6 +187,7 @@ def _insert_refresh_record(
     jti: str,
     expires_at: datetime,
     *,
+    family_id: str,
     user_agent: str | None = None,
     ip: str | None = None,
     replaced_by: str | None = None,
@@ -197,6 +198,7 @@ def _insert_refresh_record(
             {
                 "jti": jti,
                 "user_id": user_id,
+                "family_id": family_id,
                 "expires_at": expires_at.isoformat(),
                 "user_agent": user_agent,
                 "ip": ip,
@@ -214,7 +216,7 @@ def _fetch_refresh_record(jti: str) -> dict[str, Any] | None:
     try:
         r = client.table("refresh_tokens").select("*").eq("jti", jti).limit(1).execute()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("refresh_tokens table unavailable (stateless mode): %s", exc)
+        logger.warning("refresh_tokens lookup failed for jti=%s: %s", jti, exc)
         return None
     return r.data[0] if r.data else None
 
@@ -232,15 +234,19 @@ def _revoke_refresh_record(jti: str, replaced_by: str | None = None) -> None:
         logger.warning("Could not revoke refresh jti=%s: %s", jti, exc)
 
 
-def _revoke_all_user_refresh_records(user_id: str) -> None:
-    """Revoke every active refresh token for a user (e.g. on reuse detection)."""
+def _family_id_of(record: dict[str, Any], jti: str) -> str:
+    return str(record.get("family_id") or jti)
+
+
+def _revoke_refresh_family(family_id: str) -> None:
+    """Revoke active refresh tokens in one login family."""
     client = get_supabase_admin()
     try:
         client.table("refresh_tokens").update(
             {"revoked_at": datetime.now(timezone.utc).isoformat()}
-        ).eq("user_id", user_id).is_("revoked_at", None).execute()
+        ).eq("family_id", family_id).is_("revoked_at", None).execute()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Could not revoke all refresh tokens for %s: %s", user_id, exc)
+        logger.warning("Could not revoke refresh family %s: %s", family_id, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -257,9 +263,17 @@ def create_access_and_refresh_tokens(
 ) -> Tuple[str, str]:
     access = _encode_jwt(_build_access_claims(user_id, role))
     jti = uuid4().hex
+    family_id = str(uuid4())
     refresh = _encode_jwt(_build_refresh_claims(user_id, role, jti))
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=refresh_ttl_seconds())
-    _insert_refresh_record(user_id, jti, expires_at, user_agent=user_agent, ip=ip)
+    _insert_refresh_record(
+        user_id,
+        jti,
+        expires_at,
+        family_id=family_id,
+        user_agent=user_agent,
+        ip=ip,
+    )
     return access, refresh
 
 
@@ -269,11 +283,11 @@ def rotate_refresh_token(
     user_agent: str | None = None,
     ip: str | None = None,
 ) -> Tuple[str, str, dict[str, Any]]:
-    """Validate + rotate a refresh token. Returns (access, refresh, decoded_claims).
+    """Validate and rotate a refresh token. Returns (access, refresh, claims).
 
-    Raises `ValueError` on any failure. Implements reuse-detection: if a
-    previously-rotated (revoked) token is presented, every refresh token for
-    that user is revoked.
+    Each login starts a family. Rotation keeps that family id. Presenting a
+    revoked token revokes only that family, so a stale session cannot wipe a
+    newer login. Unknown tokens are rejected and revoke nothing.
     """
     try:
         claims = decode_token(refresh_token)
@@ -284,32 +298,39 @@ def rotate_refresh_token(
         raise ValueError("Invalid refresh token")
     user_id = str(claims.get("sub") or "")
     jti = str(claims.get("jti") or "")
-    if not user_id:
+    if not user_id or not jti:
         raise ValueError("Invalid refresh token")
 
-    # If the table is present, enforce single-use.
-    record = _fetch_refresh_record(jti) if jti else None
-    if record is not None:
-        if record.get("revoked_at"):
-            # Reuse of a revoked token — revoke the whole family.
-            logger.warning("Refresh token reuse detected for user %s", user_id)
-            _revoke_all_user_refresh_records(user_id)
-            raise ValueError("Refresh token reuse detected")
+    record = _fetch_refresh_record(jti)
+    if record is None:
+        raise ValueError("Invalid refresh token")
+    if record.get("revoked_at"):
+        family_id = _family_id_of(record, jti)
+        logger.warning(
+            "Refresh token reuse detected for user %s family %s", user_id, family_id
+        )
+        _revoke_refresh_family(family_id)
+        raise ValueError("Invalid refresh token")
 
     # Re-read the live role from the DB so promotions (customer → merchant,
     # manual admin changes, etc.) take effect on the next refresh without
     # forcing the user to log out.
     role = get_user_role(user_id) or str(claims.get("role") or "customer")
+    family_id = _family_id_of(record, jti)
 
-    # Mint new pair
     access = _encode_jwt(_build_access_claims(user_id, role))
     new_jti = uuid4().hex
     new_refresh = _encode_jwt(_build_refresh_claims(user_id, role, new_jti))
     new_expires = datetime.now(timezone.utc) + timedelta(seconds=refresh_ttl_seconds())
-    _insert_refresh_record(user_id, new_jti, new_expires, user_agent=user_agent, ip=ip, replaced_by=None)
-
-    if jti:
-        _revoke_refresh_record(jti, replaced_by=new_jti)
+    _insert_refresh_record(
+        user_id,
+        new_jti,
+        new_expires,
+        family_id=family_id,
+        user_agent=user_agent,
+        ip=ip,
+    )
+    _revoke_refresh_record(jti, replaced_by=new_jti)
 
     return access, new_refresh, claims
 
