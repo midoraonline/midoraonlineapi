@@ -47,12 +47,9 @@ def enqueue_product(
     """Enqueue a product row (as returned from the products table) for moderation.
 
     Safe to call from a hot request path — never raises. Returns the queue
-    row id when the enqueue succeeded so an async caller can drive the
-    pipeline synchronously via `moderate_now`. On Vercel this is the only
-    way to guarantee the pipeline completes: `BackgroundTasks` /
-    `loop.create_task` are dropped as soon as the response ships, and cron
-    is unreliable on Hobby (once-per-day cap) or when `CRON_SECRET` is
-    missing (drain returns 503).
+    row id. The product route awaits this insert, then runs `moderate_now`
+    after the response. If that task is dropped, the moderation cron drains
+    this row (Hobby cron is once a day, and a missing CRON_SECRET returns 503).
     """
     try:
         payload = SubmitListingRequest(
@@ -81,9 +78,9 @@ async def moderate_now(row_id: UUID) -> None:
     row is escalated to `needs_review` so admins can decide; product stays
     `pending_review`.
 
-    Callers must `await` this from an async context (typically a FastAPI
-    route handler). Do NOT wrap this in `BackgroundTasks` or
-    `loop.create_task` — see the module docstring for why.
+    Product routes schedule this after the response is sent. A timeout or
+    error still escalates the row to manual review. If that task is
+    dropped, the moderation cron drains the row enqueued on the request.
     """
     # Local import so callers that only enqueue don't pay for Pillow /
     # google-genai / httpx at import time.

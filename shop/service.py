@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 from postgrest.exceptions import APIError
@@ -7,7 +8,6 @@ from shop import engagement_service
 from core.categories import normalize_category
 from shop.events import CONTENT_MODERATION_FIELDS
 from shop.locations import apply_online_location, listing_is_online
-from shop.serializers import clip_card_description
 from shop.schemas import (
     ProductCreate,
     ProductDetailResponse,
@@ -16,6 +16,9 @@ from shop.schemas import (
     ProductUpdate,
     ShopSummary,
 )
+from shop.serializers import clip_card_description
+
+logger = logging.getLogger(__name__)
 
 
 _PRODUCT_LIST_PUBLIC = (
@@ -115,6 +118,42 @@ def _image_urls_for_db(value: list[str] | None) -> list[str] | None:
     return list(value)
 
 
+def _attach_media_keys(payload: dict, urls: list[str] | None, data) -> None:
+    from media.keys import resolve_stored_keys
+
+    image_keys, video_keys = resolve_stored_keys(
+        urls or [],
+        getattr(data, "image_keys", None),
+        getattr(data, "video_keys", None),
+    )
+    payload["image_keys"] = image_keys
+    payload["video_keys"] = video_keys
+
+
+def _write_products(client: Any, payload: dict, *, product_id: str | None = None):
+    def run(body: dict):
+        query = client.table("products")
+        if product_id is None:
+            return query.insert(body).execute()
+        return query.update(body).eq("id", product_id).execute()
+
+    try:
+        return run(payload)
+    except APIError as exc:
+        if not (
+            is_undefined_column_error(exc, "image_keys")
+            or is_undefined_column_error(exc, "video_keys")
+        ):
+            raise
+        logger.warning(
+            "products.image_keys/video_keys missing; run db/migrations/045_product_image_keys.sql"
+        )
+        slim = {key: value for key, value in payload.items() if key not in {"image_keys", "video_keys"}}
+        if not slim:
+            raise
+        return run(slim)
+
+
 def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
     location_name, listing_meta = apply_online_location(
         data.location_name,
@@ -141,7 +180,8 @@ def create_product(client: Any, shop_id: str, data: ProductCreate) -> dict:
     imgs = _image_urls_for_db(data.image_urls)
     if imgs is not None:
         payload["image_urls"] = imgs
-    r = client.table("products").insert(payload).execute()
+        _attach_media_keys(payload, imgs, data)
+    r = _write_products(client, payload)
     if not r.data or len(r.data) == 0:
         raise ValueError("Failed to create product")
     created_row = r.data[0]
@@ -438,8 +478,10 @@ def get_product_detail(
 
 def update_product(client: Any, product_id: str, data: ProductUpdate) -> dict | None:
     payload = data.model_dump(exclude_unset=True)
-    if data.image_urls is not None:
-        payload["image_urls"] = _image_urls_for_db(data.image_urls) or []
+    if "image_urls" in payload:
+        urls = _image_urls_for_db(payload.get("image_urls")) or []
+        payload["image_urls"] = urls
+        _attach_media_keys(payload, urls, data)
     _apply_location_update(client, product_id, payload)
 
     # Content-changing edits must go back through moderation. We reset status
@@ -453,7 +495,7 @@ def update_product(client: Any, product_id: str, data: ProductUpdate) -> dict | 
         payload.pop("status", None)
     if not payload:
         return get_product(client, product_id, viewer_id=None)
-    r = client.table("products").update(payload).eq("id", product_id).execute()
+    r = _write_products(client, payload, product_id=product_id)
     if not r.data or len(r.data) == 0:
         return None
     updated_row = r.data[0]

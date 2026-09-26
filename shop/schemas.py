@@ -11,6 +11,8 @@ class ProductCreate(BaseModel):
     discount_expires_at: str | None = None
     stock_quantity: int = 0
     image_urls: list[str] | str | None = None
+    image_keys: list[str] | None = None
+    video_keys: list[str] | None = None
     category: str | None = None
     is_published: bool = True
     is_negotiable: bool = True
@@ -62,6 +64,8 @@ class ProductUpdate(BaseModel):
     discount_expires_at: str | None = None
     stock_quantity: int | None = None
     image_urls: list[str] | str | None = None
+    image_keys: list[str] | None = None
+    video_keys: list[str] | None = None
 
     @field_validator("image_urls", mode="before")
     @classmethod

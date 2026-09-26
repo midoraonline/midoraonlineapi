@@ -68,8 +68,18 @@ class Settings(BaseSettings):
 
     # Admin API (optional): set ADMIN_API_KEY to protect admin routes
     admin_api_key: str = Field(default="", alias="ADMIN_API_KEY")
-    # Vercel cron / pg_cron drain for listing moderation.
+    # Vercel cron / pg_cron drain for listing moderation and the dead-image sweep.
     cron_secret: str = Field(default="", alias="CRON_SECRET")
+    # UploadThing server deletes. TOKEN is what the Next.js app uses (raw key
+    # or base64 JSON with apiKey). SECRET is the older raw API key.
+    uploadthing_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("UPLOADTHING_TOKEN", "uploadthing_token"),
+    )
+    uploadthing_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("UPLOADTHING_SECRET", "uploadthing_secret"),
+    )
 
     # Africa's Talking — SMS (phone verification) + WhatsApp (WhatsApp verification)
     africastalking_api_key: str = Field(default="", alias="AFRICASTALKING_API_KEY")

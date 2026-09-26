@@ -1,7 +1,7 @@
 from typing import Annotated
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from supabase import Client
 
 from core.authz import ensure_product_owner, ensure_shop_owner
@@ -47,13 +47,13 @@ def _raise_plan_limit(exc: PermissionError) -> None:
     )
 
 
-def _insert_owned_product(client, user_id: str, shop_id: str, body: ProductCreate) -> dict:
+async def _insert_owned_product(client, user_id: str, shop_id: str, body: ProductCreate) -> dict:
     try:
         plan_service.assert_can_create_product(client, shop_id, user_id)
     except PermissionError as exc:
         _raise_plan_limit(exc)
 
-    _enforce_publish_gates(client, user_id=user_id, shop_id=shop_id, body_or_row=body)
+    await _enforce_publish_gates(client, user_id=user_id, shop_id=shop_id, body_or_row=body)
 
     try:
         product = shop_service.create_product(client, shop_id, body)
@@ -63,7 +63,7 @@ def _insert_owned_product(client, user_id: str, shop_id: str, body: ProductCreat
     return product
 
 
-def _enforce_publish_gates(
+async def _enforce_publish_gates(
     client,
     *,
     user_id: str,
@@ -135,6 +135,10 @@ def _enforce_publish_gates(
     from categories.service import assert_required_listing_fields
 
     assert_required_listing_fields(client, category, listing_meta)
+    if isinstance(image_urls, list) and image_urls:
+        from media.validate import assert_published_media
+
+        await assert_published_media(image_urls)
 
 
 
@@ -143,6 +147,7 @@ def _enforce_publish_gates(
 async def create_product(
   shop_id: str,
   body: ProductCreate,
+  background_tasks: BackgroundTasks,
   client: Annotated[Client, Depends(get_supabase_client)],
   user_id: str = Depends(get_current_user_id),
 ):
@@ -153,16 +158,8 @@ async def create_product(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
-    product = _insert_owned_product(client, user_id, shop_id, body)
-
-    # Subscribers (mail, ranking, embeddings, moderation) run in-process.
-    # The pending-review event carries the product id so moderation does
-    # not have to query pending queue rows after insert.
-    await publish_product_created(product, seller_id=user_id)
-
-    refreshed = shop_service.get_product(client, product["id"], viewer_id=user_id)
-    if refreshed is not None:
-        product = refreshed
+    product = await _insert_owned_product(client, user_id, shop_id, body)
+    await publish_product_created(product, seller_id=user_id, background=background_tasks)
     return product
 
 
@@ -203,6 +200,7 @@ async def create_listing(
     body: ProductCreate,
     request: Request,
     response: Response,
+    background_tasks: BackgroundTasks,
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
@@ -237,8 +235,8 @@ async def create_listing(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    product = _insert_owned_product(client, user_id, shop_id, body)
-    await publish_product_created(product, seller_id=user_id)
+    product = await _insert_owned_product(client, user_id, shop_id, body)
+    await publish_product_created(product, seller_id=user_id, background=background_tasks)
 
     if created_personal:
         new_role, changed = auth_service.promote_to_merchant(user_id)
@@ -257,9 +255,6 @@ async def create_listing(
                 refresh_ttl_seconds=auth_service.refresh_ttl_seconds(),
             )
 
-    refreshed = shop_service.get_product(client, product["id"], viewer_id=user_id)
-    if refreshed is not None:
-        product = refreshed
     return product
 
 
@@ -489,6 +484,7 @@ async def get_product(
 async def update_product(
   product_id: str,
   body: ProductUpdate,
+  background_tasks: BackgroundTasks,
   client: Annotated[Client, Depends(get_supabase_client)],
   user_id: str = Depends(get_current_user_id),
 ):
@@ -511,7 +507,7 @@ async def update_product(
     if not existing_r.data:
         raise HTTPException(status_code=404, detail="Product not found")
     existing = existing_r.data[0]
-    _enforce_publish_gates(
+    await _enforce_publish_gates(
         client,
         user_id=user_id,
         shop_id=str(existing["shop_id"]),
@@ -519,6 +515,7 @@ async def update_product(
         existing=existing,
     )
 
+    old_urls = existing.get("image_urls") or []
     updated = shop_service.update_product(client, product_id, body)
     if not updated:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -527,17 +524,19 @@ async def update_product(
         updated,
         seller_id=user_id,
         requires_moderation=product_update_requires_moderation(body),
+        background=background_tasks,
     )
+    if "image_urls" in body.model_dump(exclude_unset=True):
+        from media.cleanup import cleanup_removed_media
 
-    out = shop_service.get_product(client, product_id, viewer_id=user_id)
-    if not out:
-        raise HTTPException(status_code=404, detail="Product not found")
-    return out
+        background_tasks.add_task(cleanup_removed_media, old_urls, updated.get("image_urls") or [])
+    return updated
 
 
 @router_products.delete("/{product_id}")
 async def delete_product(
   product_id: str,
+  background_tasks: BackgroundTasks,
   client: Annotated[Client, Depends(get_supabase_client)],
   claims: Annotated[TokenPayload, Depends(get_current_claims)],
 ):
@@ -551,9 +550,17 @@ async def delete_product(
         except PermissionError as e:
             raise HTTPException(status_code=403, detail=str(e))
 
+    existing_media = (
+        client.table("products").select("image_urls").eq("id", product_id).limit(1).execute()
+    )
+    old_urls = (existing_media.data or [{}])[0].get("image_urls") or []
     ok = shop_service.delete_product(client, product_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Product not found")
+    if old_urls:
+        from media.cleanup import cleanup_removed_media
+
+        background_tasks.add_task(cleanup_removed_media, old_urls, [])
     return {"deleted": product_id}
 
 
@@ -642,7 +649,7 @@ async def toggle_product_availability(
     existing = current.data[0]
     new_val = not bool(existing.get("is_published", True))
     if new_val:
-        _enforce_publish_gates(
+        await _enforce_publish_gates(
             client,
             user_id=user_id,
             shop_id=str(existing["shop_id"]),

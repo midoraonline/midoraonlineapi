@@ -15,6 +15,7 @@ from admin.routes import comments_admin as admin_comments
 from admin.routes import chat_admin as admin_chat
 from admin.routes import feedback as admin_feedback
 from admin.routes import feed_config as admin_feed_config
+from media.routes import admin_router as admin_media
 from tenants.routes import verifications as verif_admin
 
 router = APIRouter(
@@ -37,3 +38,4 @@ router.include_router(admin_chat.router, prefix="", tags=["admin"])
 router.include_router(admin_feedback.router, prefix="", tags=["admin"])
 router.include_router(admin_feed_config.router, prefix="", tags=["admin"])
 router.include_router(verif_admin.admin_router, prefix="/shops", tags=["admin"])
+router.include_router(admin_media, tags=["admin"])
