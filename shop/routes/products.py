@@ -108,6 +108,12 @@ def _enforce_publish_gates(
     description = data.get("description")
     if description is None and existing is not None:
         description = existing.get("description")
+    if "listing_meta" in data:
+        listing_meta = data.get("listing_meta") or {}
+    elif existing is not None:
+        listing_meta = existing.get("listing_meta") or {}
+    else:
+        listing_meta = {}
 
     # Always cap media count (even drafts).
     assert_media_limits(image_urls if isinstance(image_urls, list) else None, publishing=False)
@@ -126,6 +132,9 @@ def _enforce_publish_gates(
         category=category,
         description=description,
     )
+    from categories.service import assert_required_listing_fields
+
+    assert_required_listing_fields(client, category, listing_meta)
 
 
 
@@ -492,7 +501,9 @@ async def update_product(
 
     existing_r = (
         client.table("products")
-        .select("shop_id,is_published,image_urls,price_ugx,item_type,location_name,category,description")
+        .select(
+            "shop_id,is_published,image_urls,price_ugx,item_type,location_name,category,description,listing_meta"
+        )
         .eq("id", product_id)
         .limit(1)
         .execute()
@@ -618,7 +629,9 @@ async def toggle_product_availability(
 
     current = (
         client.table("products")
-        .select("shop_id,is_published,image_urls,price_ugx,item_type,location_name,category,description")
+        .select(
+            "shop_id,is_published,image_urls,price_ugx,item_type,location_name,category,description,listing_meta"
+        )
         .eq("id", product_id)
         .limit(1)
         .execute()
