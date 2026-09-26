@@ -344,6 +344,7 @@ def _attach_shops(client: Any, products: list[dict[str, Any]]) -> list[dict[str,
             logger.warning("search rating batch fetch failed: %s", exc)
 
     from shop.locations import listing_is_online
+    from shop.serializers import clip_card_description
 
     out: list[dict[str, Any]] = []
     for product in products:
@@ -361,7 +362,7 @@ def _attach_shops(client: Any, products: list[dict[str, Any]]) -> list[dict[str,
                 "id": pid,
                 "shop_id": sid,
                 "title": product.get("title", ""),
-                "description": product.get("description"),
+                "description": clip_card_description(product.get("description")),
                 "price_ugx": float(product.get("price_ugx") or 0),
                 "discount_price": float(product["discount_price"]) if product.get("discount_price") is not None else None,
                 "discount_expires_at": str(product["discount_expires_at"]) if product.get("discount_expires_at") else None,

@@ -198,6 +198,7 @@ def get_home_feed(
     def _embed(products: list) -> list[dict[str, Any]]:
         out = []
         from shop.locations import listing_is_online
+        from shop.serializers import clip_card_description
 
         for p in products:
             shop = dict(shops_map.get(str(p.shop_id)) or {})
@@ -212,6 +213,7 @@ def get_home_feed(
                 "id": str(p.id),
                 "shop_id": str(p.shop_id),
                 "title": p.title,
+                "description": clip_card_description(getattr(p, "description", None)),
                 "slug": "",
                 "price_ugx": _safe_float(p.price_ugx),
                 "discount_price": _safe_float(p.discount_price) if getattr(p, "discount_price", None) is not None else None,
