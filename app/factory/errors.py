@@ -20,8 +20,17 @@ from core.request_context import RequestContext
 logger = logging.getLogger(__name__)
 
 
-def _envelope(message: str, code: str, status_code: int) -> JSONResponse:
-    return JSONResponse(status_code=status_code, content={"detail": message, "code": code})
+def _envelope(
+    message: str,
+    code: str,
+    status_code: int,
+    extra: dict | None = None,
+) -> JSONResponse:
+    body: dict = {"detail": message, "code": code}
+    for key, value in (extra or {}).items():
+        if key not in body:
+            body[key] = value
+    return JSONResponse(status_code=status_code, content=body)
 
 
 def _http_detail_parts(detail: object, status_code: int) -> tuple[str, str]:
@@ -41,7 +50,14 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(_: Request, exc: StarletteHTTPException) -> JSONResponse:
         detail, code = _http_detail_parts(exc.detail, exc.status_code)
-        response = _envelope(detail, code, exc.status_code)
+        extra = None
+        if isinstance(exc.detail, dict):
+            extra = {
+                key: value
+                for key, value in exc.detail.items()
+                if key not in {"detail", "message", "code"}
+            }
+        response = _envelope(detail, code, exc.status_code, extra)
         if exc.headers:
             for key, value in exc.headers.items():
                 response.headers[key] = value

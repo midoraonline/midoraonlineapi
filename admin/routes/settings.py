@@ -4,42 +4,76 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from categories.schemas import CategoryCreateRequest, CategoryUpdateRequest
-from categories.service import invalidate_categories_cache
+from categories.fields import FieldEditError
+from categories.schemas import (
+    CategoryCreateRequest,
+    CategoryUpdateRequest,
+    FieldDefinitionWrite,
+    FieldReorderRequest,
+)
+from categories.service import (
+    add_category_field,
+    delete_category_field,
+    invalidate_categories_cache,
+    metadata_for_storage,
+    present_categories,
+    reorder_category_fields,
+    update_category_field,
+)
 from db.supabase import get_supabase_admin
 
 router = APIRouter()
 
 
-@router.get("/settings/categories")
-async def admin_get_categories() -> list[dict[str, Any]]:
-    """Admin: list all categories including hierarchy and metadata."""
+def _edit_error(exc: FieldEditError) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status,
+        detail={"detail": str(exc), "code": exc.code},
+    )
+
+
+def _rows() -> list[dict[str, Any]]:
     admin = get_supabase_admin()
     r = admin.table("categories").select("*").order("sort_order").execute()
-    return r.data or []
+    return present_categories(r.data or [])
+
+
+@router.get("/settings/categories")
+async def admin_get_categories() -> list[dict[str, Any]]:
+    """Admin: list categories with normalized field definitions."""
+    return _rows()
+
+
+@router.get("/settings/categories/{slug}")
+async def admin_get_category(slug: str) -> dict[str, Any]:
+    for item in _rows():
+        if item.get("slug") == slug:
+            return item
+    raise HTTPException(status_code=404, detail={"detail": "Category not found", "code": "category_not_found"})
 
 
 @router.post("/settings/categories")
 async def admin_create_category(body: CategoryCreateRequest) -> dict[str, Any]:
-    """Admin: create a new category or subcategory."""
+    """Admin: create a category or subcategory, including its own fields."""
     admin = get_supabase_admin()
     payload = {
         "slug": body.slug,
         "label": body.label,
         "parent_slug": body.parent_slug,
         "sort_order": body.sort_order,
-        "metadata": [f.model_dump(exclude_none=True) for f in body.metadata],
+        "metadata": metadata_for_storage([field.model_dump() for field in body.metadata]),
     }
     r = admin.table("categories").insert(payload).execute()
     if not r.data:
         raise HTTPException(status_code=400, detail="Failed to create category")
     invalidate_categories_cache()
-    return r.data[0]
+    created = next((item for item in _rows() if item.get("slug") == body.slug), None)
+    return created or r.data[0]
 
 
 @router.patch("/settings/categories/{slug}")
 async def admin_update_category(slug: str, body: CategoryUpdateRequest) -> dict[str, Any]:
-    """Admin: update a category's label, parent, sort order, or metadata fields."""
+    """Admin: update label, parent, sort order, or replace field definitions."""
     admin = get_supabase_admin()
     payload: dict[str, Any] = {}
     if body.label is not None:
@@ -49,7 +83,7 @@ async def admin_update_category(slug: str, body: CategoryUpdateRequest) -> dict[
     if body.sort_order is not None:
         payload["sort_order"] = body.sort_order
     if body.metadata is not None:
-        payload["metadata"] = [f.model_dump(exclude_none=True) for f in body.metadata]
+        payload["metadata"] = metadata_for_storage([field.model_dump() for field in body.metadata])
 
     if not payload:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -58,7 +92,42 @@ async def admin_update_category(slug: str, body: CategoryUpdateRequest) -> dict[
     if not r.data:
         raise HTTPException(status_code=404, detail="Category not found")
     invalidate_categories_cache()
-    return r.data[0]
+    updated = next((item for item in _rows() if item.get("slug") == slug), None)
+    return updated or r.data[0]
+
+
+@router.put("/settings/categories/{slug}/fields/order")
+async def admin_reorder_fields(slug: str, body: FieldReorderRequest) -> dict[str, Any]:
+    try:
+        return reorder_category_fields(get_supabase_admin(), slug, body.keys)
+    except FieldEditError as exc:
+        raise _edit_error(exc) from exc
+
+
+@router.post("/settings/categories/{slug}/fields")
+async def admin_add_field(slug: str, body: FieldDefinitionWrite) -> dict[str, Any]:
+    try:
+        return add_category_field(get_supabase_admin(), slug, body.model_dump(exclude_unset=True))
+    except FieldEditError as exc:
+        raise _edit_error(exc) from exc
+
+
+@router.patch("/settings/categories/{slug}/fields/{key}")
+async def admin_update_field(slug: str, key: str, body: FieldDefinitionWrite) -> dict[str, Any]:
+    try:
+        return update_category_field(
+            get_supabase_admin(), slug, key, body.model_dump(exclude_unset=True)
+        )
+    except FieldEditError as exc:
+        raise _edit_error(exc) from exc
+
+
+@router.delete("/settings/categories/{slug}/fields/{key}")
+async def admin_delete_field(slug: str, key: str) -> dict[str, Any]:
+    try:
+        return delete_category_field(get_supabase_admin(), slug, key)
+    except FieldEditError as exc:
+        raise _edit_error(exc) from exc
 
 
 @router.delete("/settings/categories/{slug}")
