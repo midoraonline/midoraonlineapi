@@ -28,6 +28,7 @@ def get_modules() -> list[AppModule]:
     from marketplace.module import MarketplaceModule
     from notifications.module import PushModule
     from payments.module import PaymentsModule
+    from media.module import MediaModule
     from ranking.module import RankingModule
     from search.module import SearchModule
     from shop.module import ShopModule
@@ -38,6 +39,7 @@ def get_modules() -> list[AppModule]:
         CategoriesModule(),
         TenantsModule(),
         ShopModule(),
+        MediaModule(),
         MailModule(),
         RankingModule(),
         FeedModule(),

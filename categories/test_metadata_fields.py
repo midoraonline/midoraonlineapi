@@ -1,5 +1,6 @@
 """Category field definitions: legacy reads, inheritance, and listing checks."""
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -315,11 +316,11 @@ def test_missing_required_fields_are_a_422_and_drafts_skip_them(monkeypatch):
         is_published=True,
     )
     with pytest.raises(HTTPException) as publish_exc:
-        _enforce_publish_gates(client, user_id="user-1", shop_id="shop-1", body_or_row=body)
+        asyncio.run(_enforce_publish_gates(client, user_id="user-1", shop_id="shop-1", body_or_row=body))
     assert publish_exc.value.status_code == 422
 
     draft = ProductUpdate(is_published=False, listing_meta={})
-    _enforce_publish_gates(
+    asyncio.run(_enforce_publish_gates(
         client,
         user_id="user-1",
         shop_id="shop-1",
@@ -334,10 +335,16 @@ def test_missing_required_fields_are_a_422_and_drafts_skip_them(monkeypatch):
             "location_name": "Kampala",
             "description": "A phone",
         },
-    )
+    ))
 
+    async def _reachable(urls):
+        from media.validate import ProbeResult
+
+        return {url: ProbeResult(status=200, content_type="image/jpeg") for url in urls}
+
+    monkeypatch.setattr("media.validate.head_media_urls", _reachable)
     filled = ProductUpdate(listing_meta={"brand": "Nokia", "storage": "128GB"})
-    _enforce_publish_gates(
+    asyncio.run(_enforce_publish_gates(
         client,
         user_id="user-1",
         shop_id="shop-1",
@@ -346,10 +353,10 @@ def test_missing_required_fields_are_a_422_and_drafts_skip_them(monkeypatch):
             "is_published": True,
             "category": "Mobile Phones & Tablets",
             "listing_meta": {},
-            "image_urls": ["https://cdn.example/a.jpg", "https://cdn.example/b.jpg"],
+            "image_urls": ["https://utfs.io/f/a", "https://utfs.io/f/b"],
             "price_ugx": 1000,
             "item_type": "product",
             "location_name": "Kampala",
             "description": "A phone",
         },
-    )
+    ))

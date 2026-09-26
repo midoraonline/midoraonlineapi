@@ -1,9 +1,9 @@
 """In-process pub/sub (NestJS EventEmitter2 equivalent).
 
-Handlers run in the same request as `await bus.emit(...)`. That is
-intentional on Vercel: `BackgroundTasks` / `create_task` die when the
-response ships, so subscribers that must finish (inline moderation)
-have to be awaited on the route.
+Handlers run in the same task as `await bus.emit(...)`. Product writes
+await only the cheap moderation enqueue, then schedule mail, ranking,
+embeddings, and the pipeline with BackgroundTasks. If Vercel drops that
+task, the cron drain still runs the queued row.
 
 A failing subscriber is logged and skipped so one listener cannot take
 down the rest (or the HTTP response).
