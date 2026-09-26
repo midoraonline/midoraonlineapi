@@ -9,8 +9,10 @@ from fastapi.testclient import TestClient
 from app.factory.errors import register_exception_handlers
 from categories.fields import missing_required_fields, present_categories, stored_from_api
 from categories.router import router as categories_router
+from categories.schemas import CategoryUpdateRequest
 from categories.service import (
     add_category_field,
+    metadata_for_storage,
     assert_required_listing_fields,
     delete_category_field,
     invalidate_categories_cache,
@@ -122,6 +124,24 @@ def _clear_category_cache():
 
 def _by_key(fields):
     return {field["key"]: field for field in fields}
+
+
+def test_category_patch_keeps_help_alias():
+    body = CategoryUpdateRequest.model_validate(
+        {
+            "metadata": [
+                {
+                    "key": "brand",
+                    "label": "Brand",
+                    "type": "text",
+                    "help": "Shown on the Post Item form",
+                }
+            ]
+        }
+    )
+    stored = metadata_for_storage([field.model_dump() for field in body.metadata])
+    assert stored[0]["help_text"] == "Shown on the Post Item form"
+    assert body.metadata[0].help_text == "Shown on the Post Item form"
 
 
 def test_legacy_shapes_load_as_field_definitions():

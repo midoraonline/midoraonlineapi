@@ -7,6 +7,7 @@ from shop import engagement_service
 from core.categories import normalize_category
 from shop.events import CONTENT_MODERATION_FIELDS
 from shop.locations import apply_online_location, listing_is_online
+from shop.serializers import clip_card_description
 from shop.schemas import (
     ProductCreate,
     ProductDetailResponse,
@@ -167,9 +168,9 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
     try:
         r = (
             client.table("products")
-            .select("id,shop_id,title,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
+            .select("id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
                     "listing_score,location_name,is_published,is_negotiable,stock_quantity,"
-                    "created_at,view_count")
+                    "listing_meta,created_at,view_count")
             .eq("category", category)
             .eq("is_published", True)
             .eq("status", "active")
@@ -182,8 +183,8 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
     except Exception:
         r = (
             client.table("products")
-            .select("id,shop_id,title,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
-                    "is_negotiable,stock_quantity,is_published,created_at")
+            .select("id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
+                    "is_negotiable,stock_quantity,listing_meta,is_published,created_at")
             .eq("category", category)
             .eq("is_published", True)
             .eq("status", "active")
@@ -206,6 +207,7 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             "id": pid,
             "shop_id": sid,
             "title": row.get("title", ""),
+            "description": clip_card_description(row.get("description")),
             "price_ugx": float(row.get("price_ugx", 0)),
             "discount_price": float(row["discount_price"]) if row.get("discount_price") is not None else None,
             "discount_expires_at": str(row["discount_expires_at"]) if row.get("discount_expires_at") else None,
@@ -219,7 +221,7 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             "view_count": int(row.get("view_count") or 0),
             "is_negotiable": row.get("is_negotiable", True) is not False,
             "stock_quantity": int(row["stock_quantity"]) if row.get("stock_quantity") is not None else None,
-            "listing_meta": {},
+            "listing_meta": row.get("listing_meta") if isinstance(row.get("listing_meta"), dict) else {},
             "average_rating": 0.0,
             "review_count": 0,
             "shop_name": s.get("seller_name") or s.get("name"),

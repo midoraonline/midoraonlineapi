@@ -46,9 +46,9 @@ FEED_CACHE_TTL_SECONDS = int(FEED_CACHE_TTL.total_seconds())
 FEED_CACHE_MAX_IDS = 800
 VECTOR_MATCH_COUNT = 220
 
-# Card payload — keep lean for list/feed responses (no description / embedding).
+# Card payload. Description is clipped in _to_response; embeddings stay off this select.
 _PRODUCT_CARD_SELECT = (
-    "id,shop_id,title,category,item_type,price_ugx,discount_price,"
+    "id,shop_id,title,description,category,item_type,price_ugx,discount_price,"
     "discount_expires_at,stock_quantity,image_urls,is_published,status,listing_score,"
     "location_name,created_at,view_count,listing_meta,is_negotiable"
 )
@@ -88,7 +88,9 @@ def _to_response(product: dict[str, Any]) -> ProductResponse:
         k: v for k, v in product.items()
         if k not in ("embedding", "embedding_source_hash", "embedding_vec", "similarity")
     }
-    stripped.setdefault("description", None)
+    from shop.serializers import clip_card_description
+
+    stripped["description"] = clip_card_description(stripped.get("description"))
     stripped["is_online"] = listing_is_online(
         stripped.get("location_name"), stripped.get("listing_meta")
     )

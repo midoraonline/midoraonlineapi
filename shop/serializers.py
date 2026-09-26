@@ -15,6 +15,21 @@ from shop.locations import listing_is_online
 from shop.schemas import ProductCard
 
 
+CARD_DESCRIPTION_CHARS = 300
+
+
+def clip_card_description(value: Any, limit: int = CARD_DESCRIPTION_CHARS) -> str | None:
+    """Short text for cards. Detail endpoints keep the full description."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip()
+
+
 def _iso(value: Any) -> str | None:
     if value is None or value == "":
         return None
@@ -57,7 +72,7 @@ def serialize_product_card(
         id=str(product_row.get("id", "")),
         shop_id=str(product_row.get("shop_id", "")),
         title=str(product_row.get("title") or ""),
-        description=product_row.get("description"),
+        description=clip_card_description(product_row.get("description")),
         price_ugx=float(product_row.get("price_ugx") or 0),
         discount_price=(
             float(product_row["discount_price"])

@@ -1,15 +1,20 @@
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from categories.fields import normalize_fields
 
 
 class CategoryMetaField(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     key: str
     label: str = ""
     type: str = "text"
     kind: str = "text"
     required: bool = False
-    help_text: str | None = None
+    help_text: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("help_text", "help", "helpText", "hint"),
+    )
     placeholder: str | None = None
     options: list[dict[str, str]] | None = None
     partial: bool = False
