@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from db.supabase import get_supabase_admin
-from feed.catalog import ListingFilters, rating_map
+from feed.catalog import ListingFilters
 from shop.schemas import ProductResponse
 
 logger = logging.getLogger(__name__)
@@ -141,7 +141,6 @@ def get_home_feed(
             logger.warning("home feed batch shop fetch failed: %s", exc)
 
     product_ids = [str(p.id) for p in algorithm_paged if p.id]
-    ratings = rating_map(admin, product_ids) if product_ids and active.is_active() else {}
     boosted_ids: set[str] = set()
     viewer_liked_ids: set[str] = set()
 
@@ -239,8 +238,8 @@ def get_home_feed(
                 "stock_quantity": int(getattr(p, "stock_quantity", 0) or 0),
                 "shop": shop,
                 "boosted": str(p.id) in boosted_ids,
-                "average_rating": ratings.get(str(p.id), (0.0, 0))[0],
-                "review_count": ratings.get(str(p.id), (0.0, 0))[1],
+                "average_rating": p.average_rating if p.review_count else None,
+                "review_count": int(p.review_count or 0),
                 "is_negotiable": getattr(p, "is_negotiable", True) is not False,
             })
         return out

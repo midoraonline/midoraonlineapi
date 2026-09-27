@@ -468,6 +468,17 @@ def rating_map(client: Any, product_ids: list[str]) -> dict[str, tuple[float, in
     }
 
 
+def card_rating(
+    ratings: dict[str, tuple[float, int]],
+    product_id: str,
+) -> tuple[float | None, int]:
+    """Average from product_reviews, or null when that listing has no reviews."""
+    pair = ratings.get(str(product_id))
+    if not pair or pair[1] <= 0:
+        return None, 0
+    return pair[0], pair[1]
+
+
 def trust_map(client: Any, shop_ids: list[str]) -> dict[str, float]:
     if not shop_ids:
         return {}

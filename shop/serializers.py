@@ -49,7 +49,7 @@ def serialize_product_card(
     product_row: dict[str, Any],
     *,
     shop_row: dict[str, Any] | None = None,
-    average_rating: float = 0.0,
+    average_rating: float | None = None,
     review_count: int = 0,
     first_image_only: bool = False,
 ) -> ProductCard:
@@ -58,8 +58,8 @@ def serialize_product_card(
     Args:
         product_row: The raw dict returned by Supabase for the product.
         shop_row: The raw shop row when embedding shop context; may be ``None``.
-        average_rating: Pre-computed average, or ``0.0`` if not requested.
-        review_count: Pre-computed count, or ``0`` if not requested.
+        average_rating: Mean of product_reviews.rating, or null when there are none.
+        review_count: Number of product reviews.
         first_image_only: Trending/liked lists only need a thumbnail — pass
             ``True`` to include just the first image.
     """

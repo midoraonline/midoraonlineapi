@@ -2,8 +2,9 @@
 
 from types import SimpleNamespace
 
+from feed.catalog import card_rating, rating_map
 from feed.composite import get_home_feed
-from feed.service import _PRODUCT_CARD_SELECT, _to_response
+from feed.service import _PRODUCT_CARD_SELECT, _to_response, _with_ratings
 from search.service import _PRODUCT_FIELDS, _attach_shops
 from shop.schemas import ProductResponse
 from shop.service import get_similar_products
@@ -150,3 +151,69 @@ def test_similar_products_return_description_and_listing_meta():
     assert len(cards) == 1
     assert len(cards[0]["description"]) == 300
     assert cards[0]["listing_meta"]["pricing_model"] == "starting_at"
+    assert cards[0]["average_rating"] is None
+    assert cards[0]["review_count"] == 0
+
+
+def test_card_ratings_come_from_product_reviews():
+    client = _Client(
+        {
+            "product_reviews": [
+                {"product_id": "rated", "rating": 5},
+                {"product_id": "rated", "rating": 3},
+                {"product_id": "other", "rating": None},
+            ]
+        }
+    )
+    ratings = rating_map(client, ["rated", "empty"])
+    assert card_rating(ratings, "rated") == (4.0, 2)
+    assert card_rating(ratings, "empty") == (None, 0)
+
+    cards = _with_ratings(
+        client,
+        [
+            _to_response(
+                {
+                    "id": "rated",
+                    "shop_id": "s1",
+                    "title": "Tutor",
+                    "description": "Help with evening classes.",
+                    "price_ugx": 20000,
+                    "stock_quantity": 0,
+                    "image_urls": [],
+                    "category": "Education & Tutoring",
+                    "is_published": True,
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                }
+            )
+        ],
+    )
+    assert cards[0].average_rating == 4.0
+    assert cards[0].review_count == 2
+
+
+def test_home_feed_includes_ratings_when_filters_are_off(monkeypatch):
+    product = ProductResponse(
+        id="p1",
+        shop_id="s1",
+        title="House help",
+        description="Weekday help around the home.",
+        price_ugx=0,
+        stock_quantity=0,
+        image_urls=[],
+        category="Maids & Domestic Work",
+        is_published=True,
+        item_type="opportunity",
+        listing_meta={"opportunity_kind": "maids"},
+        created_at="2026-01-01T00:00:00+00:00",
+        average_rating=4.5,
+        review_count=2,
+    )
+    monkeypatch.setattr(
+        "feed.service.get_algorithm_feed",
+        lambda *_args, **_kwargs: ([product], False, 1),
+    )
+    monkeypatch.setattr("feed.composite.get_supabase_admin", lambda: _Client({}))
+    card = get_home_feed(limit=10, page=1)["algorithm"][0]
+    assert card["average_rating"] == 4.5
+    assert card["review_count"] == 2

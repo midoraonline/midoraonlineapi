@@ -108,7 +108,26 @@ def list_products(
                 view_count=int(row.get("view_count") or 0),
             )
         )
-    return {"items": items, "total": total, "page": page, "limit": limit, "total_pages": total_pages}
+    return {
+        "items": _attach_list_ratings(client, items),
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "total_pages": total_pages,
+    }
+
+
+def _attach_list_ratings(client: Any, items: list[ProductListItem]) -> list[ProductListItem]:
+    if not items:
+        return items
+    from feed.catalog import card_rating, rating_map
+
+    ratings = rating_map(client, [item.id for item in items])
+    attached: list[ProductListItem] = []
+    for item in items:
+        average, count = card_rating(ratings, item.id)
+        attached.append(item.model_copy(update={"average_rating": average, "review_count": count}))
+    return attached
 
 
 def _image_urls_for_db(value: list[str] | None) -> list[str] | None:
@@ -234,9 +253,13 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             .execute()
         )
     out = []
-    shop_ids = list({str(row["shop_id"]) for row in (r.data or []) if row.get("shop_id")})
+    rows = list(r.data or [])
+    shop_ids = list({str(row["shop_id"]) for row in rows if row.get("shop_id")})
     shops_map = _load_card_shops(client, shop_ids)
-    for row in (r.data or []):
+    from feed.catalog import card_rating, rating_map
+
+    ratings = rating_map(client, [str(row["id"]) for row in rows if row.get("id")])
+    for row in rows:
         imgs = row.get("image_urls")
         if isinstance(imgs, str):
             imgs = [imgs] if imgs else []
@@ -262,8 +285,8 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             "is_negotiable": row.get("is_negotiable", True) is not False,
             "stock_quantity": int(row["stock_quantity"]) if row.get("stock_quantity") is not None else None,
             "listing_meta": row.get("listing_meta") if isinstance(row.get("listing_meta"), dict) else {},
-            "average_rating": 0.0,
-            "review_count": 0,
+            "average_rating": card_rating(ratings, pid)[0],
+            "review_count": card_rating(ratings, pid)[1],
             "shop_name": s.get("seller_name") or s.get("name"),
             "shop_slug": s.get("slug"),
             "owner_id": str(s.get("owner_id")) if s.get("owner_id") else None,
@@ -364,7 +387,7 @@ def get_product_detail(
     like_count = 0
     viewer_liked: bool | None = None
     boosted = False
-    average_rating = 0.0
+    average_rating: float | None = None
     review_count = 0
 
     def _likes() -> tuple[int, bool | None]:
@@ -408,7 +431,7 @@ def get_product_detail(
         except Exception:
             return False
 
-    def _ratings() -> tuple[float, int]:
+    def _ratings() -> tuple[float | None, int]:
         try:
             rr = (
                 client.table("product_reviews")
@@ -417,12 +440,16 @@ def get_product_detail(
                 .limit(200)
                 .execute()
             )
-            ratings = [float(rev["rating"]) for rev in (rr.data or []) if rev.get("rating")]
+            ratings = [
+                float(rev["rating"])
+                for rev in (rr.data or [])
+                if rev.get("rating") is not None
+            ]
             if not ratings:
-                return 0.0, 0
+                return None, 0
             return round(sum(ratings) / len(ratings), 2), len(ratings)
         except Exception:
-            return 0.0, 0
+            return None, 0
 
     with ThreadPoolExecutor(max_workers=3) as pool:
         fut_likes = pool.submit(_likes)
@@ -696,4 +723,10 @@ def list_owner_products(client: Any, owner_id: str, page: int = 1, limit: int = 
                 view_count=int(row.get("view_count") or 0),
             )
         )
-    return {"items": items, "total": total, "page": page, "limit": limit, "total_pages": total_pages}
+    return {
+        "items": _attach_list_ratings(client, items),
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "total_pages": total_pages,
+    }

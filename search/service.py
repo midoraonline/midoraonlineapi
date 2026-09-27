@@ -9,7 +9,7 @@ from collections import Counter
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
-from feed.catalog import ListingFilters, fetch_catalog_page, sort_rows, rating_map, trust_map
+from feed.catalog import ListingFilters, card_rating, fetch_catalog_page, sort_rows, rating_map, trust_map
 from feed.embeddings import cosine_similarity, embed_query, parse_embedding
 
 logger = logging.getLogger(__name__)
@@ -316,32 +316,7 @@ def _attach_shops(client: Any, products: list[dict[str, Any]]) -> list[dict[str,
         except Exception as exc:
             logger.warning("search shop batch fetch failed: %s", exc)
 
-    avg_ratings: dict[str, float] = {}
-    review_counts: dict[str, int] = {}
-    if product_ids:
-        try:
-            rev_r = (
-                client.table("product_reviews")
-                .select("product_id,rating")
-                .in_("product_id", product_ids)
-                .execute()
-            )
-            sums: dict[str, float] = {}
-            counts: dict[str, int] = {}
-            for row in rev_r.data or []:
-                pid = str(row.get("product_id"))
-                r = row.get("rating")
-                if pid and r:
-                    sums[pid] = sums.get(pid, 0) + float(r)
-                    counts[pid] = counts.get(pid, 0) + 1
-            for pid in product_ids:
-                if counts.get(pid, 0) > 0:
-                    avg_ratings[pid] = round(sums[pid] / counts[pid], 2)
-                else:
-                    avg_ratings[pid] = 0.0
-                review_counts[pid] = counts.get(pid, 0)
-        except Exception as exc:
-            logger.warning("search rating batch fetch failed: %s", exc)
+    ratings = rating_map(client, product_ids) if product_ids else {}
 
     from shop.locations import listing_is_online
     from shop.serializers import clip_card_description
@@ -376,8 +351,8 @@ def _attach_shops(client: Any, products: list[dict[str, Any]]) -> list[dict[str,
                 "is_online": online,
                 "created_at": product.get("created_at"),
                 "updated_at": product.get("created_at"),
-                "average_rating": avg_ratings.get(pid, 0.0),
-                "review_count": review_counts.get(pid, 0),
+                "average_rating": card_rating(ratings, pid)[0],
+                "review_count": card_rating(ratings, pid)[1],
                 "is_negotiable": product.get("is_negotiable") is not False,
                 "stock_quantity": product.get("stock_quantity"),
                 "listing_meta": product.get("listing_meta") if isinstance(product.get("listing_meta"), dict) else {},

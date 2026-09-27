@@ -322,7 +322,7 @@ async def my_liked_products(
         for rev in rev_r.data or []:
             pid = str(rev.get("product_id"))
             rating = rev.get("rating")
-            if pid and rating:
+            if pid and rating is not None:
                 sums[pid] = sums.get(pid, 0) + float(rating)
                 review_counts[pid] = review_counts.get(pid, 0) + 1
         for pid in page_ids:
@@ -339,7 +339,7 @@ async def my_liked_products(
         items.append(serialize_product_card(
             row,
             shop_row=shops_map.get(str(row["shop_id"])),
-            average_rating=avg_ratings.get(pid, 0.0),
+            average_rating=avg_ratings.get(pid),
             review_count=review_counts.get(pid, 0),
             first_image_only=True,
         ))
@@ -427,9 +427,17 @@ def _fetch_carousel_products(
     shop_ids = list({str(p["shop_id"]) for p in products if p.get("shop_id")})
 
     shops_map = shop_service._load_card_shops(client, shop_ids)
+    from feed.catalog import card_rating, rating_map
+
+    ratings = rating_map(client, [str(p["id"]) for p in products if p.get("id")])
 
     return [
-        serialize_product_card(p, shop_row=shops_map.get(str(p.get("shop_id", ""))))
+        serialize_product_card(
+            p,
+            shop_row=shops_map.get(str(p.get("shop_id", ""))),
+            average_rating=card_rating(ratings, str(p.get("id")))[0],
+            review_count=card_rating(ratings, str(p.get("id")))[1],
+        )
         for p in products
     ]
 
