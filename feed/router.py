@@ -1,4 +1,4 @@
-from typing import Annotated, Any
+from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Cookie, Depends, Header, Query, Response
 from supabase import Client
@@ -100,6 +100,20 @@ async def home_feed(
         session_id=session,
         filters=filters,
     )
+
+
+@router.get("/cron/refresh")
+@router.post("/cron/refresh")
+async def refresh_guest_ranking(
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Rebuild the shared guest ranking. Vercel cron calls this daily; listing writes also invalidate it."""
+    from media.routes import authorize_cron
+
+    from feed.service import rebuild_guest_ranking
+
+    authorize_cron(authorization)
+    return rebuild_guest_ranking()
 
 
 @router.get("/latest", response_model=list[ProductResponse])

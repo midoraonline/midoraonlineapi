@@ -398,6 +398,12 @@ def update_shop(client: Any, shop_id: str, data: ShopUpdate, viewer_id: str | No
     return get_shop(client, shop_id, viewer_id=viewer_id)
 
 
+def _public_hours(value: Any) -> dict[str, Any]:
+    from tenants.opening_hours import public_hours
+
+    return public_hours(value)
+
+
 def _row_to_shop_response(row: dict) -> dict:
     return {
         "id": str(row["id"]),
@@ -414,7 +420,6 @@ def _row_to_shop_response(row: dict) -> dict:
         "contacts": row.get("contacts"),
         "social_links": row.get("social_links"),
         "location": row.get("location"),
-        "availability": row.get("availability"),
         "theme_config": row.get("theme_config"),
         "shop_type": row.get("shop_type") or "product",
         "is_active": row.get("is_active", False),
@@ -434,6 +439,7 @@ def _row_to_shop_response(row: dict) -> dict:
         "last_seen_at": str(row["last_seen_at"]) if row.get("last_seen_at") else None,
         "owner_phone_verified": False,
         "is_personal": bool(row.get("is_personal")),
+        **_public_hours(row.get("availability")),
         "seller_name": row.get("name"),
         "joined_at": str(row["created_at"]) if row.get("created_at") else None,
         "last_active_at": str(row["last_seen_at"]) if row.get("last_seen_at") else None,

@@ -440,6 +440,18 @@ def products_with_min_rating(client: Any, min_rating: float) -> list[str]:
 def rating_map(client: Any, product_ids: list[str]) -> dict[str, tuple[float, int]]:
     if not product_ids:
         return {}
+    try:
+        resp = client.rpc("product_review_stats", {"p_ids": product_ids}).execute()
+        out: dict[str, tuple[float, int]] = {}
+        for row in resp.data or []:
+            pid = row.get("product_id")
+            count = int(row.get("review_count") or 0)
+            if not pid or count <= 0:
+                continue
+            out[str(pid)] = (round(float(row.get("average_rating") or 0), 2), count)
+        return out
+    except Exception as exc:
+        logger.info("product_review_stats rpc unavailable, scanning rows: %s", exc)
     totals: dict[str, float] = {}
     counts: dict[str, int] = {}
     try:

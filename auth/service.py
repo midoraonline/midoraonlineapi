@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple
 from uuid import uuid4
 import logging
+import time
 
 import bcrypt
 import jwt
@@ -35,8 +36,17 @@ def hash_password(password: str) -> str:
     return hashed.decode("utf-8")
 
 
+UNUSABLE_PASSWORD_HASH = "!"
+_USER_LOGIN_COLUMNS = "id,email,password_hash,full_name,user_role,email_verified,status"
+
+
+def unusable_password_hash() -> str:
+    """Stored for Google-only accounts. verify_password rejects it without bcrypt."""
+    return UNUSABLE_PASSWORD_HASH
+
+
 def verify_password(plain_password: str, password_hash: str) -> bool:
-    if not password_hash:
+    if not password_hash or not str(password_hash).startswith("$2"):
         return False
     try:
         return bcrypt.checkpw(
@@ -45,6 +55,31 @@ def verify_password(plain_password: str, password_hash: str) -> bool:
         )
     except ValueError:
         return False
+
+
+def lookup_user_by(column: str, value: str, *, columns: str | None = None) -> dict[str, Any] | None:
+    """One indexed users lookup. Retries without google_sub if that column is absent."""
+    client = get_supabase_admin()
+    selected = columns or _USER_LOGIN_COLUMNS
+
+    def _query(cols: str):
+        return (
+            client.table("users")
+            .select(cols)
+            .eq(column, value)
+            .limit(1)
+            .execute()
+        )
+
+    try:
+        result = _query(selected)
+    except Exception:
+        if "google_sub" not in selected:
+            raise
+        result = _query(selected.replace(",google_sub", ""))
+    if not result.data:
+        return None
+    return result.data[0]
 
 
 def create_user(
@@ -74,20 +109,22 @@ def create_user(
 
 
 def authenticate_user(email: str, password: str) -> Optional[dict[str, Any]]:
-    client = get_supabase_admin()
     normalized_email = email.strip().lower()
-    result = (
-        client.table("users")
-        .select("*")
-        .eq("email", normalized_email)
-        .limit(1)
-        .execute()
+    started = time.perf_counter()
+    user = lookup_user_by("email", normalized_email)
+    looked_up = time.perf_counter()
+    if not user or not verify_password(password, user.get("password_hash", "")):
+        logger.info(
+            "auth:password failed lookup_ms=%.1f bcrypt_ms=%.1f",
+            (looked_up - started) * 1000,
+            (time.perf_counter() - looked_up) * 1000,
+        )
+        return None
+    logger.info(
+        "auth:password ok lookup_ms=%.1f bcrypt_ms=%.1f",
+        (looked_up - started) * 1000,
+        (time.perf_counter() - looked_up) * 1000,
     )
-    if not result.data:
-        return None
-    user = result.data[0]
-    if not verify_password(password, user.get("password_hash", "")):
-        return None
     return user
 
 

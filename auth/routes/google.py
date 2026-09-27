@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from urllib.parse import urlencode
@@ -40,7 +42,7 @@ async def google_oauth_callback(
     settings = get_settings()
     frontend_callback_url = settings.google_oauth_frontend_callback_url.strip()
     try:
-        result = handle_callback(code=code, state=state)
+        result = await asyncio.to_thread(handle_callback, code=code, state=state)
         if frontend_callback_url:
             # Session tokens stay in cookies. The redirect only signals success.
             response = RedirectResponse(
@@ -78,7 +80,7 @@ async def google_oauth_callback(
 @router.post("/google/exchange")
 async def google_oauth_exchange(body: GoogleCodeExchangeRequest, response: Response):
     try:
-        result = handle_callback(code=body.code, state=body.state)
+        result = await asyncio.to_thread(handle_callback, code=body.code, state=body.state)
     except Exception:
         raise HTTPException(status_code=400, detail="Google sign-in failed")
     set_auth_cookies(
