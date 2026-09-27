@@ -1,110 +1,97 @@
-# Unused schema audit
+# Production schema cleanup
 
-Read-only review of the migration schema against the API and the frontend. Nothing here was applied to production.
+Joel ran `db/audit/list_live_schema.sql` on production. This report diffs that inventory against the migrations and against code on:
 
-- API: `midoraonline/midoraonlineapi` `main` @ `366b547`
-- Frontend: `midoraonline/midoraonline` `main` @ `a48a9ed` (cloned read-only; it does not query Postgres except Supabase Realtime)
-- Schema built by applying `supabase_schema.sql` and `db/migrations/001`–`046` on local Postgres 16 (46 base tables, 2 views, 1 trigger)
+- API: `midoraonline/midoraonlineapi` `main` @ `8ba0a24`
+- Frontend: `midoraonline/midoraonline` `main` @ `a48a9ed`
 
-Searches covered Python, SQL (functions, triggers, views, RLS, seeds), and frontend TypeScript. Cron in this repo is HTTP (`/moderation/drain`, `/media/sweep`), not `pg_cron` jobs that name these tables.
+The first cleanup (PR #10) targeted `listing_images`, `subscriptions.payment_method`, and `subscriptions.ipn_id`. Those objects are not in this production database, so that script is a no-op here. This pass drops only objects that are in the live inventory and have no reads or writes.
 
-Classification is conservative. Auth, Pesapal payments, refresh tokens, reviews, moderation, and migrations 043–046 stay **used** unless a column is never read and never written.
+Nothing in this file was applied to production.
 
-## Proposed removals (unused)
+## Rating columns
 
-| Object | Reason | Evidence | Risk |
-| --- | --- | --- | --- |
-| `public.listing_images` (`id`, `listing_id`, `image_url`, `sort_order`, `created_at`) | Superseded by `products.image_urls` (and `image_keys` / `video_keys` from migration 045). | Only `supabase_schema.sql` and `db/migrations/010_new_tables.sql`. No `table("listing_images")`, no frontend reference, no trigger, no seed. RLS is enabled and no policy was added. | Low. Confirm `estimated_rows` before dropping. Rows are copied to `archive.listing_images` first. |
-| `subscriptions.payment_method` | Column is declared and never read or written. Live Pesapal rows use `payment_status`, `merchant_reference`, `pesapal_order_tracking_id`, `plan_tier`, `amount`, `currency`. | Only `supabase_schema.sql` (the `CREATE TABLE`). No Python, frontend, function, or seed reference. | Medium, because the table is the Pesapal ledger. The table is not dropped. Backup is `archive.subscriptions_payment_method`. Skip this column if any non-null values show up in the live check. |
-| `subscriptions.ipn_id` | The API talks to Pesapal's IPN registry in memory (`payments/service.py` `_get_ipn_id`). It never inserts or selects `subscriptions.ipn_id`. | Word `ipn_id` in `payments/service.py` is the Pesapal JSON field (`row["ipn_id"]` on their IPN list, `res.json().get("ipn_id")`), not this column. Inserts and selects on `subscriptions` do not include it. | Medium, same as above. Backup is `archive.subscriptions_ipn_id`. |
+Drop `products.average_rating` and `products.rating_count`. Do not add a sync trigger.
 
-`db/audit/cleanup_unused_schema.sql` archives then drops only these three. It is one `DO` statement and is not a numbered migration.
+Production has both columns on all 71 products, `numeric(3,2)` and `int`, default `0`. There are 14 `product_reviews` rows, and every product is still `0`, so the columns were never maintained. They are not in any migration. Card ratings are computed in Python from `product_reviews.rating` (`feed/catalog.py` `card_rating` / `rating_map`) and returned as `average_rating` (number or null) and `review_count`. The card select in `feed/service.py` does not include the stored columns. `shop/service.py` `get_product` loads `select("*")` and then overwrites `average_rating` from `product_reviews`. The frontend reads the JSON fields `average_rating` and `review_count` (`lib/cardRating.ts`); it does not read `rating_count`. No view or SQL function in this repo names either column.
 
-## Write-only / legacy (not in the cleanup script)
+Blank stars on the old home feed were the API omitting the review query and sending `0`, which the card treats as unrated. They were not caused by reading `products.average_rating`. A trigger would keep a column the API ignores, and a stored `0` still looks unrated.
 
-| Object | Why it stays | Evidence | Risk if dropped |
-| --- | --- | --- | --- |
-| `refresh_tokens.issued_at` | Auth. Default `now()` fills it on insert. Rotation reads the row with `select("*")` but never uses this field. | Only `db/migrations/001_refresh_tokens.sql`. `auth/service.py` does not set or read it. Migration 044 `family_id` is the live reuse key. | High. Leave it. |
-| `refresh_tokens.replaced_by` | Auth. Written on revoke/rotate, never read back. | `auth/service.py` `_insert_refresh_record` / `_revoke_refresh_record`. | High. Leave it. |
-| `push_subscriptions.last_used_at` | Default `now()` on insert. Push send does not update it and nothing reads it. | Only `supabase_schema.sql` and `025_push_subscriptions.sql`. `notifications/push_service.py` writes `endpoint`, `p256dh`, `auth`, `user_agent`. | Low, but it is write-only, so it is not in the first cleanup. |
+## What production is missing
 
-`products.embedding` (jsonb) and `products.embedding_vec` are both live: the API writes the jsonb (`feed/embeddings.py`) and trigger `trg_products_sync_embedding_vec` copies it for `match_feed_products`. Not a dead pair.
+In the repo DDL, absent from the live inventory:
 
-`products.image_urls` is the listing gallery. `image_keys` / `video_keys` (045) are the UploadThing keys for that same array. `listing_images` is the unused side table.
+| Object | Where it is defined | Note |
+| --- | --- | --- |
+| `public.listing_images` | `supabase_schema.sql`, `db/migrations/010_new_tables.sql` | Superseded by `products.image_urls`. Not in production, so this cleanup does not touch it. |
+| `subscriptions.payment_method` | `supabase_schema.sql` `CREATE TABLE` only | Never a later migration. Pesapal writes `payment_status`, `merchant_reference`, `pesapal_order_tracking_id`, `plan_tier`, `amount`, `currency`. |
+| `subscriptions.ipn_id` | `supabase_schema.sql` `CREATE TABLE` only | The API keeps Pesapal's IPN id in memory (`payments/service.py`). It does not select this column. |
 
-`users` and `profiles` both store `full_name`, `phone_number`, and `user_role`. Auth reads and writes both (`auth/providers/emailpassword.py`). Not safe to drop either copy.
+Migrations that the inventory shows as applied: `categories.parent_slug` and `categories.metadata` (046; 186 of 206 categories have a parent), `products.image_keys` / `video_keys` (045), `refresh_tokens.family_id` (044), `shops.is_personal` (043), `products.embedding_vec` (kept in sync by `trg_products_sync_embedding_vec`).
 
-## Borderline, left out of the cleanup
+## What production has that migrations do not
 
-| Object | Why it was left out | Evidence | Risk |
-| --- | --- | --- | --- |
-| `public.orders` (`customer_id`, `shop_id`, `total_amount`, `order_status`, `pesapal_tracking_id`, …) | No application reads or writes. Admin stats say checkout orders are not part of the product and sum `subscriptions` instead (`admin/routes/stats.py`). `013_admin_perf_indexes.sql` still indexes `order_status` from an older revenue plan. The `pesapal_tracking_id` name is payment-shaped, so this stays until the live check shows it is empty and Joel confirms no external writer. | `table("orders")` does not exist. Frontend has no `orders` query. Pesapal code uses `subscriptions` and `pesapal_webhook_logs`. | High if dropped while rows exist. Not in `cleanup_unused_schema.sql`. |
-| `get_or_create_conversation`, `calculate_shop_duration`, `submit_verification_with_docs` | SQL functions with no API or frontend caller. Chat and verification were reimplemented in Python (`marketplace/routes/chat_native.py`, `tenants/routes/verifications.py`). | Definitions only: `012_native_chat.sql`, `011_verification_docs_comments.sql`. | Medium. Functions are not tables; this pass does not drop them. |
+| Object | Rows | Decision |
+| --- | --- | --- |
+| `chat_sessions` | 245 | Keep. `ai/routes/chat.py` reads and writes it. No `CREATE TABLE` in the repo, so a fresh database would not have the AI concierge tables. Not dropped. |
+| `chat_messages` | 172 | Keep the table. Same writer. |
+| `chat_messages.thought_signature` | 0 non-null | Drop. No Python or frontend reference. Inserts are `session_id`, `sender_type`, `message`. |
+| `products.average_rating`, `products.rating_count` | all 71 at default 0 | Drop. See above. |
+| `product_reviews.updated_at` | present | Leave. Not in the repo DDL and not in the removal list. Review code does not name it. |
 
-## Used tables
+## Removals
 
-Every other public table is read or written by the API, a SQL function the API calls, or frontend Realtime. Migrations 043–046 are in use: `shops.is_personal`, `refresh_tokens.family_id`, `products.image_keys`, `products.video_keys`, `categories.parent_slug`, `categories.metadata`.
+`db/audit/cleanup_unused_schema.sql` is one `DO` statement. It creates `archive` if needed, copies rows, then drops. Catalog checks skip anything production does not have. A failed step rolls the statement back. It is not a numbered migration.
 
-| Table | Last reference |
+| Object | Reason |
 | --- | --- |
-| `analytics_events` | `analytics/routes/insights.py` (view `analytics_events_daily` too) |
-| `boost_plans` | `ranking/boost_service.py` |
-| `categories` | `categories/service.py`; metadata filled by `db/seeds/seed_services_and_opportunities.sql` |
-| `contact_submissions` | `mail/routes/contactus.py` |
-| `conversations` | `marketplace/routes/chat_native.py`; frontend Realtime `components/chat/ChatList.tsx` |
-| `email_verification_tokens` | `auth/providers/emailpassword.py` |
-| `feed_config` | `feed/config.py`, `admin/routes/feed_config.py` |
-| `fraud_flags` | `ranking/fraud_service.py`, `admin/routes/fraud.py` |
-| `lead_events` | `ranking/lead_service.py` |
-| `listing_boosts` | `ranking/boost_service.py`, `feed/composite.py` |
-| `listing_events` | `marketplace/routes/listing_events.py`; `whatsapp_clicks` on cards is counted from here, not a products column |
-| `listing_image_hashes` | `listingModeration/stages/near_duplicate.py` (`_HASHES_TABLE`) |
-| `listing_impressions` | `feed/impressions.py` (view `v_listing_impressions_agg`) |
-| `listing_moderation_queue` | `listingModeration/service.py`; cron drain calls `claim_moderation_queue_batch` |
-| `mail_queue` | `mail/queue.py` (`claim_next_mail_queue_item`) |
-| `messages` | `marketplace/routes/chat_native.py`; frontend Realtime `components/chat/ChatThread.tsx` |
-| `moderation_bad_image_hashes` | `listingModeration/service.py` (`_BAD_HASHES_TABLE`) |
-| `notifications` | `notifications/` |
-| `online_presence` | `marketplace/presence_service.py` |
-| `pesapal_webhook_logs` | `payments/service.py` (insert payload, set `processed`) |
-| `platform_feedback` | `marketplace/routes/feedback.py`, `admin/routes/feedback.py` |
-| `product_comments` | `reviews/` and admin comment routes; frontend admin flag toggle |
-| `product_likes` | `shop/engagement_service.py` |
-| `product_reports` | `marketplace/routes/reports.py` |
-| `product_reposts_log` | `shop/service.py` (read today's rows, then insert) |
-| `product_reviews` | `feed/catalog.py` `rating_map`, `reviews/product_service.py` |
-| `products` | Feed, shop, search, moderation. Card ratings are computed from `product_reviews`, not a products column. |
-| `profiles` | `auth/providers/emailpassword.py` (`avatar_url` lives here) |
-| `push_subscriptions` | `notifications/push_service.py` |
-| `refresh_tokens` | `auth/service.py` (migration 044 `family_id`) |
-| `search_history` | `search/service.py` |
-| `seller_blocks` | `marketplace/routes/reports.py` |
-| `seller_reports` | `marketplace/routes/reports.py` |
-| `seller_reviews` | `reviews/service.py`; `recalculate_shop_seller_score` |
-| `shop_ai_context` | `ai/routes/context.py`, `ai/tools/supabase_tools.py` |
-| `shop_comments` | shop comment routes; frontend admin flag toggle |
-| `shop_follows` | `shop/engagement_service.py` |
-| `shop_likes` | `shop/engagement_service.py` |
-| `shop_verifications` | `tenants/routes/verifications.py`; frontend Realtime |
-| `shops` | Tenants, feed, payments (`subscription_end_date`). `is_personal` is migration 043. |
-| `subscriptions` | `payments/service.py` (Pesapal). Only `payment_method` and `ipn_id` are unused columns. |
-| `user_feed_cache` | `feed/service.py` (`ranked_ids`, `preference_vector`, `candidate_count`) |
-| `users` | Auth, plans (`plan_tier`, `plan_expires_at`), phone verification |
-| `verification_codes` | `common/verification_service.py` |
+| `public.orders` | 0 rows. No `table("orders")` in the API. Frontend has no orders query. Admin stats sum `subscriptions` and say checkout orders are not part of the product (`admin/routes/stats.py`). Only `supabase_schema.sql` and an index in `013_admin_perf_indexes.sql`. |
+| `products.average_rating`, `products.rating_count` | Stale defaults. Cards compute ratings from `product_reviews`. No SQL view references them. |
+| `chat_messages.thought_signature` | All null. No code reads or writes the name. |
+| `get_or_create_conversation(uuid, uuid, uuid, uuid)` | Defined in `012_native_chat.sql`. Chat is `marketplace/routes/chat_native.py`. No caller. |
+| `calculate_shop_duration(uuid)` | Defined in `011_verification_docs_comments.sql`. No caller. |
+| `submit_verification_with_docs(uuid, text, jsonb, text, text, text)` | Same migration. Verification is `tenants/routes/verifications.py`. No caller. |
 
-Frontend Realtime subscribes to `shops`, `products`, `shop_verifications`, `messages`, and `conversations`. Other screens go through the API.
+The script drops a function only when `pg_get_function_identity_arguments` matches that signature, then `DROP FUNCTION IF EXISTS`. A different signature is left in place and a `NOTICE` is raised. `increment_unread` stays.
 
-## Views, trigger, functions
+Archive tables: `archive.orders`, `archive.products_rating_columns` (`id`, `average_rating`, `rating_count`), `archive.chat_messages_thought_signature` (`id`, `thought_signature`).
 
-- `analytics_events_daily`: read in `analytics/routes/insights.py`. Used.
-- `v_listing_impressions_agg`: read in `feed/impressions.py`. Used.
-- `trg_products_sync_embedding_vec`: keeps `embedding_vec` aligned with `embedding`. Used.
-- Called from Python: `match_feed_products`, `recalculate_product_listing_score`, `recalculate_shop_seller_score`, `reclaim_stuck_moderation_rows`, `claim_moderation_queue_batch`, `increment_unread`, `increment_product_view_count`, `increment_shop_view_count`, `claim_next_mail_queue_item`.
-- Defined and not called: `get_or_create_conversation`, `calculate_shop_duration`, `submit_verification_with_docs`. Left in place (see borderline).
+## Empty in production, and staying
 
-## How to run the live check first
+These are empty or all-null in the live inventory. Application code still reads or writes them.
 
-1. Open `db/audit/list_live_schema.sql`, paste it into the Supabase SQL Editor, and run it.
-2. Diff `table_name` / `column_name` against this report. Missing rows mean a migration was not applied.
-3. For `listing_images`, `subscriptions.payment_method`, and `subscriptions.ipn_id`, read `estimated_rows` and `estimated_non_null`. Do not run the cleanup if those estimates are non-zero and unexpected, or if `estimated_non_null` is NULL because the table was never analyzed.
-4. Only then, and only by hand, run `db/audit/cleanup_unused_schema.sql` as one query. It writes `archive.listing_images`, `archive.subscriptions_payment_method`, and `archive.subscriptions_ipn_id`, then drops the unused objects.
+| Object | Why it stays |
+| --- | --- |
+| `products.ai_seo_tags` | Selected on product detail (`shop/service.py`) and included in the embedding source hash (`feed/embeddings.py`). Tags are not generated yet. |
+| `products.discount_expires_at` | On card, search, and shop selects. Product update writes it (`shop/routes/products.py`). |
+| `listing_events.ip_address`, `listing_events.device_hash` | `marketplace/routes/listing_events.py` inserts both from query params. Clients are omitting them today (`session_id` is only 2 non-null). |
+| `listing_impressions.device_hash` | `feed/impressions.py` sets it on insert. `analytics/materialize.py` writes null. |
+| `users.plan_expires_at` | `payments/plan_service.py` and `payments/service.py` read and write it. Auth session returns it. No expiry has been stored yet. |
+| `shops.subscription_end_date` | `payments/service.py` writes it. Feed scoring, placement, and shop reads use it. |
+| `online_presence` | `marketplace/presence_service.py` upserts and deletes stale rows. |
+| `fraud_flags` | `ranking/fraud_service.py`, `admin/routes/fraud.py`. |
+| `listing_boosts` | `ranking/boost_service.py`, `feed/composite.py`, shop and admin reads. |
+| `moderation_bad_image_hashes` | `listingModeration/service.py` (`_BAD_HASHES_TABLE`). |
+| `pesapal_webhook_logs` | `payments/service.py` inserts the IPN payload and sets `processed`. |
+| `seller_blocks`, `seller_reports` | `marketplace/routes/reports.py`, `admin/routes/reports.py`. |
+| `shop_comments` | `marketplace/routes/comments.py` and the admin flag toggle. |
+
+## Still not dropped
+
+| Object | Why |
+| --- | --- |
+| `refresh_tokens.issued_at` | Default `now()` on insert. Rotation uses `select("*")` and does not read the field. Auth table. |
+| `refresh_tokens.replaced_by` | Written on rotate, never read. Auth table. |
+| `push_subscriptions.last_used_at` | Default `now()`. Push send writes `endpoint`, `p256dh`, `auth`, `user_agent` only. |
+| `chat_sessions`, `chat_messages` | Live AI concierge. Missing from migrations; do not drop. |
+| `product_reviews.updated_at` | Extra versus migrations. Review code does not use it. Left alone. |
+
+`products.embedding` (jsonb) and `products.embedding_vec` are both live. `users` and `profiles` both store name, phone, and role; auth writes both.
+
+## How to run
+
+1. Paste `db/audit/cleanup_unused_schema.sql` into the Supabase SQL Editor and run it once. It is a single statement, so the pooled editor keeps the work inside one transaction.
+2. Expect notices only if a function exists under a different signature. Those functions are left alone.
+3. Running it again is a no-op: each drop is guarded by a catalog check.
+4. Rows are in `archive.orders`, `archive.products_rating_columns`, and `archive.chat_messages_thought_signature` before the drop. `orders` is empty in the inventory, so that archive table will be empty.
+5. Do not run this from deploy. It is not a numbered migration.
