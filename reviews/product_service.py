@@ -3,9 +3,67 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from postgrest.exceptions import APIError
+
 from db.supabase import get_supabase_admin
 
 logger = logging.getLogger(__name__)
+
+
+class ReviewWriteError(Exception):
+    def __init__(self, message: str, code: str, status: int) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status = status
+
+
+def _api_text(exc: APIError) -> str:
+    return " ".join(
+        str(part or "")
+        for part in (getattr(exc, "message", ""), getattr(exc, "details", ""), getattr(exc, "hint", ""))
+    )
+
+
+def _raise_db(exc: APIError) -> None:
+    logger.exception("product review write failed: %s", _api_text(exc))
+    code = str(getattr(exc, "code", "") or "")
+    text = _api_text(exc).lower()
+    if code == "23505":
+        raise ReviewWriteError(
+            "You have already reviewed this product.",
+            "duplicate_review",
+            409,
+        ) from exc
+    if code == "23514" or "rating" in text and "check" in text:
+        raise ReviewWriteError("Rating must be between 1 and 5.", "invalid_rating", 422) from exc
+    if code == "23503":
+        raise ReviewWriteError("That listing was not found.", "product_not_found", 404) from exc
+    if "average_rating" in text or "rating_count" in text:
+        raise ReviewWriteError(
+            "Saving a review failed because a database trigger still updates removed rating columns. Apply migration 050.",
+            "review_trigger",
+            503,
+        ) from exc
+    if code in {"23502", "42703"}:
+        raise ReviewWriteError(
+            "Saving a review failed because the reviews table is missing a column or default. Apply migration 050.",
+            "review_schema",
+            503,
+        ) from exc
+    raise ReviewWriteError("Could not save this review.", "review_write_failed", 503) from exc
+
+
+def _update_review(admin: Any, product_id: str, user_id: str, rating: int, comment: str | None) -> dict | None:
+    updated = (
+        admin.table("product_reviews")
+        .update({"rating": rating, "comment": comment})
+        .eq("product_id", product_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    if not updated.data:
+        return None
+    return updated.data[0]
 
 
 def create_product_review(
@@ -13,22 +71,31 @@ def create_product_review(
     user_id: str,
     rating: int,
     comment: str | None = None,
+    *,
+    client: Any | None = None,
 ) -> dict | None:
-    """Create a product review (one per user per product)."""
+    """Create or update the caller's review for a product."""
     if rating < 1 or rating > 5:
-        raise ValueError("Rating must be between 1 and 5")
+        raise ReviewWriteError("Rating must be between 1 and 5.", "invalid_rating", 422)
 
-    admin = get_supabase_admin()
+    admin = client or get_supabase_admin()
+    try:
+        existing = (
+            admin.table("product_reviews")
+            .select("id")
+            .eq("product_id", product_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    except APIError as exc:
+        _raise_db(exc)
 
-    existing = (
-        admin.table("product_reviews")
-        .select("id")
-        .eq("product_id", product_id)
-        .eq("user_id", user_id)
-        .execute()
-    )
     if existing.data:
-        raise ValueError("You have already reviewed this product")
+        try:
+            return _update_review(admin, product_id, user_id, rating, comment)
+        except APIError as exc:
+            _raise_db(exc)
 
     payload = {
         "product_id": product_id,
@@ -36,10 +103,19 @@ def create_product_review(
         "rating": rating,
         "comment": comment,
     }
-    r = admin.table("product_reviews").insert(payload).execute()
-    if not r.data:
+    try:
+        created = admin.table("product_reviews").insert(payload).execute()
+    except APIError as exc:
+        if str(getattr(exc, "code", "") or "") == "23505":
+            logger.warning("product review insert raced unique constraint; updating product=%s user=%s", product_id, user_id)
+            try:
+                return _update_review(admin, product_id, user_id, rating, comment)
+            except APIError as update_exc:
+                _raise_db(update_exc)
+        _raise_db(exc)
+    if not created.data:
         return None
-    return r.data[0]
+    return created.data[0]
 
 
 def list_product_reviews(

@@ -30,6 +30,7 @@ def get_modules() -> list[AppModule]:
     from payments.module import PaymentsModule
     from media.module import MediaModule
     from ranking.module import RankingModule
+    from platform_settings.module import SettingsModule
     from search.module import SearchModule
     from shop.module import ShopModule
     from tenants.module import TenantsModule
@@ -48,6 +49,7 @@ def get_modules() -> list[AppModule]:
         PaymentsModule(),
         AdminModule(),
         SearchModule(),
+        SettingsModule(),
         MarketplaceModule(),
         PushModule(),
         AnalyticsModule(),

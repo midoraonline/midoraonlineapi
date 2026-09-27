@@ -78,8 +78,10 @@ async def create_shop(
 ):
     """Create a shop. Both /api/v1/shops and /api/v1/shops/ accept POST
     (avoids 405 when proxies strip the trailing slash)."""
+    from platform_settings.flags import assert_posting_open
     from shop.personal import find_personal_shop
 
+    assert_posting_open()
     # Upgrading a personal seller profile reuses that row, so it is not a new shop.
     if find_personal_shop(client, user_id) is None:
         plan_service.assert_can_create_shop(client, user_id)

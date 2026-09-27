@@ -15,6 +15,7 @@ from admin.routes import comments_admin as admin_comments
 from admin.routes import chat_admin as admin_chat
 from admin.routes import feedback as admin_feedback
 from admin.routes import feed_config as admin_feed_config
+from admin.routes import feature_flags as admin_feature_flags
 from media.routes import admin_router as admin_media
 from tenants.routes import verifications as verif_admin
 
@@ -32,6 +33,7 @@ router.include_router(admin_boosts.router, prefix="", tags=["admin"])
 router.include_router(admin_fraud.router, prefix="", tags=["admin"])
 router.include_router(admin_notifications.router, prefix="", tags=["admin"])
 router.include_router(admin_settings.router, prefix="", tags=["admin"])
+router.include_router(admin_feature_flags.router, prefix="", tags=["admin"])
 router.include_router(admin_reports.router, prefix="", tags=["admin"])
 router.include_router(admin_comments.router, prefix="", tags=["admin"])
 router.include_router(admin_chat.router, prefix="", tags=["admin"])

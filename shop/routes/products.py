@@ -11,11 +11,13 @@ from core.security import TokenPayload, get_current_claims, get_current_user_id,
 from payments import plan_service
 from ranking.service import calculate_listing_score
 from shop import engagement_service, service as shop_service
+from platform_settings.flags import analytics_enabled, assert_posting_open
 from shop.events import (
     product_update_requires_moderation,
     publish_product_created,
     publish_product_updated,
 )
+from shop.listing_status import CLOSING_STATUSES, is_closing_only, stock_required
 from shop.schemas import (
     DiscountSet,
     PaginatedProductCards,
@@ -158,6 +160,7 @@ async def create_product(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
+    assert_posting_open()
     product = await _insert_owned_product(client, user_id, shop_id, body)
     await publish_product_created(product, seller_id=user_id, background=background_tasks)
     return product
@@ -214,6 +217,7 @@ async def create_listing(
     from auth.cookies import set_auth_cookies
     from shop.personal import PersonalShopUnavailable, ShopChoiceRequired, resolve_shop_for_direct_post
 
+    assert_posting_open()
     try:
         shop_id, created_personal = resolve_shop_for_direct_post(client, user_id)
     except ShopChoiceRequired:
@@ -389,6 +393,8 @@ async def record_product_view(
     user_id: str | None = Depends(get_optional_user_id),
 ):
     """Increment product view count and record a per-user viewed event when authenticated."""
+    if not analytics_enabled():
+        return ViewCountResponse(view_count=0)
     try:
         n = engagement_service.record_product_view(client, product_id, buyer_id=user_id)
         calculate_listing_score(product_id)
@@ -503,10 +509,14 @@ async def update_product(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
+    fields = body.model_dump(exclude_unset=True)
+    if not is_closing_only(fields):
+        assert_posting_open()
+
     existing_r = (
         client.table("products")
         .select(
-            "shop_id,is_published,image_urls,price_ugx,item_type,location_name,category,description,listing_meta"
+            "shop_id,is_published,image_urls,price_ugx,item_type,location_name,category,description,listing_meta,status,stock_quantity"
         )
         .eq("id", product_id)
         .limit(1)
@@ -515,13 +525,20 @@ async def update_product(
     if not existing_r.data:
         raise HTTPException(status_code=404, detail="Product not found")
     existing = existing_r.data[0]
-    await _enforce_publish_gates(
-        client,
-        user_id=user_id,
-        shop_id=str(existing["shop_id"]),
-        body_or_row=body,
-        existing=existing,
-    )
+    if fields.get("status") not in CLOSING_STATUSES:
+        gate_body: dict | ProductUpdate = body
+        reactivating = fields.get("status") == "active" or (
+            str(existing.get("status") or "") in CLOSING_STATUSES and fields.get("is_published") is True
+        )
+        if reactivating:
+            gate_body = {**fields, "is_published": True}
+        await _enforce_publish_gates(
+            client,
+            user_id=user_id,
+            shop_id=str(existing["shop_id"]),
+            body_or_row=gate_body,
+            existing=existing,
+        )
 
     old_urls = existing.get("image_urls") or []
     updated = shop_service.update_product(client, product_id, body)
@@ -645,7 +662,7 @@ async def toggle_product_availability(
     current = (
         client.table("products")
         .select(
-            "shop_id,is_published,image_urls,price_ugx,item_type,location_name,category,description,listing_meta"
+            "shop_id,is_published,image_urls,price_ugx,item_type,location_name,category,description,listing_meta,status,stock_quantity"
         )
         .eq("id", product_id)
         .limit(1)
@@ -656,7 +673,19 @@ async def toggle_product_availability(
 
     existing = current.data[0]
     new_val = not bool(existing.get("is_published", True))
+    update: dict[str, object] = {"is_published": new_val}
+    current_status = str(existing.get("status") or "")
     if new_val:
+        if current_status in CLOSING_STATUSES:
+            if stock_required(existing.get("item_type")) and int(existing.get("stock_quantity") or 0) <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "detail": "Enter a stock quantity greater than 0 before publishing this listing again.",
+                        "code": "stock_required",
+                    },
+                )
+            update["status"] = "active"
         await _enforce_publish_gates(
             client,
             user_id=user_id,
@@ -664,7 +693,7 @@ async def toggle_product_availability(
             body_or_row={"is_published": True},
             existing=existing,
         )
-    r = client.table("products").update({"is_published": new_val}).eq("id", product_id).execute()
+    r = client.table("products").update(update).eq("id", product_id).execute()
     if not r.data:
         raise HTTPException(status_code=404, detail="Product not found")
 

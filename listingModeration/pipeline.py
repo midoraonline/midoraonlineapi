@@ -65,6 +65,18 @@ def _decide_from_scores(text_score: float | None, image_score: float | None) -> 
     return ModerationStatus.APPROVED, None
 
 
+def apply_review_policy(
+    status: ModerationStatus,
+    reason: str | None,
+    *,
+    manual: bool,
+) -> tuple[ModerationStatus, str | None]:
+    """Force a clean auto-approval into the existing manual-review queue."""
+    if manual and status == ModerationStatus.APPROVED:
+        return ModerationStatus.NEEDS_REVIEW, "manual review required"
+    return status, reason
+
+
 async def moderate(row: ModerationRow, known_bad_hashes: list[int]) -> ModerationDecision:
     scores: dict[str, Any] = {}
     logger.info(
@@ -201,18 +213,22 @@ async def moderate(row: ModerationRow, known_bad_hashes: list[int]) -> Moderatio
                 prof,
             )
 
-    # Stage 5: text moderation via Gemini.
-    text_result = await text_moderation.check(row.title, row.description)
+    # Stage 5–7: model moderation. The ai_moderation switch skips Gemini and OpenAI.
+    from platform_settings.flags import ai_moderation_enabled, listings_require_review
+
+    if ai_moderation_enabled():
+        text_result = await text_moderation.check(row.title, row.description)
+        image_result = await image_moderation.check(image_cache)
+    else:
+        text_result = {"max_score": None, "skipped": "ai_moderation_off"}
+        image_result = {"max_score": None, "skipped": "ai_moderation_off"}
     scores["text"] = text_result
+    scores["image"] = image_result
     logger.info(
         "[Moderation][Stage 5: Gemini Text] Row %s result: max_score=%s",
         row.id,
         text_result.get("max_score"),
     )
-
-    # Stage 6: image moderation via Gemini vision (reuse downloaded bytes).
-    image_result = await image_moderation.check(image_cache)
-    scores["image"] = image_result
     logger.info(
         "[Moderation][Stage 6: Gemini Vision] Row %s result: max_score=%s",
         row.id,
@@ -225,7 +241,7 @@ async def moderate(row: ModerationRow, known_bad_hashes: list[int]) -> Moderatio
     # Stage 7: free multimodal failover. When Gemini couldn't score (no key,
     # 429, or bad JSON) fall back to OpenAI's free omni-moderation endpoint
     # so the listing gets a real decision instead of parking in review.
-    if text_score is None or image_score is None:
+    if ai_moderation_enabled() and (text_score is None or image_score is None):
         logger.info(
             "[Moderation][Stage 7: OpenAI Failover] Triggered for row %s (Gemini scores: text=%s, image=%s)",
             row.id,
@@ -259,7 +275,7 @@ async def moderate(row: ModerationRow, known_bad_hashes: list[int]) -> Moderatio
                 oai_score,
             )
 
-    status, reason = _decide_from_scores(text_score, image_score)
+    status, reason = apply_review_policy(*_decide_from_scores(text_score, image_score), manual=listings_require_review())
     logger.info(
         "[Moderation] FINAL DECISION for row %s (product_id=%s) -> Status: %s | Reason: '%s' | Scores: %s",
         row.id,
