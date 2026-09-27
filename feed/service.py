@@ -36,7 +36,7 @@ from feed import impressions as imp
 from feed import scoring as S
 from feed import signals as sig
 from feed.embeddings import cosine_similarity, parse_embedding
-from feed.catalog import ListingFilters, fetch_catalog_page
+from feed.catalog import ListingFilters, card_rating, fetch_catalog_page, rating_map
 from feed.placement import rank_and_place
 from shop.schemas import ProductResponse
 
@@ -95,6 +95,18 @@ def _to_response(product: dict[str, Any]) -> ProductResponse:
         stripped.get("location_name"), stripped.get("listing_meta")
     )
     return ProductResponse(**stripped)
+
+
+def _with_ratings(client: Client, cards: list[ProductResponse]) -> list[ProductResponse]:
+    """Fill average_rating and review_count from product_reviews for this page."""
+    if not cards:
+        return cards
+    ratings = rating_map(client, [card.id for card in cards if card.id])
+    updated: list[ProductResponse] = []
+    for card in cards:
+        average, count = card_rating(ratings, card.id)
+        updated.append(card.model_copy(update={"average_rating": average, "review_count": count}))
+    return updated
 
 
 def _parse_ts(raw: Any) -> datetime | None:
@@ -503,7 +515,7 @@ def get_latest_feed(
             page=page,
             limit=limit,
         )
-        return [_to_response(row) for row in rows]
+        return _with_ratings(get_supabase_admin(), [_to_response(row) for row in rows])
     items, _ = _get_latest_feed_page(
         client, page=page, limit=limit, category=category or (filters.category if filters else None)
     )
@@ -548,7 +560,7 @@ def _get_latest_feed_page(
         if not has_more and len(raw) >= fetch_n:
             # Inventory may continue past the over-fetch window.
             has_more = True
-        return [_to_response(item) for item in page_rows], has_more
+        return _with_ratings(db, [_to_response(item) for item in page_rows]), has_more
     except Exception as exc:
         logger.warning("_get_latest_feed_page failed: %s", exc)
         return [], False
@@ -818,7 +830,7 @@ def get_algorithm_feed(
             limit=limit,
         )
         has_more = page * limit < total
-        return [_to_response(row) for row in rows], has_more, total
+        return _with_ratings(db, [_to_response(row) for row in rows]), has_more, total
 
     if not user_id:
         logger.info(
@@ -857,7 +869,7 @@ def get_algorithm_feed(
                 "feed:path=cache_hit user=%s page=%s n=%s cached=%s ttl_s=%s",
                 user_id, page, len(cached_rows), len(cached_ids), FEED_CACHE_TTL_SECONDS,
             )
-            return [_to_response(row) for row in cached_rows], has_more, None
+            return _with_ratings(db, [_to_response(row) for row in cached_rows]), has_more, None
         logger.info(
             "feed:path=cache_miss_empty_page user=%s page=%s ids=%s",
             user_id, page, len(page_ids),
@@ -1014,11 +1026,11 @@ def get_algorithm_feed(
     )
     page_rows = _fetch_products_by_ids(db, page_ids)
     if page_rows:
-        return [_to_response(row) for row in page_rows], has_more, None
+        return _with_ratings(db, [_to_response(row) for row in page_rows]), has_more, None
 
     by_id = {
         str(item["product"].get("id")): item["product"]
         for item in placed
         if item.get("product") and item["product"].get("id")
     }
-    return [_to_response(by_id[pid]) for pid in page_ids if pid in by_id], has_more, None
+    return _with_ratings(db, [_to_response(by_id[pid]) for pid in page_ids if pid in by_id]), has_more, None

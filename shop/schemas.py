@@ -139,6 +139,8 @@ class ProductResponse(BaseModel):
     like_count: int = 0
     view_count: int = 0
     viewer_liked: bool | None = None
+    average_rating: float | None = None
+    review_count: int = 0
 
 
 class ProductListItem(BaseModel):
@@ -164,6 +166,8 @@ class ProductListItem(BaseModel):
     reviewed_at: str | None = None
     created_at: str | None
     view_count: int = 0
+    average_rating: float | None = None
+    review_count: int = 0
 
 
 class ShopEngagementState(BaseModel):
@@ -255,7 +259,7 @@ class ProductDetailResponse(BaseModel):
 
     # Boost status — resolved in the same call
     boosted: bool = False
-    average_rating: float = 0.0
+    average_rating: float | None = None
     review_count: int = 0
 
     # Embedded shop snapshot — eliminates a separate shop fetch on the frontend
@@ -296,8 +300,8 @@ class ProductCard(BaseModel):
     view_count: int = 0
     created_at: str | None = None
 
-    # Reviews (optional — omitted by carousels)
-    average_rating: float = 0.0
+    # Null average means the listing has no reviews yet.
+    average_rating: float | None = None
     review_count: int = 0
 
     # Embedded shop snapshot
