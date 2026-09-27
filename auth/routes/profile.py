@@ -1,9 +1,31 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
-from auth.schemas import ChangePasswordRequest, MessageResponse, ProfileResponse, UpdateProfileRequest
+from auth.preferences import merge_preferences, load_preferences
+from auth.schemas import (
+    ChangePasswordRequest,
+    MessageResponse,
+    ProfileResponse,
+    UpdateProfileRequest,
+    profile_response,
+)
 from core.security import get_current_user_id
 
 router = APIRouter()
+
+
+def _profile_http(profile: dict, user_id: str) -> ProfileResponse:
+    from auth.service import create_supabase_realtime_jwt
+
+    return profile_response(profile, realtime_token=create_supabase_realtime_jwt(user_id))
+
+
+def _value_error(exc: ValueError) -> HTTPException:
+    msg = str(exc)
+    if "already linked" in msg.lower():
+        return HTTPException(status_code=409, detail={"detail": msg, "code": "phone_taken"})
+    if "migration 049" in msg:
+        return HTTPException(status_code=503, detail={"detail": msg, "code": "migration_required"})
+    return HTTPException(status_code=400, detail=msg)
 
 
 @router.patch("/me", response_model=ProfileResponse)
@@ -12,34 +34,79 @@ async def update_me(
     user_id: str = Depends(get_current_user_id),
 ):
     from auth.providers.emailpassword import update_profile
-    from auth.service import create_supabase_realtime_jwt
 
+    preferences = None
+    update_preferences = "preferences" in body.model_fields_set and body.preferences is not None
+    if update_preferences and body.preferences is not None:
+        preferences = merge_preferences(load_preferences(user_id), body.preferences)
     try:
-        update_avatar = "avatar_url" in body.model_fields_set
         profile = update_profile(
             user_id,
             body.full_name,
             body.phone_number,
             body.avatar_url,
-            update_avatar=update_avatar,
+            update_avatar="avatar_url" in body.model_fields_set,
+            bio=body.bio,
+            update_bio="bio" in body.model_fields_set,
+            preferences=preferences,
+            update_preferences=update_preferences,
         )
-    except ValueError as e:
-        msg = str(e)
-        if "already linked" in msg.lower():
-            raise HTTPException(status_code=409, detail={"detail": msg, "code": "phone_taken"})
-        raise HTTPException(status_code=400, detail=msg)
+    except ValueError as exc:
+        raise _value_error(exc) from exc
+    return _profile_http(profile, user_id)
 
-    return ProfileResponse(
-        id=str(profile.get("id", "")),
-        email=profile.get("email", ""),
-        email_verified=bool(profile.get("email_verified")),
-        full_name=profile.get("full_name"),
-        avatar_url=profile.get("avatar_url"),
-        phone_number=profile.get("phone_number"),
-        phone_verified=bool(profile.get("phone_verified")),
-        user_role=profile.get("user_role", "customer"),
-        supabase_realtime_token=create_supabase_realtime_jwt(user_id),
-    )
+
+@router.post("/me/avatar", response_model=ProfileResponse)
+async def upload_avatar(
+    user_id: str = Depends(get_current_user_id),
+    file: UploadFile = File(...),
+):
+    """Store a profile photo via UploadThing.
+
+    JPEG, PNG, WebP, and GIF are uploaded as received. HEIC/HEIF is converted
+    to JPEG at quality 100 with the original pixel size, then uploaded.
+    """
+    from auth.providers.emailpassword import get_profile, update_profile
+    from media.avatar_image import AvatarImageError, prepare_avatar_upload
+    from media.cleanup import cleanup_removed_media
+    from media.uploadthing import upload_file_bytes
+
+    data = await file.read()
+    try:
+        payload, content_type, filename = prepare_avatar_upload(
+            data,
+            content_type=file.content_type,
+            filename=file.filename,
+        )
+    except AvatarImageError as exc:
+        status = 413 if exc.code == "avatar_too_large" else 415
+        if exc.code == "heic_converter_unavailable":
+            status = 503
+        raise HTTPException(status_code=status, detail={"detail": str(exc), "code": exc.code}) from exc
+    try:
+        url = await upload_file_bytes(payload, filename=filename, content_type=content_type)
+    except RuntimeError as exc:
+        code = str(exc)
+        status = 503 if code == "uploadthing_unconfigured" else 502
+        raise HTTPException(
+            status_code=status,
+            detail={"detail": "Profile photo upload failed.", "code": code},
+        ) from exc
+    previous = get_profile(user_id) or {}
+    try:
+        profile = update_profile(
+            user_id,
+            None,
+            None,
+            url,
+            update_avatar=True,
+        )
+    except ValueError as exc:
+        raise _value_error(exc) from exc
+    old_url = previous.get("avatar_url")
+    if old_url and old_url != url:
+        await cleanup_removed_media([old_url], [url])
+    return _profile_http(profile, user_id)
 
 
 @router.post("/change-password", response_model=MessageResponse)

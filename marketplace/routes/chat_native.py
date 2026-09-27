@@ -304,7 +304,11 @@ def _notify_recipient(
     content: str,
 ) -> None:
     """Send a Web Push notification to the message recipient."""
+    from auth.preferences import notification_enabled
     from notifications.push_service import send_to_user  # local import: pywebpush optional
+
+    if not notification_enabled(recipient_id, "messages", "push"):
+        return
 
     admin = get_supabase_admin()
 

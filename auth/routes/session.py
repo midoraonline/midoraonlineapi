@@ -4,7 +4,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from auth.cookies import REFRESH_COOKIE, clear_auth_cookies, clear_refresh_cookie, set_auth_cookies
-from auth.schemas import ProfileResponse, RefreshRequest, TokenResponse
+from auth.schemas import ProfileResponse, RefreshRequest, TokenResponse, profile_response
 from auth.service import access_ttl_seconds, refresh_ttl_seconds, revoke_refresh_token
 from core.rate_limit import RateLimitRefresh
 from core.security import get_current_user_id
@@ -65,18 +65,9 @@ async def me(user_id: str = Depends(get_current_user_id)):
     profile = get_profile(user_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
-    return ProfileResponse(
-        id=str(profile.get("id", "")),
-        email=profile.get("email", ""),
-        email_verified=bool(profile.get("email_verified")),
-        full_name=profile.get("full_name"),
-        avatar_url=profile.get("avatar_url"),
-        phone_number=profile.get("phone_number"),
-        phone_verified=bool(profile.get("phone_verified")),
-        user_role=profile.get("user_role", "customer"),
-        plan_tier=profile.get("plan_tier") or "basic",
-        plan_expires_at=str(profile["plan_expires_at"]) if profile.get("plan_expires_at") else None,
-        supabase_realtime_token=create_supabase_realtime_jwt(user_id),
+    return profile_response(
+        profile,
+        realtime_token=create_supabase_realtime_jwt(user_id),
     )
 
 

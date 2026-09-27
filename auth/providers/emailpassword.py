@@ -177,16 +177,22 @@ def refresh_session(
 def get_profile(user_id: str) -> dict[str, Any] | None:
     """Fetch profile: merge `users` (email, verification, auth fields) with `profiles` (avatar, phone)."""
     client = get_supabase_admin()
-    user_res = (
-        client.table("users")
-        .select(
-            "id, email, full_name, user_role, email_verified, phone_number, phone_verified,"
-            "plan_tier, plan_expires_at"
-        )
-        .eq("id", user_id)
-        .limit(1)
-        .execute()
+    user_cols = (
+        "id, email, full_name, user_role, email_verified, phone_number, phone_verified,"
+        "plan_tier, plan_expires_at, preferences"
     )
+    try:
+        user_res = (
+            client.table("users").select(user_cols).eq("id", user_id).limit(1).execute()
+        )
+    except Exception:
+        user_res = (
+            client.table("users")
+            .select(user_cols.replace(", preferences", ""))
+            .eq("id", user_id)
+            .limit(1)
+            .execute()
+        )
     if not user_res.data:
         return None
     user = user_res.data[0]
@@ -194,7 +200,17 @@ def get_profile(user_id: str) -> dict[str, Any] | None:
 
     plan_tier = effective_plan_tier(user.get("plan_tier"), user.get("plan_expires_at"))
 
-    prof_res = client.table("profiles").select("full_name, avatar_url, phone_number").eq("id", user_id).limit(1).execute()
+    profile_cols = "full_name, avatar_url, phone_number, bio"
+    try:
+        prof_res = client.table("profiles").select(profile_cols).eq("id", user_id).limit(1).execute()
+    except Exception:
+        prof_res = (
+            client.table("profiles")
+            .select("full_name, avatar_url, phone_number")
+            .eq("id", user_id)
+            .limit(1)
+            .execute()
+        )
     # `users.user_role` is the canonical source of truth. `profiles.user_role`
     # used to be read here too but it can drift out of sync (see promote_to_merchant),
     # so we now ignore it. promote_to_merchant keeps profiles in sync for any legacy
@@ -212,6 +228,8 @@ def get_profile(user_id: str) -> dict[str, Any] | None:
             "user_role": user.get("user_role", "customer"),
             "plan_tier": plan_tier,
             "plan_expires_at": user.get("plan_expires_at"),
+            "bio": p.get("bio"),
+            "preferences": user.get("preferences"),
         }
 
     return {
@@ -225,6 +243,8 @@ def get_profile(user_id: str) -> dict[str, Any] | None:
         "user_role": user.get("user_role", "customer"),
         "plan_tier": plan_tier,
         "plan_expires_at": user.get("plan_expires_at"),
+        "bio": None,
+        "preferences": user.get("preferences"),
     }
 
 
@@ -250,6 +270,15 @@ def assert_phone_available(phone_number: str, user_id: str) -> None:
         )
 
 
+def _clean_bio(bio: str | None) -> str | None:
+    text = (bio or "").strip()
+    if not text:
+        return None
+    if len(text) > 500:
+        raise ValueError("bio must be 500 characters or fewer")
+    return text
+
+
 def update_profile(
     user_id: str,
     full_name: str | None,
@@ -257,6 +286,10 @@ def update_profile(
     avatar_url: str | None = None,
     *,
     update_avatar: bool = False,
+    bio: str | None = None,
+    update_bio: bool = False,
+    preferences: dict[str, Any] | None = None,
+    update_preferences: bool = False,
 ) -> dict[str, Any]:
     """Update full_name/phone_number/avatar_url. Resets `phone_verified` when the number changes."""
     client = get_supabase_admin()
@@ -276,8 +309,17 @@ def update_profile(
         if normalized != current_phone:
             payload["phone_verified"] = False
 
+    if update_preferences:
+        payload["preferences"] = preferences
     if payload:
-        client.table("users").update(payload).eq("id", user_id).execute()
+        try:
+            client.table("users").update(payload).eq("id", user_id).execute()
+        except Exception as exc:
+            from core.postgrest_compat import is_undefined_column_error
+
+            if update_preferences and is_undefined_column_error(exc, "preferences"):
+                raise ValueError("Account preferences are not available until migration 049 is applied") from exc
+            raise
 
     # avatar_url lives on `profiles` (not `users`). Empty string clears it.
     profile_mirror: dict[str, Any] = {
@@ -290,26 +332,30 @@ def update_profile(
         ):
             raise ValueError("avatar_url must be an http(s) URL")
         profile_mirror["avatar_url"] = cleaned
+    if update_bio:
+        profile_mirror["bio"] = _clean_bio(bio)
 
     if profile_mirror:
         try:
             client.table("profiles").update(profile_mirror).eq("id", user_id).execute()
-        except Exception:
+        except Exception as exc:
+            from core.postgrest_compat import is_undefined_column_error
+
+            if update_bio and is_undefined_column_error(exc, "bio"):
+                raise ValueError("Profile bio is not available until migration 049 is applied") from exc
             pass  # profiles row may not exist for every user
-        if update_avatar and "avatar_url" in profile_mirror:
-            existing = (
-                client.table("profiles").select("id").eq("id", user_id).limit(1).execute()
-            )
-            if not existing.data:
-                row = {"id": user_id, "avatar_url": profile_mirror["avatar_url"]}
-                if "full_name" in profile_mirror:
-                    row["full_name"] = profile_mirror["full_name"]
-                if "phone_number" in profile_mirror:
-                    row["phone_number"] = profile_mirror["phone_number"]
-                try:
-                    client.table("profiles").insert(row).execute()
-                except Exception:
-                    pass
+        existing = (
+            client.table("profiles").select("id").eq("id", user_id).limit(1).execute()
+        )
+        if not existing.data:
+            row = {"id": user_id}
+            for key in ("full_name", "phone_number", "avatar_url", "bio"):
+                if key in profile_mirror:
+                    row[key] = profile_mirror[key]
+            try:
+                client.table("profiles").insert(row).execute()
+            except Exception:
+                pass
 
     profile = get_profile(user_id)
     if not profile:

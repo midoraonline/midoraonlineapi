@@ -81,6 +81,15 @@ def _email_from_product(product_id: Any, shop_id: Any = None) -> Optional[str]:
         return None
 
 
+def _listing_email_allowed(user_id: str, label: str) -> bool:
+    kind = {"approved": "listing_approved", "rejected": "listing_rejected"}.get(label)
+    if kind is None:
+        return True
+    from auth.preferences import notification_enabled
+
+    return notification_enabled(user_id, kind, "email")
+
+
 def _listings_url() -> Optional[str]:
     settings = get_settings()
     base = getattr(settings, "frontend_public_url", "") or ""
@@ -110,6 +119,8 @@ async def notify_decision(row: ModerationRow, decision: ModerationDecision) -> N
     if label == "approved" and not config.notify_merchant_on_approved:
         return
     email = _email_from_seller_id(row.seller_id) or _email_from_product(row.product_id)
+    if row.seller_id and not _listing_email_allowed(str(row.seller_id), label):
+        return
     if not email:
         logger.info("no seller email for moderation row %s; skipping email", row.id)
         return
@@ -130,6 +141,22 @@ async def notify_product_manual(
     if label == "approved" and not config.notify_merchant_on_approved:
         return
     email = _email_from_product(product_row.get("id"), product_row.get("shop_id"))
+    seller_id = product_row.get("seller_id") or product_row.get("owner_id")
+    if not seller_id and product_row.get("shop_id"):
+        try:
+            shop = (
+                get_supabase_admin()
+                .table("shops")
+                .select("owner_id")
+                .eq("id", str(product_row.get("shop_id")))
+                .limit(1)
+                .execute()
+            )
+            seller_id = shop.data[0].get("owner_id") if shop.data else None
+        except Exception:
+            seller_id = None
+    if seller_id and not _listing_email_allowed(str(seller_id), label):
+        return
     if not email:
         logger.info(
             "no seller email for product %s; skipping decision email",
