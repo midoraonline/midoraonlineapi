@@ -66,50 +66,8 @@ def collect_user_signals(client: Client, user_id: str | None) -> dict[str, Any]:
 
     now = datetime.now(timezone.utc)
 
-    def _add_categories(product_ids: list[str]) -> None:
-        if not product_ids:
-            return
-        try:
-            cat_resp = (
-                client.table("products")
-                .select("category")
-                .in_("id", product_ids)
-                .execute()
-            )
-            for p in cat_resp.data or []:
-                if p.get("category"):
-                    signals["categories"].add(p["category"])
-        except Exception:
-            pass
-
-    def _pull_events(event_type: str, weight_key: str) -> list[str]:
-        try:
-            resp = (
-                client.table("listing_events")
-                .select("listing_id,created_at")
-                .eq("buyer_id", user_id)
-                .eq("event_type", event_type)
-                .order("created_at", desc=True)
-                .limit(30)
-                .execute()
-            )
-        except Exception as exc:
-            logger.warning("collect_user_signals(%s) failed: %s", event_type, exc)
-            return []
-        ids: list[str] = []
-        for item in resp.data or []:
-            pid = str(item["listing_id"])
-            ids.append(pid)
-            signals["interactions"].append({
-                "product_id": pid,
-                "type": weight_key,
-                "weight": INTERACTION_WEIGHTS[weight_key] * time_decay(item.get("created_at"), now),
-            })
-        return ids
-
-    # --- Likes ---
-    try:
-        likes_resp = (
+    def _likes():
+        return (
             client.table("product_likes")
             .select("product_id,created_at")
             .eq("user_id", user_id)
@@ -117,48 +75,29 @@ def collect_user_signals(client: Client, user_id: str | None) -> dict[str, Any]:
             .limit(50)
             .execute()
         )
-        liked_ids: list[str] = []
-        for item in likes_resp.data or []:
-            pid = str(item["product_id"])
-            liked_ids.append(pid)
-            signals["liked_product_ids"].add(pid)
-            signals["interactions"].append({
-                "product_id": pid,
-                "type": "like",
-                "weight": INTERACTION_WEIGHTS["like"] * time_decay(item.get("created_at"), now),
-            })
-        _add_categories(liked_ids)
-    except Exception as exc:
-        logger.warning("collect_user_signals(likes) failed: %s", exc)
 
-    viewed_ids = _pull_events("viewed", "view")
-    signals["viewed_product_ids"].update(viewed_ids)
-    _add_categories(viewed_ids)
+    def _events(event_type: str):
+        return (
+            client.table("listing_events")
+            .select("listing_id,created_at")
+            .eq("buyer_id", user_id)
+            .eq("event_type", event_type)
+            .order("created_at", desc=True)
+            .limit(30)
+            .execute()
+        )
 
-    saved_ids = _pull_events("saved", "save")
-    signals["saved_product_ids"].update(saved_ids)
-    _add_categories(saved_ids)
-
-    _pull_events("whatsapp_clicked", "whatsapp")
-    _pull_events("messaged", "message")
-
-    # --- Followed shops ---
-    try:
-        follow_resp = (
+    def _follows():
+        return (
             client.table("shop_follows")
             .select("shop_id")
             .eq("user_id", user_id)
             .limit(200)
             .execute()
         )
-        for row in follow_resp.data or []:
-            signals["followed_shop_ids"].add(str(row["shop_id"]))
-    except Exception as exc:
-        logger.warning("collect_user_signals(follows) failed: %s", exc)
 
-    # --- Search history ---
-    try:
-        search_resp = (
+    def _search():
+        return (
             client.table("search_history")
             .select("query,created_at")
             .eq("user_id", user_id)
@@ -166,15 +105,93 @@ def collect_user_signals(client: Client, user_id: str | None) -> dict[str, Any]:
             .limit(8)
             .execute()
         )
-        seen: set[str] = set()
-        for s in search_resp.data or []:
-            q = (s.get("query") or "").strip().lower()
-            if not q or q in seen:
+
+    jobs = {
+        "likes": _likes,
+        "viewed": lambda: _events("viewed"),
+        "saved": lambda: _events("saved"),
+        "whatsapp": lambda: _events("whatsapp_clicked"),
+        "message": lambda: _events("messaged"),
+        "follows": _follows,
+        "search": _search,
+    }
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _run(name: str):
+        try:
+            return name, jobs[name]().data or [], None
+        except Exception as exc:
+            return name, [], exc
+
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        fetched = {name: (rows, err) for name, rows, err in pool.map(_run, jobs)}
+
+    def _absorb_events(rows: list[dict[str, Any]], weight_key: str, bucket: str | None) -> None:
+        for item in rows:
+            pid = str(item.get("listing_id") or item.get("product_id") or "")
+            if not pid:
                 continue
-            seen.add(q)
-            signals["search_terms"].append(q)
-    except Exception as exc:
-        logger.warning("collect_user_signals(search) failed: %s", exc)
+            if bucket:
+                signals[bucket].add(pid)
+            signals["interactions"].append({
+                "product_id": pid,
+                "type": weight_key,
+                "weight": INTERACTION_WEIGHTS[weight_key] * time_decay(item.get("created_at"), now),
+            })
+
+    likes_rows, likes_err = fetched["likes"]
+    if likes_err:
+        logger.warning("collect_user_signals(likes) failed: %s", likes_err)
+    _absorb_events(likes_rows, "like", "liked_product_ids")
+
+    for event_name, weight_key, bucket in (
+        ("viewed", "view", "viewed_product_ids"),
+        ("saved", "save", "saved_product_ids"),
+        ("whatsapp", "whatsapp", None),
+        ("message", "message", None),
+    ):
+        rows, err = fetched[event_name]
+        if err:
+            logger.warning("collect_user_signals(%s) failed: %s", event_name, err)
+        _absorb_events(rows, weight_key, bucket)
+
+    follow_rows, follow_err = fetched["follows"]
+    if follow_err:
+        logger.warning("collect_user_signals(follows) failed: %s", follow_err)
+    for row in follow_rows:
+        if row.get("shop_id"):
+            signals["followed_shop_ids"].add(str(row["shop_id"]))
+
+    search_rows, search_err = fetched["search"]
+    if search_err:
+        logger.warning("collect_user_signals(search) failed: %s", search_err)
+    seen: set[str] = set()
+    for item in search_rows:
+        query = (item.get("query") or "").strip().lower()
+        if not query or query in seen:
+            continue
+        seen.add(query)
+        signals["search_terms"].append(query)
+
+    category_ids = [
+        str(item["product_id"])
+        for item in signals["interactions"]
+        if item.get("product_id")
+    ]
+    if category_ids:
+        try:
+            cat_resp = (
+                client.table("products")
+                .select("category")
+                .in_("id", category_ids[:80])
+                .execute()
+            )
+            for product in cat_resp.data or []:
+                if product.get("category"):
+                    signals["categories"].add(product["category"])
+        except Exception:
+            pass
 
     return signals
 

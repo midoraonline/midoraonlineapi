@@ -11,6 +11,12 @@ logger = logging.getLogger(__name__)
 def on_product_posted(event: ProductPostedEvent) -> None:
     if not event.product_id:
         return
+    from feed.snapshots import invalidate
+
+    try:
+        invalidate()
+    except Exception as exc:
+        logger.info("guest snapshot invalidate failed: %s", exc)
     from feed.embeddings import refresh_product_embedding
     try:
         refresh_product_embedding(event.product_id)

@@ -25,6 +25,7 @@ Cold rebuild path:
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone, timedelta
 from collections import deque
 from functools import partial
@@ -228,12 +229,11 @@ def _fetch_products_by_ids(client: Client, product_ids: list[str]) -> list[dict[
     """Hydrate card rows for a page of ranked IDs (preserves order)."""
     if not product_ids:
         return []
-    from db.supabase import get_supabase_admin, with_supabase_retry
+    from db.supabase import with_supabase_retry
 
     def _run():
-        db = get_supabase_admin()
         return (
-            _lean_active_products_query(db)
+            _lean_active_products_query(client)
             .in_("id", product_ids)
             .execute()
         )
@@ -535,35 +535,87 @@ def _get_latest_feed_page(
     the head of the recency stream, then slice `[start, start+limit)`. Over-fetch
     absorbs skips from the window rule.
     """
-    from db.supabase import get_supabase_admin, with_supabase_retry
+    from feed import snapshots
 
+    started = time.perf_counter()
+    db = client
     start_idx = max(0, (page - 1) * limit)
-    need = start_idx + limit + 1  # +1 probes has_more after diversity
-    fetch_n = min(max(need * 4, need + 48), 800)
+    source = "rebuild"
+    ranked: list[str] | None = None
+    if not category:
+        ranked = snapshots.memory_ids()
+        if ranked is not None:
+            source = "memory"
+        else:
+            ranked = snapshots.load_fresh(db)
+            if ranked is not None:
+                source = "snapshot"
+                snapshots.remember(ranked)
+    if ranked is None:
+        built = _build_recency_order(db, category=category)
+        if built is None:
+            return [], False
+        ranked = built
+        source = "rebuild"
+        if not category:
+            snapshots.remember(ranked)
+            snapshots.save(db, ranked)
+
+    page_ids = ranked[start_idx : start_idx + limit]
+    has_more = start_idx + limit < len(ranked)
+    if not has_more and len(ranked) >= 800:
+        has_more = True
+    rows = _fetch_products_by_ids(db, page_ids)
+    logger.info(
+        "feed:guest source=%s page=%s ranked=%s page_n=%s total_ms=%.1f",
+        source,
+        page,
+        len(ranked),
+        len(rows),
+        (time.perf_counter() - started) * 1000,
+    )
+    return _with_ratings(db, [_to_response(item) for item in rows]), has_more
+
+
+def rebuild_guest_ranking() -> dict[str, int]:
+    """Cron entry. Rebuilds the shared guest order and stores it."""
+    from db.supabase import get_supabase_admin
+    from feed import snapshots
+
+    db = get_supabase_admin()
+    snapshots.clear_memory()
+    ids = _build_recency_order(db, category=None) or []
+    snapshots.remember(ids)
+    snapshots.save(db, ids)
+    logger.info("feed:guest cron rebuilt ranked=%s", len(ids))
+    return {"ranked": len(ids)}
+
+
+def _build_recency_order(client: Client, *, category: str | None) -> list[str] | None:
+    """Diversified recency order from id/shop/created_at only."""
+    from db.supabase import with_supabase_retry
+
+    fetch_n = 800
 
     def _run():
-        db = get_supabase_admin()
         q = (
-            _lean_active_products_query(db)
+            client.table("products")
+            .select("id,shop_id,created_at")
+            .eq("status", "active")
+            .eq("is_published", True)
             .order("created_at", desc=True)
             .limit(fetch_n)
         )
-        q = _apply_category_to_query(q, category)
-        return q.execute()
+        return _apply_category_to_query(q, category).execute()
 
     try:
-        resp = with_supabase_retry(_run, label="latest_feed_page")
-        raw = list(resp.data or [])
-        diversified = _diversify_by_shop(raw, limit=need)
-        page_rows = diversified[start_idx : start_idx + limit]
-        has_more = len(diversified) > start_idx + limit
-        if not has_more and len(raw) >= fetch_n:
-            # Inventory may continue past the over-fetch window.
-            has_more = True
-        return _with_ratings(db, [_to_response(item) for item in page_rows]), has_more
+        resp = with_supabase_retry(_run, label="guest_rank_ids")
     except Exception as exc:
-        logger.warning("_get_latest_feed_page failed: %s", exc)
-        return [], False
+        logger.warning("guest rank build failed: %s", exc)
+        return None
+    raw = list(resp.data or [])
+    diversified = _diversify_by_shop(raw, limit=len(raw) or 1)
+    return [str(row.get("id")) for row in diversified if row.get("id")]
 
 
 # ---------------------------------------------------------------------------
@@ -718,67 +770,86 @@ def _fetch_candidates(
                 seen.add(pid)
                 out.append(row)
 
-    try:
-        r = (
-            _active_products_query(client)
-            .order("listing_score", desc=True)
-            .order("created_at", desc=True)
-            .limit(min(350, pool_limit))
-            .execute()
-        )
-        _add(r.data)
-    except Exception as exc:
-        logger.warning("candidates(top-scored) failed: %s", exc)
-
-    if signals["followed_shop_ids"]:
-        try:
-            r = (
+    jobs: list[tuple[str, Any]] = [
+        (
+            "top-scored",
+            lambda: (
                 _active_products_query(client)
-                .in_("shop_id", list(signals["followed_shop_ids"]))
                 .order("listing_score", desc=True)
-                .limit(200)
-                .execute()
-            )
-            _add(r.data)
-        except Exception as exc:
-            logger.warning("candidates(followed) failed: %s", exc)
-
-    if signals["categories"]:
-        try:
-            r = (
-                _active_products_query(client)
-                .in_("category", list(signals["categories"]))
-                .order("listing_score", desc=True)
-                .limit(200)
-                .execute()
-            )
-            _add(r.data)
-        except Exception as exc:
-            logger.warning("candidates(categories) failed: %s", exc)
-
-    try:
-        r = (
-            _active_products_query(client)
-            .order("created_at", desc=True)
-            .limit(min(200, pool_limit))
-            .execute()
-        )
-        _add(r.data)
-    except Exception as exc:
-        logger.warning("candidates(recent) failed: %s", exc)
-
-    if signals["categories"]:
-        try:
-            r = (
-                _active_products_query(client)
-                .not_.in_("category", list(signals["categories"]))
                 .order("created_at", desc=True)
-                .limit(100)
+                .limit(min(350, pool_limit))
                 .execute()
+            ),
+        )
+    ]
+    if signals["followed_shop_ids"]:
+        followed = list(signals["followed_shop_ids"])
+        jobs.append(
+            (
+                "followed",
+                lambda: (
+                    _active_products_query(client)
+                    .in_("shop_id", followed)
+                    .order("listing_score", desc=True)
+                    .limit(200)
+                    .execute()
+                ),
             )
-            _add(r.data)
+        )
+    if signals["categories"]:
+        categories = list(signals["categories"])
+        jobs.append(
+            (
+                "categories",
+                lambda: (
+                    _active_products_query(client)
+                    .in_("category", categories)
+                    .order("listing_score", desc=True)
+                    .limit(200)
+                    .execute()
+                ),
+            )
+        )
+    jobs.append(
+        (
+            "recent",
+            lambda: (
+                _active_products_query(client)
+                .order("created_at", desc=True)
+                .limit(min(200, pool_limit))
+                .execute()
+            ),
+        )
+    )
+    if signals["categories"]:
+        categories = list(signals["categories"])
+        jobs.append(
+            (
+                "exploration",
+                lambda: (
+                    _active_products_query(client)
+                    .not_.in_("category", categories)
+                    .order("created_at", desc=True)
+                    .limit(100)
+                    .execute()
+                ),
+            )
+        )
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _exec(job: tuple[str, Any]) -> list[dict[str, Any]]:
+        label, fn = job
+        try:
+            return list(fn().data or [])
         except Exception as exc:
-            logger.warning("candidates(exploration seed) failed: %s", exc)
+            logger.warning("candidates(%s) failed: %s", label, exc)
+            return []
+
+    with ThreadPoolExecutor(max_workers=min(5, len(jobs))) as pool:
+        batches = list(pool.map(_exec, jobs))
+    for rows in batches:
+        _add(rows)
 
     return out[:pool_limit]
 
@@ -877,7 +948,9 @@ def get_algorithm_feed(
         if page > 1:
             return [], has_more, None
 
+    score_started = time.perf_counter()
     signals = sig.collect_user_signals(db, user_id)
+    signals_ms = (time.perf_counter() - score_started) * 1000
     # Soft signals from recent impressions so scroll-only users still
     # personalize by category instead of falling onto pure latest.
     try:
@@ -926,7 +999,9 @@ def get_algorithm_feed(
             exclude_ids=None,
         )
 
+    candidates_started = time.perf_counter()
     candidates = _fetch_candidates(db, signals)
+    candidates_ms = (time.perf_counter() - candidates_started) * 1000
     if vector_rows:
         candidates = _hydrate_candidate_details(db, vector_rows + candidates)
     if category:
@@ -954,9 +1029,17 @@ def get_algorithm_feed(
     product_ids = [str(p["id"]) for p in candidates if p.get("id")]
     shop_ids = list({str(p["shop_id"]) for p in candidates if p.get("shop_id")})
 
-    shop_meta = sig.collect_shop_meta(db, shop_ids)
-    velocity_map = sig.collect_velocity_map(db, product_ids)
-    boost_map = sig.collect_boost_map(db, product_ids)
+    enrich_started = time.perf_counter()
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        shop_future = pool.submit(sig.collect_shop_meta, db, shop_ids)
+        velocity_future = pool.submit(sig.collect_velocity_map, db, product_ids)
+        boost_future = pool.submit(sig.collect_boost_map, db, product_ids)
+        shop_meta = shop_future.result()
+        velocity_map = velocity_future.result()
+        boost_map = boost_future.result()
+    enrich_ms = (time.perf_counter() - enrich_started) * 1000
     shop_id_by_product = {
         str(p["id"]): str(p.get("shop_id", "")) for p in candidates if p.get("id")
     }
@@ -1005,7 +1088,8 @@ def get_algorithm_feed(
         )
 
     logger.info(
-        "feed:path=scored_cached user=%s pool=%d ranked=%d taste=%d vector=%s signals=%s ann=%d ttl_s=%s",
+        "feed:path=scored_cached user=%s pool=%d ranked=%d taste=%d vector=%s signals=%s ann=%d "
+        "signals_ms=%.1f candidates_ms=%.1f enrich_ms=%.1f total_ms=%.1f ttl_s=%s",
         user_id,
         len(candidates),
         len(ranked_ids),
@@ -1013,6 +1097,10 @@ def get_algorithm_feed(
         "yes" if user_vector else "no",
         "yes" if has_personal_signals else "organic",
         len(vector_rows),
+        signals_ms,
+        candidates_ms,
+        enrich_ms,
+        (time.perf_counter() - score_started) * 1000,
         FEED_CACHE_TTL_SECONDS,
     )
 

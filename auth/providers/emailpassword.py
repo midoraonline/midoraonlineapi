@@ -1,9 +1,12 @@
+import logging
+import time
 from typing import Any
 from uuid import uuid4
 
 from auth import service as auth_service
 from db.supabase import get_supabase_admin
-from payments.plan_service import effective_plan_tier
+
+logger = logging.getLogger(__name__)
 
 
 def sign_up(
@@ -73,14 +76,21 @@ def sign_in(
     ip: str | None = None,
 ) -> dict[str, Any]:
     """Sign in via custom users table. Returns JWT access/refresh tokens."""
+    started = time.perf_counter()
     user = auth_service.authenticate_user(email, password)
     if not user:
         raise ValueError("Invalid email or password")
+    verified = time.perf_counter()
     access_token, refresh_token = auth_service.create_access_and_refresh_tokens(
         user_id=str(user["id"]),
         role=user.get("user_role", "customer"),
         user_agent=user_agent,
         ip=ip,
+    )
+    logger.info(
+        "auth:login token_ms=%.1f total_ms=%.1f",
+        (time.perf_counter() - verified) * 1000,
+        (time.perf_counter() - started) * 1000,
     )
     return {
         "user": user,
@@ -180,6 +190,8 @@ def get_profile(user_id: str) -> dict[str, Any] | None:
     if not user_res.data:
         return None
     user = user_res.data[0]
+    from payments.plan_service import effective_plan_tier
+
     plan_tier = effective_plan_tier(user.get("plan_tier"), user.get("plan_expires_at"))
 
     prof_res = client.table("profiles").select("full_name, avatar_url, phone_number").eq("id", user_id).limit(1).execute()

@@ -34,7 +34,7 @@ class ShopCreate(BaseModel):
     contacts: list[dict] | None = None
     social_links: list[dict] | None = None
     location: dict | None = None
-    availability: dict | None = None
+    availability: dict[str, Any] | None = None
     theme_config: ShopThemeConfig | dict[str, Any] | None = None
     shop_type: ShopType = "product"
     category: str | None = None
@@ -43,6 +43,19 @@ class ShopCreate(BaseModel):
     @classmethod
     def _category(cls, v: str | None) -> str | None:
         return validate_category_field(v)
+
+    @field_validator("availability", mode="before")
+    @classmethod
+    def _availability(cls, v: Any) -> dict[str, Any] | None:
+        from pydantic import ValidationError
+
+        from tenants.opening_hours import normalize_for_storage
+
+        try:
+            return normalize_for_storage(v)
+        except ValidationError as exc:
+            message = exc.errors()[0]["msg"] if exc.errors() else "invalid availability"
+            raise ValueError(message) from exc
 
 
 class ShopUpdate(BaseModel):
@@ -55,7 +68,7 @@ class ShopUpdate(BaseModel):
     contacts: list[dict] | None = None
     social_links: list[dict] | None = None
     location: dict | None = None
-    availability: dict | None = None
+    availability: dict[str, Any] | None = None
     theme_config: ShopThemeConfig | dict[str, Any] | None = None
     shop_type: ShopType | None = None
     category: str | None = None
@@ -66,6 +79,19 @@ class ShopUpdate(BaseModel):
     @classmethod
     def _category(cls, v: str | None) -> str | None:
         return validate_category_field(v)
+
+    @field_validator("availability", mode="before")
+    @classmethod
+    def _availability(cls, v: Any) -> dict[str, Any] | None:
+        from pydantic import ValidationError
+
+        from tenants.opening_hours import normalize_for_storage
+
+        try:
+            return normalize_for_storage(v)
+        except ValidationError as exc:
+            message = exc.errors()[0]["msg"] if exc.errors() else "invalid availability"
+            raise ValueError(message) from exc
 
 
 class ShopResponse(BaseModel):
@@ -83,7 +109,10 @@ class ShopResponse(BaseModel):
     contacts: list[dict] | None
     social_links: list[dict] | None
     location: dict | None
-    availability: dict | None
+    availability: dict[str, Any] | None
+    availability_text: str | None = None
+    is_open_now: bool | None = None
+    next_change: str | None = None
     theme_config: dict[str, Any] | None
     shop_type: ShopType
     is_active: bool

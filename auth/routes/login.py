@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -25,7 +26,10 @@ async def login(
         window_seconds=60,
     )
     try:
-        result = sign_in(
+        # bcrypt is CPU-bound; keep it off the event loop so other requests
+        # are not stalled for the duration of the hash check.
+        result = await asyncio.to_thread(
+            sign_in,
             email=body.email,
             password=body.password,
             user_agent=request.headers.get("user-agent"),
