@@ -4,8 +4,12 @@
 -- Do not apply it as a numbered migration, and do not run it from the API deploy.
 -- Safe to re-run: fixed ids are updated in place, so it does not create duplicates.
 --
--- Needs the categories table and products.listing_meta (migration 029) plus
--- shops.is_personal (migration 043). It does not require image_keys (045).
+-- One transaction: if any statement fails, the whole script rolls back.
+-- Needs products.listing_meta (migration 029) and shops.is_personal (043).
+-- It does not require image_keys (045) or categories.metadata.
+-- When categories.metadata exists, blank required fields are filled.
+-- When that column is missing, listing_meta is stored exactly as written below.
+-- Run db/migrations/046_category_metadata.sql first so category fields work.
 -- Listings are text-only: image_urls stays empty.
 --
 -- Account (not a real seller):
@@ -294,6 +298,7 @@ $func$;
 
 -- Fills any required category field that the row left blank. Explicit
 -- listing_meta (pricing, area, deadline, and so on) is left as written.
+-- Looks up categories.metadata only when that column exists.
 CREATE OR REPLACE FUNCTION pg_temp.fill_required(p_label text, p_meta jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -310,20 +315,47 @@ DECLARE
     existing text;
     filler text;
     ftype text;
+    has_metadata boolean;
+    has_parent boolean;
 BEGIN
-    SELECT c.metadata, c.parent_slug
-      INTO child_meta, parent_slug
-      FROM public.categories c
-     WHERE c.label = p_label
-     LIMIT 1;
-    IF NOT FOUND THEN
+    SELECT EXISTS (
+        SELECT 1
+          FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'categories'
+           AND column_name = 'metadata'
+    ) INTO has_metadata;
+    IF NOT has_metadata THEN
         RETURN result;
     END IF;
-    IF parent_slug IS NOT NULL THEN
-        SELECT metadata INTO parent_meta
-          FROM public.categories
-         WHERE slug = parent_slug
-         LIMIT 1;
+
+    SELECT EXISTS (
+        SELECT 1
+          FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'categories'
+           AND column_name = 'parent_slug'
+    ) INTO has_parent;
+
+    IF has_parent THEN
+        EXECUTE
+            'SELECT metadata, parent_slug FROM public.categories WHERE label = $1 LIMIT 1'
+            INTO child_meta, parent_slug
+            USING p_label;
+    ELSE
+        EXECUTE
+            'SELECT metadata FROM public.categories WHERE label = $1 LIMIT 1'
+            INTO child_meta
+            USING p_label;
+    END IF;
+    IF child_meta IS NULL AND parent_slug IS NULL THEN
+        RETURN result;
+    END IF;
+    IF has_parent AND parent_slug IS NOT NULL THEN
+        EXECUTE
+            'SELECT metadata FROM public.categories WHERE slug = $1 LIMIT 1'
+            INTO parent_meta
+            USING parent_slug;
     END IF;
     FOR entry IN SELECT value FROM jsonb_array_elements(pg_temp.meta_entries(parent_meta)) LOOP
         fields := pg_temp.remember_field(fields, entry);
