@@ -1,15 +1,19 @@
 -- Seed services and opportunities for the public catalog.
 --
--- Run this yourself in the Supabase SQL Editor (Dashboard → SQL Editor → paste → Run).
+-- Run this whole file as one query in the Supabase SQL Editor
+-- (Dashboard -> SQL Editor -> paste the entire file -> Run).
 -- Do not apply it as a numbered migration, and do not run it from the API deploy.
 -- Safe to re-run: fixed ids are updated in place, so it does not create duplicates.
 --
--- One transaction: if any statement fails, the whole script rolls back.
+-- This file is a single DO statement. It does not use temp tables or pg_temp
+-- functions, so a transaction-mode pooler can run it on one connection.
+-- If the statement fails, the whole seed rolls back.
+--
 -- Needs products.listing_meta (migration 029) and shops.is_personal (043).
--- It does not require image_keys (045) or categories.metadata.
+-- It does not require image_keys (045).
 -- When categories.metadata exists, blank required fields are filled.
 -- When that column is missing, listing_meta is stored exactly as written below.
--- Run db/migrations/046_category_metadata.sql first so category fields work.
+-- Migration 046 should already be applied so category fields work.
 -- Listings are text-only: image_urls stays empty.
 --
 -- Account (not a real seller):
@@ -20,7 +24,304 @@
 -- If that email or phone already belongs to a different user id, stop. Do not
 -- repoint these rows at a real account.
 
-BEGIN;
+DO $seed$
+DECLARE
+    n_services int;
+    n_opps int;
+BEGIN
+    CREATE SCHEMA IF NOT EXISTS seed_tmp;
+
+CREATE OR REPLACE FUNCTION seed_tmp.field_key(entry jsonb)
+RETURNS text
+LANGUAGE sql
+AS $func$
+    SELECT left(trim(both '_' FROM regexp_replace(
+        replace(replace(lower(trim(coalesce(
+            NULLIF(entry->>'key', ''),
+            NULLIF(entry->>'name', ''),
+            NULLIF(entry->>'field', ''),
+            NULLIF(entry->>'field_key', ''),
+            NULLIF(entry->>'id', ''),
+            ''
+        ))), '-', '_'), ' ', '_'),
+        '[^a-z0-9_]+', '_', 'g'
+    )), 64);
+$func$;
+
+CREATE OR REPLACE FUNCTION seed_tmp.canonical_type(entry jsonb)
+RETURNS text
+LANGUAGE sql
+AS $func$
+    SELECT CASE lower(trim(coalesce(
+        NULLIF(entry->>'type', ''),
+        NULLIF(entry->>'kind', ''),
+        NULLIF(entry->>'field_type', ''),
+        NULLIF(entry->>'input_type', ''),
+        'text'
+    )))
+        WHEN 'string' THEN 'text'
+        WHEN 'input' THEN 'text'
+        WHEN 'textarea' THEN 'text'
+        WHEN 'integer' THEN 'number'
+        WHEN 'int' THEN 'number'
+        WHEN 'float' THEN 'number'
+        WHEN 'decimal' THEN 'number'
+        WHEN 'enum' THEN 'select'
+        WHEN 'dropdown' THEN 'select'
+        WHEN 'choice' THEN 'select'
+        WHEN 'choices' THEN 'select'
+        WHEN 'bool' THEN 'boolean'
+        WHEN 'checkbox' THEN 'boolean'
+        WHEN 'datetime' THEN 'date'
+        WHEN 'text' THEN 'text'
+        WHEN 'number' THEN 'number'
+        WHEN 'select' THEN 'select'
+        WHEN 'date' THEN 'date'
+        WHEN 'boolean' THEN 'boolean'
+        ELSE 'text'
+    END;
+$func$;
+
+CREATE OR REPLACE FUNCTION seed_tmp.is_required(entry jsonb)
+RETURNS boolean
+LANGUAGE sql
+AS $func$
+    SELECT CASE jsonb_typeof(entry->'required')
+        WHEN 'boolean' THEN (entry->>'required')::boolean
+        WHEN 'number' THEN (entry->>'required')::numeric <> 0
+        ELSE lower(trim(coalesce(entry->>'required', ''))) IN ('1', 'true', 'yes', 'y', 'required', 't')
+    END;
+$func$;
+
+CREATE OR REPLACE FUNCTION seed_tmp.is_partial(entry jsonb)
+RETURNS boolean
+LANGUAGE sql
+AS $func$
+    SELECT CASE
+        WHEN coalesce(entry->>'partial', '') IN ('true', 't', '1', 'yes')
+            OR entry->'partial' = 'true'::jsonb
+            THEN true
+        ELSE
+            coalesce(entry->>'label', '') = ''
+            AND coalesce(entry->>'title', '') = ''
+            AND coalesce(entry->>'type', '') = ''
+            AND coalesce(entry->>'kind', '') = ''
+            AND coalesce(entry->>'field_type', '') = ''
+            AND coalesce(entry->>'input_type', '') = ''
+    END;
+$func$;
+
+CREATE OR REPLACE FUNCTION seed_tmp.meta_entries(raw jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql
+AS $func$
+DECLARE
+    item jsonb;
+    spec jsonb;
+    obj_key text;
+    out jsonb := '[]'::jsonb;
+BEGIN
+    IF raw IS NULL OR raw = 'null'::jsonb THEN
+        RETURN out;
+    END IF;
+    IF jsonb_typeof(raw) = 'string' THEN
+        BEGIN
+            raw := (raw #>> '{}')::jsonb;
+        EXCEPTION WHEN others THEN
+            RETURN out;
+        END;
+    END IF;
+    IF jsonb_typeof(raw) = 'object' AND jsonb_typeof(raw->'fields') = 'array' THEN
+        raw := raw->'fields';
+    END IF;
+    IF jsonb_typeof(raw) = 'array' THEN
+        FOR item IN SELECT value FROM jsonb_array_elements(raw) LOOP
+            IF jsonb_typeof(item) = 'object' THEN
+                out := out || jsonb_build_array(item);
+            END IF;
+        END LOOP;
+        RETURN out;
+    END IF;
+    IF jsonb_typeof(raw) = 'object' THEN
+        FOR obj_key, spec IN SELECT * FROM jsonb_each(raw) LOOP
+            IF obj_key IN ('fields', 'version') THEN
+                CONTINUE;
+            END IF;
+            IF jsonb_typeof(spec) = 'object' THEN
+                out := out || jsonb_build_array(jsonb_build_object('key', obj_key) || spec);
+            ELSIF jsonb_typeof(spec) = 'string' AND length(trim(spec #>> '{}')) > 0 THEN
+                out := out || jsonb_build_array(jsonb_build_object('key', obj_key, 'label', spec #>> '{}'));
+            END IF;
+        END LOOP;
+    END IF;
+    RETURN out;
+END;
+$func$;
+
+CREATE OR REPLACE FUNCTION seed_tmp.first_option(raw jsonb)
+RETURNS text
+LANGUAGE plpgsql
+AS $func$
+DECLARE
+    item jsonb;
+    part text;
+BEGIN
+    IF raw IS NULL OR raw = 'null'::jsonb THEN
+        RETURN NULL;
+    END IF;
+    IF jsonb_typeof(raw) = 'string' THEN
+        part := trim(split_part(raw #>> '{}', ',', 1));
+        RETURN NULLIF(part, '');
+    END IF;
+    IF jsonb_typeof(raw) = 'array' THEN
+        SELECT value INTO item FROM jsonb_array_elements(raw) LIMIT 1;
+        IF item IS NULL THEN
+            RETURN NULL;
+        END IF;
+        IF jsonb_typeof(item) = 'string' THEN
+            RETURN NULLIF(trim(item #>> '{}'), '');
+        END IF;
+        IF jsonb_typeof(item) = 'object' THEN
+            RETURN NULLIF(trim(coalesce(item->>'value', item->>'id', item->>'label', item->>'name', '')), '');
+        END IF;
+        RETURN NULL;
+    END IF;
+    IF jsonb_typeof(raw) = 'object' THEN
+        SELECT e.key INTO part FROM jsonb_each(raw) AS e LIMIT 1;
+        RETURN NULLIF(trim(coalesce(part, '')), '');
+    END IF;
+    RETURN NULL;
+END;
+$func$;
+
+CREATE OR REPLACE FUNCTION seed_tmp.remember_field(fields jsonb, entry jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql
+AS $func$
+DECLARE
+    fkey text;
+BEGIN
+    fkey := seed_tmp.field_key(entry);
+    IF fkey IS NULL OR fkey = '' THEN
+        RETURN fields;
+    END IF;
+    IF seed_tmp.is_partial(entry) THEN
+        IF fields ? fkey AND entry ? 'required' THEN
+            fields := jsonb_set(
+                fields,
+                ARRAY[fkey, 'required'],
+                to_jsonb(seed_tmp.is_required(entry)),
+                true
+            );
+        END IF;
+        RETURN fields;
+    END IF;
+    RETURN fields || jsonb_build_object(
+        fkey,
+        jsonb_build_object(
+            'type', seed_tmp.canonical_type(entry),
+            'required', seed_tmp.is_required(entry),
+            'options', COALESCE(entry->'options', 'null'::jsonb)
+        )
+    );
+END;
+$func$;
+
+-- Fills any required category field that the row left blank. Explicit
+-- listing_meta (pricing, area, deadline, and so on) is left as written.
+-- Looks up categories.metadata only when that column exists.
+CREATE OR REPLACE FUNCTION seed_tmp.fill_required(p_label text, p_meta jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql
+AS $func$
+DECLARE
+    child_meta jsonb;
+    parent_meta jsonb;
+    parent_slug text;
+    entry jsonb;
+    fields jsonb := '{}'::jsonb;
+    result jsonb := COALESCE(p_meta, '{}'::jsonb);
+    fkey text;
+    spec jsonb;
+    existing text;
+    filler text;
+    ftype text;
+    has_metadata boolean;
+    has_parent boolean;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1
+          FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'categories'
+           AND column_name = 'metadata'
+    ) INTO has_metadata;
+    IF NOT has_metadata THEN
+        RETURN result;
+    END IF;
+
+    SELECT EXISTS (
+        SELECT 1
+          FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = 'categories'
+           AND column_name = 'parent_slug'
+    ) INTO has_parent;
+
+    IF has_parent THEN
+        EXECUTE
+            'SELECT metadata, parent_slug FROM public.categories WHERE label = $1 LIMIT 1'
+            INTO child_meta, parent_slug
+            USING p_label;
+    ELSE
+        EXECUTE
+            'SELECT metadata FROM public.categories WHERE label = $1 LIMIT 1'
+            INTO child_meta
+            USING p_label;
+    END IF;
+    IF child_meta IS NULL AND parent_slug IS NULL THEN
+        RETURN result;
+    END IF;
+    IF has_parent AND parent_slug IS NOT NULL THEN
+        EXECUTE
+            'SELECT metadata FROM public.categories WHERE slug = $1 LIMIT 1'
+            INTO parent_meta
+            USING parent_slug;
+    END IF;
+    FOR entry IN SELECT value FROM jsonb_array_elements(seed_tmp.meta_entries(parent_meta)) LOOP
+        fields := seed_tmp.remember_field(fields, entry);
+    END LOOP;
+    FOR entry IN SELECT value FROM jsonb_array_elements(seed_tmp.meta_entries(child_meta)) LOOP
+        fields := seed_tmp.remember_field(fields, entry);
+    END LOOP;
+    FOR fkey, spec IN SELECT * FROM jsonb_each(fields) LOOP
+        IF NOT seed_tmp.is_required(spec) THEN
+            CONTINUE;
+        END IF;
+        existing := result->>fkey;
+        IF existing IS NOT NULL AND length(trim(existing)) > 0 THEN
+            CONTINUE;
+        END IF;
+        ftype := coalesce(spec->>'type', 'text');
+        IF ftype = 'select' THEN
+            filler := seed_tmp.first_option(spec->'options');
+        ELSIF ftype = 'number' THEN
+            filler := '1';
+        ELSIF ftype = 'boolean' THEN
+            filler := 'true';
+        ELSIF ftype = 'date' THEN
+            filler := to_char(current_date + 21, 'YYYY-MM-DD');
+        ELSE
+            filler := NULL;
+        END IF;
+        IF filler IS NULL OR filler = '' THEN
+            filler := 'Listed in the description';
+        END IF;
+        result := result || jsonb_build_object(fkey, filler);
+    END LOOP;
+    RETURN result;
+END;
+$func$;
 
 INSERT INTO public.users (
     id, email, password_hash, full_name, user_role,
@@ -100,314 +401,10 @@ ON CONFLICT (id) DO UPDATE SET
     is_personal = false,
     updated_at = now();
 
-CREATE OR REPLACE FUNCTION pg_temp.field_key(entry jsonb)
-RETURNS text
-LANGUAGE sql
-AS $func$
-    SELECT left(trim(both '_' FROM regexp_replace(
-        replace(replace(lower(trim(coalesce(
-            NULLIF(entry->>'key', ''),
-            NULLIF(entry->>'name', ''),
-            NULLIF(entry->>'field', ''),
-            NULLIF(entry->>'field_key', ''),
-            NULLIF(entry->>'id', ''),
-            ''
-        ))), '-', '_'), ' ', '_'),
-        '[^a-z0-9_]+', '_', 'g'
-    )), 64);
-$func$;
-
-CREATE OR REPLACE FUNCTION pg_temp.canonical_type(entry jsonb)
-RETURNS text
-LANGUAGE sql
-AS $func$
-    SELECT CASE lower(trim(coalesce(
-        NULLIF(entry->>'type', ''),
-        NULLIF(entry->>'kind', ''),
-        NULLIF(entry->>'field_type', ''),
-        NULLIF(entry->>'input_type', ''),
-        'text'
-    )))
-        WHEN 'string' THEN 'text'
-        WHEN 'input' THEN 'text'
-        WHEN 'textarea' THEN 'text'
-        WHEN 'integer' THEN 'number'
-        WHEN 'int' THEN 'number'
-        WHEN 'float' THEN 'number'
-        WHEN 'decimal' THEN 'number'
-        WHEN 'enum' THEN 'select'
-        WHEN 'dropdown' THEN 'select'
-        WHEN 'choice' THEN 'select'
-        WHEN 'choices' THEN 'select'
-        WHEN 'bool' THEN 'boolean'
-        WHEN 'checkbox' THEN 'boolean'
-        WHEN 'datetime' THEN 'date'
-        WHEN 'text' THEN 'text'
-        WHEN 'number' THEN 'number'
-        WHEN 'select' THEN 'select'
-        WHEN 'date' THEN 'date'
-        WHEN 'boolean' THEN 'boolean'
-        ELSE 'text'
-    END;
-$func$;
-
-CREATE OR REPLACE FUNCTION pg_temp.is_required(entry jsonb)
-RETURNS boolean
-LANGUAGE sql
-AS $func$
-    SELECT CASE jsonb_typeof(entry->'required')
-        WHEN 'boolean' THEN (entry->>'required')::boolean
-        WHEN 'number' THEN (entry->>'required')::numeric <> 0
-        ELSE lower(trim(coalesce(entry->>'required', ''))) IN ('1', 'true', 'yes', 'y', 'required', 't')
-    END;
-$func$;
-
-CREATE OR REPLACE FUNCTION pg_temp.is_partial(entry jsonb)
-RETURNS boolean
-LANGUAGE sql
-AS $func$
-    SELECT CASE
-        WHEN coalesce(entry->>'partial', '') IN ('true', 't', '1', 'yes')
-            OR entry->'partial' = 'true'::jsonb
-            THEN true
-        ELSE
-            coalesce(entry->>'label', '') = ''
-            AND coalesce(entry->>'title', '') = ''
-            AND coalesce(entry->>'type', '') = ''
-            AND coalesce(entry->>'kind', '') = ''
-            AND coalesce(entry->>'field_type', '') = ''
-            AND coalesce(entry->>'input_type', '') = ''
-    END;
-$func$;
-
-CREATE OR REPLACE FUNCTION pg_temp.meta_entries(raw jsonb)
-RETURNS jsonb
-LANGUAGE plpgsql
-AS $func$
-DECLARE
-    item jsonb;
-    spec jsonb;
-    obj_key text;
-    out jsonb := '[]'::jsonb;
-BEGIN
-    IF raw IS NULL OR raw = 'null'::jsonb THEN
-        RETURN out;
-    END IF;
-    IF jsonb_typeof(raw) = 'string' THEN
-        BEGIN
-            raw := (raw #>> '{}')::jsonb;
-        EXCEPTION WHEN others THEN
-            RETURN out;
-        END;
-    END IF;
-    IF jsonb_typeof(raw) = 'object' AND jsonb_typeof(raw->'fields') = 'array' THEN
-        raw := raw->'fields';
-    END IF;
-    IF jsonb_typeof(raw) = 'array' THEN
-        FOR item IN SELECT value FROM jsonb_array_elements(raw) LOOP
-            IF jsonb_typeof(item) = 'object' THEN
-                out := out || jsonb_build_array(item);
-            END IF;
-        END LOOP;
-        RETURN out;
-    END IF;
-    IF jsonb_typeof(raw) = 'object' THEN
-        FOR obj_key, spec IN SELECT * FROM jsonb_each(raw) LOOP
-            IF obj_key IN ('fields', 'version') THEN
-                CONTINUE;
-            END IF;
-            IF jsonb_typeof(spec) = 'object' THEN
-                out := out || jsonb_build_array(jsonb_build_object('key', obj_key) || spec);
-            ELSIF jsonb_typeof(spec) = 'string' AND length(trim(spec #>> '{}')) > 0 THEN
-                out := out || jsonb_build_array(jsonb_build_object('key', obj_key, 'label', spec #>> '{}'));
-            END IF;
-        END LOOP;
-    END IF;
-    RETURN out;
-END;
-$func$;
-
-CREATE OR REPLACE FUNCTION pg_temp.first_option(raw jsonb)
-RETURNS text
-LANGUAGE plpgsql
-AS $func$
-DECLARE
-    item jsonb;
-    part text;
-BEGIN
-    IF raw IS NULL OR raw = 'null'::jsonb THEN
-        RETURN NULL;
-    END IF;
-    IF jsonb_typeof(raw) = 'string' THEN
-        part := trim(split_part(raw #>> '{}', ',', 1));
-        RETURN NULLIF(part, '');
-    END IF;
-    IF jsonb_typeof(raw) = 'array' THEN
-        SELECT value INTO item FROM jsonb_array_elements(raw) LIMIT 1;
-        IF item IS NULL THEN
-            RETURN NULL;
-        END IF;
-        IF jsonb_typeof(item) = 'string' THEN
-            RETURN NULLIF(trim(item #>> '{}'), '');
-        END IF;
-        IF jsonb_typeof(item) = 'object' THEN
-            RETURN NULLIF(trim(coalesce(item->>'value', item->>'id', item->>'label', item->>'name', '')), '');
-        END IF;
-        RETURN NULL;
-    END IF;
-    IF jsonb_typeof(raw) = 'object' THEN
-        SELECT e.key INTO part FROM jsonb_each(raw) AS e LIMIT 1;
-        RETURN NULLIF(trim(coalesce(part, '')), '');
-    END IF;
-    RETURN NULL;
-END;
-$func$;
-
-CREATE OR REPLACE FUNCTION pg_temp.remember_field(fields jsonb, entry jsonb)
-RETURNS jsonb
-LANGUAGE plpgsql
-AS $func$
-DECLARE
-    fkey text;
-BEGIN
-    fkey := pg_temp.field_key(entry);
-    IF fkey IS NULL OR fkey = '' THEN
-        RETURN fields;
-    END IF;
-    IF pg_temp.is_partial(entry) THEN
-        IF fields ? fkey AND entry ? 'required' THEN
-            fields := jsonb_set(
-                fields,
-                ARRAY[fkey, 'required'],
-                to_jsonb(pg_temp.is_required(entry)),
-                true
-            );
-        END IF;
-        RETURN fields;
-    END IF;
-    RETURN fields || jsonb_build_object(
-        fkey,
-        jsonb_build_object(
-            'type', pg_temp.canonical_type(entry),
-            'required', pg_temp.is_required(entry),
-            'options', COALESCE(entry->'options', 'null'::jsonb)
-        )
-    );
-END;
-$func$;
-
--- Fills any required category field that the row left blank. Explicit
--- listing_meta (pricing, area, deadline, and so on) is left as written.
--- Looks up categories.metadata only when that column exists.
-CREATE OR REPLACE FUNCTION pg_temp.fill_required(p_label text, p_meta jsonb)
-RETURNS jsonb
-LANGUAGE plpgsql
-AS $func$
-DECLARE
-    child_meta jsonb;
-    parent_meta jsonb;
-    parent_slug text;
-    entry jsonb;
-    fields jsonb := '{}'::jsonb;
-    result jsonb := COALESCE(p_meta, '{}'::jsonb);
-    fkey text;
-    spec jsonb;
-    existing text;
-    filler text;
-    ftype text;
-    has_metadata boolean;
-    has_parent boolean;
-BEGIN
-    SELECT EXISTS (
-        SELECT 1
-          FROM information_schema.columns
-         WHERE table_schema = 'public'
-           AND table_name = 'categories'
-           AND column_name = 'metadata'
-    ) INTO has_metadata;
-    IF NOT has_metadata THEN
-        RETURN result;
-    END IF;
-
-    SELECT EXISTS (
-        SELECT 1
-          FROM information_schema.columns
-         WHERE table_schema = 'public'
-           AND table_name = 'categories'
-           AND column_name = 'parent_slug'
-    ) INTO has_parent;
-
-    IF has_parent THEN
-        EXECUTE
-            'SELECT metadata, parent_slug FROM public.categories WHERE label = $1 LIMIT 1'
-            INTO child_meta, parent_slug
-            USING p_label;
-    ELSE
-        EXECUTE
-            'SELECT metadata FROM public.categories WHERE label = $1 LIMIT 1'
-            INTO child_meta
-            USING p_label;
-    END IF;
-    IF child_meta IS NULL AND parent_slug IS NULL THEN
-        RETURN result;
-    END IF;
-    IF has_parent AND parent_slug IS NOT NULL THEN
-        EXECUTE
-            'SELECT metadata FROM public.categories WHERE slug = $1 LIMIT 1'
-            INTO parent_meta
-            USING parent_slug;
-    END IF;
-    FOR entry IN SELECT value FROM jsonb_array_elements(pg_temp.meta_entries(parent_meta)) LOOP
-        fields := pg_temp.remember_field(fields, entry);
-    END LOOP;
-    FOR entry IN SELECT value FROM jsonb_array_elements(pg_temp.meta_entries(child_meta)) LOOP
-        fields := pg_temp.remember_field(fields, entry);
-    END LOOP;
-    FOR fkey, spec IN SELECT * FROM jsonb_each(fields) LOOP
-        IF NOT pg_temp.is_required(spec) THEN
-            CONTINUE;
-        END IF;
-        existing := result->>fkey;
-        IF existing IS NOT NULL AND length(trim(existing)) > 0 THEN
-            CONTINUE;
-        END IF;
-        ftype := coalesce(spec->>'type', 'text');
-        IF ftype = 'select' THEN
-            filler := pg_temp.first_option(spec->'options');
-        ELSIF ftype = 'number' THEN
-            filler := '1';
-        ELSIF ftype = 'boolean' THEN
-            filler := 'true';
-        ELSIF ftype = 'date' THEN
-            filler := to_char(current_date + 21, 'YYYY-MM-DD');
-        ELSE
-            filler := NULL;
-        END IF;
-        IF filler IS NULL OR filler = '' THEN
-            filler := 'Listed in the description';
-        END IF;
-        result := result || jsonb_build_object(fkey, filler);
-    END LOOP;
-    RETURN result;
-END;
-$func$;
-
-DROP TABLE IF EXISTS pg_temp.seed_listings;
-CREATE TEMP TABLE seed_listings (
-    id uuid PRIMARY KEY,
-    shop_id uuid NOT NULL,
-    item_type text NOT NULL,
-    title text NOT NULL,
-    description text NOT NULL,
-    price_ugx numeric NOT NULL,
-    category text NOT NULL,
-    location_name text NOT NULL,
-    listing_meta jsonb NOT NULL
-);
-
-INSERT INTO pg_temp.seed_listings (
-    id, shop_id, item_type, title, description, price_ugx, category, location_name, listing_meta
-) VALUES
+    WITH seed_listings (
+        id, shop_id, item_type, title, description, price_ugx, category, location_name, listing_meta
+    ) AS (
+        VALUES
 (
     '11111111-1111-4111-8111-000000000001',
     'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa11',
@@ -977,52 +974,45 @@ INSERT INTO pg_temp.seed_listings (
         'urgency', 'normal',
         'employment_type', 'Volunteer'
     )
-);
-
-INSERT INTO public.products (
-    id, shop_id, item_type, title, description, price_ugx,
-    stock_quantity, image_urls, category, is_published, status,
-    location_name, is_negotiable, listing_meta, reviewed_at
 )
-SELECT
-    s.id,
-    s.shop_id,
-    s.item_type,
-    s.title,
-    s.description,
-    s.price_ugx,
-    0,
-    '{}'::text[],
-    s.category,
-    true,
-    'active',
-    s.location_name,
-    true,
-    pg_temp.fill_required(s.category, s.listing_meta),
-    now()
-FROM pg_temp.seed_listings s
-ON CONFLICT (id) DO UPDATE SET
-    shop_id = EXCLUDED.shop_id,
-    item_type = EXCLUDED.item_type,
-    title = EXCLUDED.title,
-    description = EXCLUDED.description,
-    price_ugx = EXCLUDED.price_ugx,
-    stock_quantity = 0,
-    image_urls = '{}'::text[],
-    category = EXCLUDED.category,
-    is_published = true,
-    status = 'active',
-    location_name = EXCLUDED.location_name,
-    is_negotiable = true,
-    listing_meta = EXCLUDED.listing_meta;
+    )
+    INSERT INTO public.products (
+        id, shop_id, item_type, title, description, price_ugx,
+        stock_quantity, image_urls, category, is_published, status,
+        location_name, is_negotiable, listing_meta, reviewed_at
+    )
+    SELECT
+        s.id::uuid,
+        s.shop_id::uuid,
+        s.item_type::text,
+        s.title::text,
+        s.description::text,
+        s.price_ugx::numeric,
+        0,
+        '{}'::text[],
+        s.category::text,
+        true,
+        'active',
+        s.location_name::text,
+        true,
+        seed_tmp.fill_required(s.category::text, s.listing_meta::jsonb),
+        now()
+    FROM seed_listings AS s
+    ON CONFLICT (id) DO UPDATE SET
+        shop_id = EXCLUDED.shop_id,
+        item_type = EXCLUDED.item_type,
+        title = EXCLUDED.title,
+        description = EXCLUDED.description,
+        price_ugx = EXCLUDED.price_ugx,
+        stock_quantity = 0,
+        image_urls = '{}'::text[],
+        category = EXCLUDED.category,
+        is_published = true,
+        status = 'active',
+        location_name = EXCLUDED.location_name,
+        is_negotiable = true,
+        listing_meta = EXCLUDED.listing_meta;
 
-DROP TABLE IF EXISTS pg_temp.seed_listings;
-
-DO $check$
-DECLARE
-    n_services int;
-    n_opps int;
-BEGIN
     SELECT count(*) INTO n_services
       FROM public.products
      WHERE shop_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa11'
@@ -1040,7 +1030,7 @@ BEGIN
     IF n_services <> 20 OR n_opps <> 15 THEN
         RAISE EXCEPTION 'Seed incomplete: % services, % opportunities', n_services, n_opps;
     END IF;
-END
-$check$;
 
-COMMIT;
+    DROP SCHEMA IF EXISTS seed_tmp CASCADE;
+END
+$seed$;
