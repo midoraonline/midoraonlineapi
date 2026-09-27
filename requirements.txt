@@ -36,6 +36,9 @@ google-genai>=0.3.0,<2.0
 # Kept lightweight (no numpy / no torch) so the Vercel Python bundle stays
 # well under the 250 MB standard size limit.
 Pillow>=10.0.0,<12.0
+# HEIC/HEIF avatars only. Conversion is full resolution, JPEG quality 100.
+# Other image types are stored as uploaded and are not re-encoded.
+pillow-heif>=0.18,<1.0
 
 # Listing moderation Tier 3: local CPU text safety. `alt-profanity-check`
 # ships a small pre-trained scikit-learn linear model (imports as

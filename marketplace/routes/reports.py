@@ -138,6 +138,9 @@ async def report_product(
                     </p>
                     """
                     body_html = _html_shell("Product reported", inner)
+                    from auth.preferences import emails_allowed
+
+                    recipients = emails_allowed(list(recipients), "reports")
                     for recipient in recipients:
                         await enqueue_mail(
                             to=recipient,

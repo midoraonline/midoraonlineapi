@@ -49,32 +49,41 @@ async def on_product_status_changed(event: ProductStatusChangedEvent) -> None:
     else:
         return
 
-    try:
-        create_notification(
-            user_id=user_id,
-            title=notif_title,
-            body=notif_body,
-            channel="in-app",
-            metadata={
-                "type": "product_status_change",
-                "product_id": event.product_id,
-                "status": event.new_status,
-            },
-        )
-    except Exception as exc:
-        logger.warning("create_notification failed for user %s: %s", user_id, exc)
+    from auth.preferences import notification_enabled
 
-    try:
-        send_to_user(
-            user_id=user_id,
-            payload={
-                "title": notif_title,
-                "body": notif_body,
-                "data": {"product_id": event.product_id, "status": event.new_status},
-            },
-        )
-    except Exception as exc:
-        logger.warning("send_to_user push failed for user %s: %s", user_id, exc)
+    kind = None
+    if event.new_status == "active":
+        kind = "listing_approved"
+    elif event.new_status == "rejected":
+        kind = "listing_rejected"
+    if kind is None or notification_enabled(user_id, kind, "in-app"):
+        try:
+            create_notification(
+                user_id=user_id,
+                title=notif_title,
+                body=notif_body,
+                channel="in-app",
+                metadata={
+                    "type": "product_status_change",
+                    "product_id": event.product_id,
+                    "status": event.new_status,
+                },
+            )
+        except Exception as exc:
+            logger.warning("create_notification failed for user %s: %s", user_id, exc)
+
+    if kind is None or notification_enabled(user_id, kind, "push"):
+        try:
+            send_to_user(
+                user_id=user_id,
+                payload={
+                    "title": notif_title,
+                    "body": notif_body,
+                    "data": {"product_id": event.product_id, "status": event.new_status},
+                },
+            )
+        except Exception as exc:
+            logger.warning("send_to_user push failed for user %s: %s", user_id, exc)
 
 
 async def on_shop_verification_changed(event: ShopVerificationChangedEvent) -> None:
