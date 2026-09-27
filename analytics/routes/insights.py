@@ -12,14 +12,25 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
 from db.supabase import get_supabase_admin
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+
+def _reject_when_analytics_off() -> None:
+    from platform_settings.flags import analytics_enabled
+
+    if not analytics_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail={"detail": "Analytics is turned off.", "code": "analytics_disabled"},
+        )
+
+
+router = APIRouter(dependencies=[Depends(_reject_when_analytics_off)])
 
 # WhatsApp click is the primary conversion proxy per the insights doc.
 CONVERSION_EVENTS = ("conversion:whatsapp_click", "listing:whatsapp_click")

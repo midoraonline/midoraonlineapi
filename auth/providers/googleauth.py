@@ -185,6 +185,9 @@ def _get_or_create_local_user(google_profile: dict[str, Any]) -> dict[str, Any]:
                         user = updated.data[0]
         return user
 
+    from platform_settings.flags import assert_signups_open
+
+    assert_signups_open()
     user_role = "customer"
     payload = {
         "email": email,

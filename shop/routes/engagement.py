@@ -74,6 +74,10 @@ async def record_shop_view(
     client: Annotated[Client, Depends(get_supabase_client)],
 ):
     """Increment shop page view (click) count. Call once when a customer opens the storefront."""
+    from platform_settings.flags import analytics_enabled
+
+    if not analytics_enabled():
+        return ViewCountResponse(view_count=0)
     try:
         n = engagement_service.record_shop_view(client, shop_id)
         return ViewCountResponse(view_count=n)
@@ -88,6 +92,11 @@ async def record_shop_event(
     current_user_id: str | None = Depends(get_optional_user_id),
 ):
     """Record a shop-level event (whatsapp click, message, etc.)."""
+    from platform_settings.flags import analytics_enabled
+
+    if not analytics_enabled():
+        return {"enabled": False, "status": "disabled"}
+
     valid_types = {"whatsapp_clicked", "messaged"}
     if event_type not in valid_types:
         raise HTTPException(
@@ -246,9 +255,13 @@ async def shop_dashboard(
     if not shop_data:
         raise HTTPException(status_code=404, detail="Shop not found")
 
+    from platform_settings.flags import analytics_enabled
+
+    analytics_on = analytics_enabled()
+
     # Engagement (include lead tallies — analytics page needs them)
     engagement = engagement_service.get_shop_engagement(
-        admin, shop_id, user_id, include_lead_counts=True
+        admin, shop_id, user_id, include_lead_counts=analytics_on
     )
 
     # Products
@@ -267,7 +280,7 @@ async def shop_dashboard(
             .execute()
         )
         product_ids = [str(row["id"]) for row in (pr.data or []) if row.get("id")]
-        if product_ids:
+        if product_ids and analytics_on:
             try:
                 ev_r = (
                     admin.table("listing_events")
@@ -344,6 +357,7 @@ async def shop_dashboard(
         "engagement": engagement,
         "products": products_list,
         "lead_stats": lead_stats,
+        "analytics_enabled": analytics_on,
     }
 
 
@@ -366,6 +380,7 @@ async def my_shops_stats(user_id: str = Depends(get_current_user_id)) -> dict:
     product_views = 0
     product_likes_count = 0
     product_count = 0
+    product_ids: list[str] = []
 
     if shop_ids:
         fol_r = (
@@ -406,9 +421,12 @@ async def my_shops_stats(user_id: str = Depends(get_current_user_id)) -> dict:
 
     total_whatsapp_clicks = 0
     total_messages = 0
-    
+    from platform_settings.flags import analytics_enabled
+
+    analytics_on = analytics_enabled()
+
     # 1. Product-level events
-    if product_ids:
+    if analytics_on and product_ids:
         try:
             ev_r = (
                 admin.table("listing_events")
@@ -426,7 +444,7 @@ async def my_shops_stats(user_id: str = Depends(get_current_user_id)) -> dict:
             logger.warning("listing_events aggregate failed: %s", exc)
             
     # 2. Shop-level events
-    if shop_ids:
+    if analytics_on and shop_ids:
         try:
             # We must fetch the rows because we can't easily do a jsonb IN filter
             sev_r = (
@@ -459,6 +477,8 @@ async def my_shops_stats(user_id: str = Depends(get_current_user_id)) -> dict:
         "total_product_likes": product_likes_count,
         "total_whatsapp_clicks": total_whatsapp_clicks,
         "total_messages": total_messages,
+        "analytics_enabled": analytics_on,
+        "enabled": analytics_on,
     }
 
 
@@ -471,6 +491,15 @@ async def my_shops_analytics(
     conversion funnels, and top listings. Powers the expanded merchant dashboard."""
     from datetime import datetime, timedelta, timezone
     from collections import defaultdict
+
+    from platform_settings.flags import analytics_enabled
+
+    if not analytics_enabled():
+        return {
+            "enabled": False,
+            "code": "analytics_disabled",
+            "window_days": days,
+        }
 
     admin = get_supabase_admin()
 

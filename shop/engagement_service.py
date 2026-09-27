@@ -277,6 +277,10 @@ def get_product_engagement(client: Any, product_id: str, viewer_user_id: str | N
 
 
 def record_shop_view(client: Any, shop_id: str) -> int:
+    from platform_settings.flags import analytics_enabled
+
+    if not analytics_enabled():
+        return 0
     if not shop_exists(client, shop_id):
         raise ValueError("Shop not found")
     r = client.rpc("increment_shop_view_count", {"p_shop_id": shop_id}).execute()
@@ -315,6 +319,10 @@ def _record_buyer_listing_event(product_id: str, buyer_id: str, event_type: str)
 
 
 def record_product_view(client: Any, product_id: str, buyer_id: str | None = None) -> int:
+    from platform_settings.flags import analytics_enabled
+
+    if not analytics_enabled():
+        return 0
     if not product_exists(client, product_id):
         raise ValueError("Product not found")
     r = client.rpc("increment_product_view_count", {"p_product_id": product_id}).execute()

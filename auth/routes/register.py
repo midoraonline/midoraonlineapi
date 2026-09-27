@@ -21,7 +21,10 @@ async def register(
     response: Response,
     _: RateLimitRegister,
 ):
+    from platform_settings.flags import SignupsClosed, assert_signups_open
+
     try:
+        assert_signups_open()
         result = sign_up(
             email=body.email,
             password=body.password,
@@ -30,6 +33,11 @@ async def register(
             user_agent=request.headers.get("user-agent"),
             ip=request.client.host if request.client else None,
         )
+    except SignupsClosed as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={"detail": str(exc), "code": "signups_closed"},
+        ) from exc
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:

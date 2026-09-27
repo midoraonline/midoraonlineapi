@@ -52,6 +52,7 @@ class AnalyticsBatch(BaseModel):
 class AnalyticsAck(BaseModel):
     accepted: int
     rejected: int
+    enabled: bool = True
 
 
 def _clean_properties(props: dict[str, Any]) -> dict[str, Any]:
@@ -69,6 +70,11 @@ async def ingest_events(
     _: RateLimitIngest,
     current_user_id: Annotated[str | None, Depends(get_optional_user_id)] = None,
 ) -> AnalyticsAck:
+    from platform_settings.flags import analytics_enabled
+
+    if not analytics_enabled():
+        return AnalyticsAck(accepted=0, rejected=len(batch.events), enabled=False)
+
     if not batch.events:
         return AnalyticsAck(accepted=0, rejected=0)
 

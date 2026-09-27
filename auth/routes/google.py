@@ -70,6 +70,19 @@ async def google_oauth_callback(
             "refresh_token": result["refresh_token"],
             "token_type": "bearer",
         }
+    except ValueError as exc:
+        if "signups are closed" in str(exc).lower():
+            if frontend_callback_url:
+                fragment = urlencode({"error": "signups_closed", "provider": "google"})
+                return RedirectResponse(url=f"{frontend_callback_url}#{fragment}", status_code=302)
+            raise HTTPException(
+                status_code=403,
+                detail={"detail": str(exc), "code": "signups_closed"},
+            ) from exc
+        if frontend_callback_url:
+            fragment = urlencode({"error": "google_signin_failed", "provider": "google"})
+            return RedirectResponse(url=f"{frontend_callback_url}#{fragment}", status_code=302)
+        raise HTTPException(status_code=400, detail="Google sign-in failed") from exc
     except Exception:
         if frontend_callback_url:
             fragment = urlencode({"error": "google_signin_failed", "provider": "google"})
@@ -81,6 +94,13 @@ async def google_oauth_callback(
 async def google_oauth_exchange(body: GoogleCodeExchangeRequest, response: Response):
     try:
         result = await asyncio.to_thread(handle_callback, code=body.code, state=body.state)
+    except ValueError as exc:
+        if "signups are closed" in str(exc).lower():
+            raise HTTPException(
+                status_code=403,
+                detail={"detail": str(exc), "code": "signups_closed"},
+            ) from exc
+        raise HTTPException(status_code=400, detail="Google sign-in failed") from exc
     except Exception:
         raise HTTPException(status_code=400, detail="Google sign-in failed")
     set_auth_cookies(

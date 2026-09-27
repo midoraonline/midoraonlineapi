@@ -7,6 +7,7 @@ from core.postgrest_compat import is_undefined_column_error
 from shop import engagement_service
 from core.categories import normalize_category
 from shop.events import CONTENT_MODERATION_FIELDS
+from shop.listing_status import apply_listing_status
 from shop.locations import apply_online_location, listing_is_online
 from shop.schemas import (
     ProductCreate,
@@ -503,6 +504,17 @@ def get_product_detail(
 
 
 
+def _listing_status_row(client: Any, product_id: str) -> dict:
+    row = (
+        client.table("products")
+        .select("status,stock_quantity,item_type,is_published")
+        .eq("id", product_id)
+        .limit(1)
+        .execute()
+    )
+    return row.data[0] if row.data else {}
+
+
 def update_product(client: Any, product_id: str, data: ProductUpdate) -> dict | None:
     payload = data.model_dump(exclude_unset=True)
     if "image_urls" in payload:
@@ -511,15 +523,12 @@ def update_product(client: Any, product_id: str, data: ProductUpdate) -> dict | 
         _attach_media_keys(payload, urls, data)
     _apply_location_update(client, product_id, payload)
 
-    # Content-changing edits must go back through moderation. We reset status
-    # to pending_review even if the merchant tried to set status=active, which
-    # closes the "edit-around-the-gate" bypass.
     content_changed = any(key in payload for key in CONTENT_MODERATION_FIELDS)
-    if content_changed:
-        payload["status"] = "pending_review"
-    elif "status" in payload and payload["status"] == "active":
-        # Merchants cannot self-approve. Admin routes handle publish separately.
-        payload.pop("status", None)
+    apply_listing_status(
+        payload,
+        _listing_status_row(client, product_id),
+        content_changed=content_changed,
+    )
     if not payload:
         return get_product(client, product_id, viewer_id=None)
     r = _write_products(client, payload, product_id=product_id)

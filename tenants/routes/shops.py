@@ -42,6 +42,9 @@ async def update_shop(
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):
+    from platform_settings.flags import assert_posting_open
+
+    assert_posting_open()
     try:
         ensure_shop_owner(client, shop_id, user_id)
     except LookupError:
