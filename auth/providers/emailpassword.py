@@ -251,14 +251,20 @@ def get_profile(user_id: str) -> dict[str, Any] | None:
 
 def assert_phone_available(phone_number: str, user_id: str) -> None:
     """Raise ValueError when another account already owns this phone number."""
+    from auth.phone import PhoneError, normalize_phone, phone_lookup_forms
+
     phone = (phone_number or "").strip()
     if not phone:
         return
+    try:
+        forms = phone_lookup_forms(normalize_phone(phone))
+    except PhoneError:
+        forms = [phone]
     client = get_supabase_admin()
     r = (
         client.table("users")
         .select("id")
-        .eq("phone_number", phone)
+        .in_("phone_number", forms)
         .neq("id", user_id)
         .limit(1)
         .execute()

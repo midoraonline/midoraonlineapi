@@ -125,3 +125,30 @@ class SendPhoneCodeRequest(BaseModel):
 class ConfirmCodeRequest(BaseModel):
     code: str
 
+
+class VerificationStatusResponse(BaseModel):
+    phone: str | None = None
+    phone_verified: bool = False
+    email: str | None = None
+    email_verified: bool = False
+    can_post: bool = False
+    required_channel: Literal["phone", "email"] | None = None
+
+
+class PhoneOtpStartRequest(BaseModel):
+    phone: str
+
+
+class PhoneOtpConfirmRequest(BaseModel):
+    phone: str
+    code: str = Field(min_length=4, max_length=8)
+
+
+class EmailOtpStartRequest(BaseModel):
+    email: EmailStr
+
+
+class EmailOtpConfirmRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(min_length=4, max_length=8)
+

@@ -50,6 +50,9 @@ def _raise_plan_limit(exc: PermissionError) -> None:
 
 
 async def _insert_owned_product(client, user_id: str, shop_id: str, body: ProductCreate) -> dict:
+    from shop.publish_gates import assert_contact_verified
+
+    assert_contact_verified(user_id)
     try:
         plan_service.assert_can_create_product(client, shop_id, user_id)
     except PermissionError as exc:

@@ -1,6 +1,7 @@
 """Online location publish, physical location checks, and shop-less posting."""
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
@@ -83,8 +84,13 @@ class _Client:
 
 
 def _publish(client, location_name, shop_location="Kampala"):
-    client.db["users"] = [{"id": "user-1", "phone_verified": True}]
+    client.db["users"] = [{"id": "user-1", "phone_verified": True, "email_verified": False}]
     client.db["shops"] = [{"id": "shop-1", "location": shop_location}]
+    with patch("db.supabase.get_supabase_admin", return_value=client):
+        _assert_publish(client, location_name)
+
+
+def _assert_publish(client, location_name):
     assert_can_publish(
         client,
         user_id="user-1",

@@ -125,19 +125,28 @@ def assert_price_for_publish(price_ugx: float | None, item_type: str | None) -> 
         )
 
 
-def assert_owner_phone_verified(client: Any, user_id: str) -> None:
-    r = (
-        client.table("users")
-        .select("phone_verified")
+def assert_contact_verified(user_id: str) -> None:
+    """Phone or email must be verified before a listing is created or published."""
+    from auth.contact import contact_verification_status
+    from db.supabase import get_supabase_admin
+
+    row = (
+        get_supabase_admin()
+        .table("users")
+        .select("email,email_verified,phone_number,phone_verified")
         .eq("id", user_id)
         .limit(1)
         .execute()
     )
-    if not r.data or not bool(r.data[0].get("phone_verified")):
-        _http_gate(
-            "Verify your phone number before publishing a listing.",
-            "phone_verification_required",
-        )
+    if contact_verification_status(row.data[0] if row.data else None)["can_post"]:
+        return
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "detail": "Verify your phone or email before posting a listing.",
+            "code": "verification_required",
+        },
+    )
 
 
 def assert_can_publish(
@@ -153,7 +162,7 @@ def assert_can_publish(
     description: str | None,
 ) -> None:
     """Hard gates for a listing that will be publicly published."""
-    assert_owner_phone_verified(client, user_id)
+    assert_contact_verified(user_id)
     assert_media_limits(image_urls, publishing=True, item_type=item_type)
     assert_price_for_publish(price_ugx, item_type)
 
