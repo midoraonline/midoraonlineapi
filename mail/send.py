@@ -117,6 +117,15 @@ async def send_verification_email(to: str, verification_link: str) -> None:
     await _enqueue(to=to, subject=subject, body_html=body)
 
 
+async def send_email_otp(to: str, code: str) -> None:
+    body = _html_shell(
+        "Your Midora code",
+        f"<p>Your verification code is <strong>{code}</strong>.</p>"
+        "<p>It expires in 10 minutes. If you did not ask for this, you can ignore the email.</p>",
+    )
+    await _enqueue(to=to, subject="Your Midora verification code", body_html=body)
+
+
 # ---------------------------------------------------------------------------
 # Shop verification lifecycle
 # ---------------------------------------------------------------------------

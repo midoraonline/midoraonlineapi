@@ -26,7 +26,7 @@ async def send_shop_whatsapp_code(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
-    from common.verification_service import send_verification_code
+    from common.verification_service import VerificationError, http_status_for, send_verification_code
 
     try:
         send_verification_code(
@@ -37,8 +37,11 @@ async def send_shop_whatsapp_code(
             target_type="shop",
             target_id=shop_id,
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except VerificationError as exc:
+        raise HTTPException(
+            status_code=http_status_for(exc.code),
+            detail={"detail": str(exc), "code": exc.code},
+        ) from exc
     return {"message": "Verification code sent"}
 
 
@@ -56,7 +59,7 @@ async def verify_shop_whatsapp_code(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
-    from common.verification_service import confirm_verification_code
+    from common.verification_service import VerificationError, confirm_verification_code, http_status_for
 
     try:
         whatsapp_number = confirm_verification_code(
@@ -66,8 +69,11 @@ async def verify_shop_whatsapp_code(
             target_type="shop",
             target_id=shop_id,
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except VerificationError as exc:
+        raise HTTPException(
+            status_code=http_status_for(exc.code),
+            detail={"detail": str(exc), "code": exc.code},
+        ) from exc
 
     get_supabase_admin().table("shops").update(
         {"whatsapp_number": whatsapp_number, "whatsapp_verified": True}

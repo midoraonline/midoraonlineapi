@@ -13,7 +13,7 @@ async def send_phone_code(
     _: RateLimitOtp,
     user_id: str = Depends(get_current_user_id),
 ):
-    from common.verification_service import send_verification_code
+    from common.verification_service import VerificationError, http_status_for, send_verification_code
 
     from auth.providers.emailpassword import assert_phone_available
 
@@ -31,8 +31,11 @@ async def send_phone_code(
             target_type="user",
             target_id=user_id,
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except VerificationError as exc:
+        raise HTTPException(
+            status_code=http_status_for(exc.code),
+            detail={"detail": str(exc), "code": exc.code},
+        ) from exc
     return MessageResponse(message="Verification code sent")
 
 
@@ -43,7 +46,7 @@ async def verify_phone_code(
 ):
     from auth.providers.emailpassword import get_profile
     from auth.service import create_supabase_realtime_jwt
-    from common.verification_service import confirm_verification_code
+    from common.verification_service import VerificationError, confirm_verification_code, http_status_for
 
     try:
         phone_number = confirm_verification_code(
@@ -53,8 +56,11 @@ async def verify_phone_code(
             target_type="user",
             target_id=user_id,
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except VerificationError as exc:
+        raise HTTPException(
+            status_code=http_status_for(exc.code),
+            detail={"detail": str(exc), "code": exc.code},
+        ) from exc
 
     from auth.providers.emailpassword import assert_phone_available, get_profile
     from db.supabase import get_supabase_admin

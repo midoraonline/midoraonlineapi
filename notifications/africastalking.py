@@ -10,15 +10,18 @@ from core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Sandbox apps can't send real SMS/WhatsApp (AT's sandbox send endpoints 404) — always use the live host.
-_SMS_URL = "https://api.africastalking.com/version1/messaging/bulk"
+# Sandbox apps must use the sandbox host. Live apps stay on the production host.
+def _sms_url(username: str) -> str:
+    host = (
+        "https://api.sandbox.africastalking.com"
+        if username.strip().lower() == "sandbox"
+        else "https://api.africastalking.com"
+    )
+    return f"{host}/version1/messaging/bulk"
+
+
 _WHATSAPP_URL = "https://chat.africastalking.com/whatsapp/message/send"
 _TIMEOUT_SECONDS = 10.0
-
-
-def _warn_if_sandbox(username: str, channel: str) -> None:
-    if username.strip().lower() == "sandbox":
-        logger.warning("AFRICASTALKING_USERNAME is 'sandbox' — %s won't actually deliver; use a live app.", channel)
 
 
 def send_sms(phone_number: str, message: str) -> bool:
@@ -36,10 +39,9 @@ def send_sms(phone_number: str, message: str) -> bool:
     if settings.africastalking_sender_id:
         payload["senderId"] = settings.africastalking_sender_id
 
-    _warn_if_sandbox(settings.africastalking_username, "SMS")
     try:
         r = httpx.post(
-            _SMS_URL,
+            _sms_url(settings.africastalking_username),
             json=payload,
             headers={
                 "apiKey": settings.africastalking_api_key,
@@ -74,7 +76,6 @@ def send_whatsapp_text(phone_number: str, message: str) -> bool:
         "phoneNumber": phone_number,
         "body": {"message": message},
     }
-    _warn_if_sandbox(settings.africastalking_username, "WhatsApp")
     try:
         r = httpx.post(
             _WHATSAPP_URL,
