@@ -129,7 +129,7 @@ def listing_filters(
     ),
     listing_type: str | None = Query(
         None,
-        description="product, service, opportunity, job, or property.",
+        description="Product, service, opportunity, job, or property listing type.",
     ),
     verified_only: bool = Query(
         False,
@@ -137,7 +137,7 @@ def listing_filters(
     ),
     available: bool = Query(
         False,
-        description="Active listings that are not sold. Products must be in stock.",
+        description="Active listings that are not sold. Product listings must be in stock.",
     ),
     min_price: float | None = Query(None, ge=0, description="Minimum price_ugx."),
     max_price: float | None = Query(None, ge=0, description="Maximum price_ugx."),

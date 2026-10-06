@@ -123,7 +123,7 @@ async def get_latest_feed(
     params: Annotated[PaginationParams, Depends()],
     filters: Annotated[ListingFilters, Depends(listing_filters)],
 ):
-    """Latest products. Public + cache-friendly via Cache-Control (edge cache)."""
+    """Latest products, services, and opportunities; public and edge-cache friendly."""
     response.headers["Cache-Control"] = _PUBLIC_CACHE_HEADER
     return feed_service.get_latest_feed(
         client,

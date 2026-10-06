@@ -82,6 +82,8 @@ async def create_shop(
     from shop.personal import find_personal_shop
 
     assert_posting_open()
+    from shop.publish_gates import assert_contact_verified
+    assert_contact_verified(user_id)
     # Upgrading a personal seller profile reuses that row, so it is not a new shop.
     if find_personal_shop(client, user_id) is None:
         plan_service.assert_can_create_shop(client, user_id)
