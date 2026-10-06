@@ -160,9 +160,11 @@ def assert_can_publish(
     location_name: str | None,
     category: str | None,
     description: str | None,
+    contact_already_verified: bool = False,
 ) -> None:
     """Hard gates for a listing that will be publicly published."""
-    assert_contact_verified(user_id)
+    if not contact_already_verified:
+        assert_contact_verified(user_id)
     assert_media_limits(image_urls, publishing=True, item_type=item_type)
     assert_price_for_publish(price_ugx, item_type)
 

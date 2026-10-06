@@ -58,7 +58,13 @@ async def _insert_owned_product(client, user_id: str, shop_id: str, body: Produc
     except PermissionError as exc:
         _raise_plan_limit(exc)
 
-    await _enforce_publish_gates(client, user_id=user_id, shop_id=shop_id, body_or_row=body)
+    await _enforce_publish_gates(
+        client,
+        user_id=user_id,
+        shop_id=shop_id,
+        body_or_row=body,
+        contact_already_verified=True,
+    )
 
     try:
         product = shop_service.create_product(client, shop_id, body)
@@ -75,6 +81,7 @@ async def _enforce_publish_gates(
     shop_id: str,
     body_or_row,
     existing: dict | None = None,
+    contact_already_verified: bool = False,
 ) -> None:
     """Run Phase-1 publish gates when the listing will be public."""
     from shop.locations import is_online_location
@@ -136,6 +143,7 @@ async def _enforce_publish_gates(
         location_name=location_name,
         category=category,
         description=description,
+        contact_already_verified=contact_already_verified,
     )
     from categories.service import assert_required_listing_fields
 

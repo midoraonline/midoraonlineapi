@@ -126,6 +126,24 @@ def test_publish_accepts_online_and_still_rejects_country_only():
     assert exc.value.detail["code"] == "location_required"
 
 
+def test_publish_can_reuse_contact_check_from_create_request():
+    client = _Client()
+    client.db["shops"] = [{"id": "shop-1", "location": "Kampala"}]
+    with patch("db.supabase.get_supabase_admin", side_effect=AssertionError("duplicate contact lookup")):
+        assert_can_publish(
+            client,
+            user_id="user-1",
+            shop_id="shop-1",
+            image_urls=["https://cdn.example/a.jpg"],
+            price_ugx=15000,
+            item_type="product",
+            location_name="Kampala",
+            category="Phones",
+            description="Solid phone with a clear battery. Pickup is available in town.",
+            contact_already_verified=True,
+        )
+
+
 def test_frontend_sends_is_online_without_coordinates():
     """PR #73 create/update body: location_name + is_online, no lat/lng."""
     client = _Client()
