@@ -79,7 +79,26 @@ async def start_phone_verification(
         )
     except VerificationError as exc:
         _raise_verification(exc)
+    remember_unverified_phone(user_id, phone)
     return MessageResponse(message="Verification code sent")
+
+
+def remember_unverified_phone(user_id: str, phone: str) -> None:
+    """Keep the number the user typed so the next verification prefills it.
+
+    Never touches a verified number; a different number only replaces it
+    after that one is confirmed.
+    """
+    try:
+        row = _user_row(user_id)
+    except HTTPException:
+        return
+    if row.get("phone_verified") or (row.get("phone_number") or "").strip() == phone:
+        return
+    try:
+        get_supabase_admin().table("users").update({"phone_number": phone}).eq("id", user_id).execute()
+    except Exception:
+        pass
 
 
 @router.post("/verify/phone/confirm", response_model=VerificationStatusResponse)
