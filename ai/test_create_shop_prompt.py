@@ -28,3 +28,14 @@ def test_clean_list_limits():
 
 def test_prompt_is_uganda_specific():
     assert "UGX" in CREATE_SHOP_SYSTEM and "opportunities" in CREATE_SHOP_SYSTEM
+
+
+def test_info_prompt_matches_plans():
+    from ai.service import MIDORA_INFO_SYSTEM
+    from payments.plans import PLANS
+
+    for plan in PLANS.values():
+        if plan["price_ugx"]:
+            assert f"UGX {plan['price_ugx']:,}" in MIDORA_INFO_SYSTEM
+        assert f"{plan['max_shops']} shop" in MIDORA_INFO_SYSTEM
+    assert "OTP" in MIDORA_INFO_SYSTEM and "never send money" in MIDORA_INFO_SYSTEM
