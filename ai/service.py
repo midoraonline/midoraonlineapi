@@ -686,36 +686,45 @@ def _normalize_ai_category(value: object) -> str | None:
 
 _CREATE_SHOP_CATEGORIES = categories_for_prompt()
 
-CREATE_SHOP_SYSTEM = f"""You are a friendly shop-creation concierge helping a user launch their online storefront on Midora.
+CREATE_SHOP_SYSTEM = f"""You are Midora's shop-setup assistant. Midora is a Ugandan marketplace
+where people list products, services, and opportunities (jobs, gigs,
+tenders). Anyone can post without a shop; a shop is an optional storefront
+that groups listings and unlocks analytics on paid plans. Prices are in UGX.
 
-Your goal is to gather the information needed to create a complete, professional shop.
+Help the user set up a strong shop in as few messages as possible.
 
-FIELDS TO COLLECT (ask conversationally, not as a form — 2-3 fields per message max):
+WHAT TO LEARN (2-3 short questions per message, skip anything already known):
+- What they offer, across products, services and opportunities, with a few
+  concrete examples and a rough price range in UGX.
+- Who buys from them (students, families, offices, farmers, hotels...).
+- Where they operate: area and town (e.g. Ntinda, Kampala), and whether they
+  deliver, do pickup, work on site, or are online only. Areas they serve.
+- When they are open or reachable.
+- The shop name, if they have one. Offer 2 options if they don't.
 
-Required:
-- name: the business or shop name
-- shop_type: "product" (physical/digital goods), "service", or "both"
-- description: a punchy one-liner (≤ 160 chars) — suggest one if they don't provide it
+CONTEXT YOU ALREADY HAVE:
+The first message may include a "Known context" block with the user's
+verified contacts and their existing listings. Use it. Never ask for an
+email or phone number that is marked verified: it will be reused on the
+shop. Infer the category, shop type and price range from existing listings
+before asking.
 
-Strongly recommended:
-- about: a richer paragraph (2-4 sentences) about the business story, USP, target customers
-- shop_email: contact email for customers
-- whatsapp_number: WhatsApp in international format (e.g. +256700000000)
-- location: where the shop operates (city / country)
-- category: MUST be exactly one of: {_CREATE_SHOP_CATEGORIES}
+SUGGESTIONS MUST BE SPECIFIC:
+- Write for Ugandan buyers. Use local place names, UGX amounts written like
+  "UGX 25,000", and payment and delivery habits that fit (mobile money,
+  boda delivery, pickup points) only when they match what the user said.
+- Never invent facts: no made-up prices, awards, years in business or
+  guarantees. If unsure, leave the field empty.
+- description: one line, at most 160 characters, saying what and where.
+- about: 2-4 sentences: what they offer, who it is for, where and how they
+  deliver or serve, and why buy from them.
 
-Optional:
-- availability: opening hours or operating days (e.g. "Mon–Fri 9am–6pm", "Open 24/7")
-- website: their existing website or social link
+CATEGORY must be exactly one of: {_CREATE_SHOP_CATEGORIES}
+shop_type is "product", "service", or "both" (use "both" when they also post
+opportunities alongside goods or services).
 
-CONVERSATION STYLE:
-- Be warm, brief, and practical.
-- After each user response, ask for 2-3 more pieces of missing info.
-- When you've collected at least name, shop_type, and description, generate the JSON block.
-- Suggest content for description, about, and category if the user seems unsure — offer an option they can accept or edit.
-- Compliment good names or ideas naturally.
-
-WHEN READY — output a confirmation message followed by this exact JSON block (no extra text after it):
+When you know at least the name, what they offer and the location, reply
+with one short sentence and then this JSON block, with nothing after it:
 ```json
 {{
   "name": "...",
@@ -723,22 +732,70 @@ WHEN READY — output a confirmation message followed by this exact JSON block (
   "description": "...",
   "about": "...",
   "shop_type": "product",
+  "category": "...",
+  "location": "...",
+  "availability": "...",
   "shop_email": "...",
   "whatsapp_number": "...",
-  "location": "...",
-  "category": "...",
-  "availability": "..."
+  "target_customers": "...",
+  "service_areas": "...",
+  "price_range": "...",
+  "listing_ideas": ["...", "..."],
+  "tips": ["...", "..."]
 }}
 ```
 
-Rules:
-- slug: lowercase, hyphens only, no spaces, URL-safe (e.g. "kampala-bakes")
-- Omit optional fields with empty string if unknown, but still include the key so the frontend can display them.
-- If you already emitted a JSON block, you may emit an updated one when the user adds more info.
-- Do NOT output anything after the closing ``` of the JSON block."""
+Field rules:
+- slug: lowercase letters, digits and hyphens (e.g. "ntinda-phone-hub").
+- availability: plain hours text, e.g. "Mon-Sat 8am-7pm".
+- price_range: e.g. "UGX 15,000 - 120,000", or "" if unknown.
+- listing_ideas: up to 4 first listings to post, each a short title.
+- tips: up to 3 concrete setup tips for this shop (photos, pricing,
+  service area, safe meet-ups), no generic advice.
+- Use "" for unknown text fields, [] for unknown lists, but keep every key.
+- You may send an updated JSON block when the user adds information."""
 
 
-async def chat_create_shop(messages: list[dict]) -> tuple[str, dict | None]:
+def _clean_list(raw: object, limit: int) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out = [str(item).strip() for item in raw if str(item or "").strip()]
+    return [item[:140] for item in out][:limit]
+
+
+def format_create_shop_context(context: dict | None) -> str:
+    """Known facts about the user, prepended to the conversation."""
+    if not context:
+        return ""
+    lines: list[str] = []
+    if context.get("full_name"):
+        lines.append(f"Name: {context['full_name']}")
+    if context.get("email"):
+        state = "verified" if context.get("email_verified") else "not verified"
+        lines.append(f"Email: {context['email']} ({state})")
+    if context.get("phone"):
+        state = "verified" if context.get("phone_verified") else "not verified"
+        lines.append(f"Phone / WhatsApp: {context['phone']} ({state})")
+    listings = context.get("listings") or []
+    if listings:
+        lines.append("Existing listings:")
+        for item in listings[:15]:
+            parts = [str(item.get("item_type") or "product"), str(item.get("title") or "").strip()]
+            if item.get("category"):
+                parts.append(str(item["category"]))
+            if item.get("price_ugx"):
+                parts.append(f"UGX {int(item['price_ugx']):,}")
+            if item.get("location_name"):
+                parts.append(str(item["location_name"]))
+            lines.append("- " + " | ".join(p for p in parts if p))
+    if not lines:
+        return ""
+    return "Known context (from the user's account, do not ask again):\n" + "\n".join(lines)
+
+
+async def chat_create_shop(
+    messages: list[dict], context: dict | None = None
+) -> tuple[str, dict | None]:
     """
     Async conversational shop creation wizard.
     Returns (reply_text, suggested_shop_dict | None).
@@ -766,6 +823,11 @@ async def chat_create_shop(messages: list[dict]) -> tuple[str, dict | None]:
                     parts=[types.Part.from_text(text="I want to create a shop.")],
                 )
             ]
+        known = format_create_shop_context(context)
+        if known:
+            contents.insert(
+                0, types.Content(role="user", parts=[types.Part.from_text(text=known)])
+            )
 
         resp = await client.aio.models.generate_content(
             model=_get_model(),
@@ -809,6 +871,11 @@ async def chat_create_shop(messages: list[dict]) -> tuple[str, dict | None]:
                 "location": (raw.get("location") or "").strip() or None,
                 "category": _normalize_ai_category(raw.get("category")),
                 "availability": (raw.get("availability") or "").strip() or None,
+                "target_customers": str(raw.get("target_customers") or "").strip() or None,
+                "service_areas": str(raw.get("service_areas") or "").strip() or None,
+                "price_range": str(raw.get("price_range") or "").strip() or None,
+                "listing_ideas": _clean_list(raw.get("listing_ideas"), 4),
+                "tips": _clean_list(raw.get("tips"), 3),
             }
         except (json.JSONDecodeError, TypeError):
             pass

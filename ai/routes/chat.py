@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -11,6 +12,8 @@ from core.security import get_optional_user_id
 from core.rate_limit import RateLimitAi
 from ai import service as ai_service
 from ai.schemas import ChatSessionCreate, MessageCreate
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -123,6 +126,50 @@ async def list_chat_sessions(
     return r.data or []
 
 
+def _create_shop_context(user_id: str | None) -> dict | None:
+    """Verified contacts and recent listings, so the assistant doesn't re-ask."""
+    if not user_id:
+        return None
+    from db.supabase import get_supabase_admin
+
+    admin = get_supabase_admin()
+    context: dict = {}
+    try:
+        user = (
+            admin.table("users")
+            .select("full_name,email,email_verified,phone_number,phone_verified")
+            .eq("id", user_id)
+            .limit(1)
+            .execute()
+        )
+        row = (user.data or [{}])[0]
+        context.update(
+            full_name=row.get("full_name"),
+            email=row.get("email"),
+            email_verified=bool(row.get("email_verified")),
+            phone=row.get("phone_number"),
+            phone_verified=bool(row.get("phone_verified")),
+        )
+    except Exception:
+        logger.warning("create_shop context: user lookup failed", exc_info=True)
+    try:
+        shops = admin.table("shops").select("id").eq("owner_id", user_id).execute()
+        shop_ids = [s["id"] for s in (shops.data or []) if s.get("id")]
+        if shop_ids:
+            items = (
+                admin.table("products")
+                .select("title,item_type,category,price_ugx,location_name")
+                .in_("shop_id", shop_ids)
+                .order("created_at", desc=True)
+                .limit(15)
+                .execute()
+            )
+            context["listings"] = items.data or []
+    except Exception:
+        logger.warning("create_shop context: listings lookup failed", exc_info=True)
+    return context or None
+
+
 @router.post("/sessions/{session_id}/messages")
 async def send_message(
     session_id: str,
@@ -161,7 +208,8 @@ async def send_message(
 
     try:
         if intent == "create_shop":
-            reply, suggested_shop = await ai_service.chat_create_shop(messages)
+            context = await asyncio.to_thread(_create_shop_context, user_id)
+            reply, suggested_shop = await ai_service.chat_create_shop(messages, context)
         else:
             ctx = await asyncio.to_thread(
                 lambda: client.table("shop_ai_context")

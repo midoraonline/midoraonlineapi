@@ -25,6 +25,11 @@ class SuggestedShop(BaseModel):
     location: str | None = None
     category: str | None = None
     availability: str | None = None
+    target_customers: str | None = None
+    service_areas: str | None = None
+    price_range: str | None = None
+    listing_ideas: list[str] = Field(default_factory=list)
+    tips: list[str] = Field(default_factory=list)
 
     @field_validator("category", mode="before")
     @classmethod
