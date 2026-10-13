@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 from postgrest.exceptions import APIError
@@ -215,6 +216,43 @@ def _shop_write_payload(data: ShopCreate) -> dict[str, Any]:
     return payload
 
 
+async def send_shop_opened_emails(client: Any, owner_id: str, shop_id: str, shop_name: str) -> None:
+    """Best-effort lifecycle emails. Awaited by the route: on Vercel a task
+    left running after the response is frozen, so these must finish first.
+    Enqueue is cheap; serverless sends inline from `enqueue_mail`."""
+    try:
+        from core.config import get_settings
+        from mail.queue import get_admin_emails
+        from mail.send import send_shop_opened_admin_email, send_shop_opened_merchant_email
+
+        settings = get_settings()
+        merchant_email: str | None = None
+        try:
+            ur = client.table("users").select("email").eq("id", owner_id).limit(1).execute()
+            if ur.data:
+                merchant_email = ur.data[0].get("email")
+        except Exception:
+            pass
+        verification_url = f"{settings.frontend_url}/merchant/shops/{shop_id}/verification"
+        if merchant_email:
+            await send_shop_opened_merchant_email(
+                to=merchant_email,
+                shop_name=shop_name,
+                shop_id=shop_id,
+                verification_url=verification_url,
+            )
+        admin_emails = get_admin_emails()
+        if admin_emails:
+            await send_shop_opened_admin_email(
+                admin_recipients=admin_emails,
+                shop_name=shop_name,
+                shop_id=shop_id,
+                merchant_email=merchant_email,
+            )
+    except Exception:
+        logging.getLogger(__name__).warning("shop opened emails failed", exc_info=True)
+
+
 def create_shop(client: Any, owner_id: str, data: ShopCreate) -> dict:
     """Create shop. Validate slug uniqueness. shop_type: product, service, or both.
 
@@ -251,52 +289,6 @@ def create_shop(client: Any, owner_id: str, data: ShopCreate) -> dict:
     shop["_owner_role"] = new_role
     shop["_role_changed"] = changed
     revalidate_nextjs_cache_tag("shops")
-
-    # Best-effort lifecycle emails — never block shop creation.
-    try:
-        import asyncio
-        from core.config import get_settings
-        from mail.send import send_shop_opened_merchant_email, send_shop_opened_admin_email
-        from mail.queue import get_admin_emails
-
-        settings = get_settings()
-        # Resolve merchant email from user record
-        merchant_email: str | None = None
-        try:
-            ur = client.table("users").select("email").eq("id", owner_id).limit(1).execute()
-            if ur.data:
-                merchant_email = ur.data[0].get("email")
-        except Exception:
-            pass
-
-        shop_id_str = str(row["id"])
-        verification_url = f"{settings.frontend_url}/merchant/shops/{shop_id_str}/verification"
-
-        async def _fire_emails() -> None:
-            if merchant_email:
-                await send_shop_opened_merchant_email(
-                    to=merchant_email,
-                    shop_name=data.name,
-                    shop_id=shop_id_str,
-                    verification_url=verification_url,
-                )
-            admin_emails = get_admin_emails()
-            if admin_emails:
-                await send_shop_opened_admin_email(
-                    admin_recipients=admin_emails,
-                    shop_name=data.name,
-                    shop_id=shop_id_str,
-                    merchant_email=merchant_email,
-                )
-
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(_fire_emails())
-        except RuntimeError:
-            # No running loop (e.g. called from a sync test context) — skip emails.
-            pass
-    except Exception:
-        pass  # never fail shop creation due to email
 
     return shop
 

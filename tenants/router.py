@@ -92,6 +92,10 @@ async def create_shop(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    await tenants_service.send_shop_opened_emails(
+        client, user_id, str(shop.get("id") or ""), body.name
+    )
+
     # Auto-promote customer → merchant; refresh cookies so JWT role matches.
     role_changed = bool(shop.pop("_role_changed", False))
     new_role = str(shop.pop("_owner_role", "")) or None

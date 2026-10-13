@@ -10,7 +10,11 @@ from mail.listeners import (
 class MailModule(AppModule):
     def routers(self) -> list[RouterSpec]:
         from mail.routes.contactus import router
-        return [RouterSpec(router)]
+        from mail.routes.drain import router as drain_router
+        return [
+            RouterSpec(router),
+            RouterSpec(drain_router, prefix="/api/v1/mail", tags=["mail"]),
+        ]
 
     def register_listeners(self, bus: EventBus) -> None:
         bus.on(Events.PRODUCT_CREATED, on_product_created)

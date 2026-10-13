@@ -189,6 +189,68 @@ async def enqueue_mail(
 
     if inserted:
         _signal_worker()
+        await _send_now_if_serverless(len(recipients))
+
+
+INLINE_SEND_LIMIT = 5
+
+
+async def _send_now_if_serverless(count: int) -> None:
+    """Vercel has no worker and kills unawaited work after the response.
+
+    Send right here, inside the awaited request, so the email goes out
+    before the function freezes. The cron drain catches anything left.
+    """
+    from core.runtime import is_serverless
+
+    if not is_serverless():
+        return
+    try:
+        await drain_mail_queue(min(max(count, 1), INLINE_SEND_LIMIT))
+    except Exception as exc:
+        logger.warning("inline mail send failed; cron drain will retry: %s", exc)
+
+
+async def drain_mail_queue(limit: int = 50) -> dict[str, int]:
+    """Claim and send up to `limit` pending rows. Safe to run concurrently."""
+    sent = failed = 0
+    for _ in range(max(limit, 0)):
+        record = _claim_next()
+        if not record:
+            break
+        await _send_and_mark(record)
+        status = _status_of(record.get("id"))
+        if status == "sent":
+            sent += 1
+        else:
+            failed += 1
+    return {"sent": sent, "failed": failed}
+
+
+def _status_of(mail_id: Any) -> str | None:
+    if not mail_id:
+        return None
+    try:
+        r = get_supabase_admin().table("mail_queue").select("status").eq("id", mail_id).limit(1).execute()
+        return (r.data or [{}])[0].get("status")
+    except Exception:
+        return None
+
+
+def reset_stuck_processing(older_than_minutes: int = 10) -> None:
+    """Rows left 'processing' by a frozen function go back to pending."""
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=older_than_minutes)).isoformat()
+        (
+            get_supabase_admin()
+            .table("mail_queue")
+            .update({"status": "pending"})
+            .eq("status", "processing")
+            .lt("created_at", cutoff)
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning("reset stuck mail rows failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,10 @@
       "schedule": "30 3 * * *"
     },
     {
+      "path": "/api/v1/mail/drain",
+      "schedule": "45 4 * * *"
+    },
+    {
       "path": "/api/v1/feed/cron/refresh",
       "schedule": "0 4 * * *"
     }
