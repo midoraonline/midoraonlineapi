@@ -39,3 +39,12 @@ def test_info_prompt_matches_plans():
             assert f"UGX {plan['price_ugx']:,}" in MIDORA_INFO_SYSTEM
         assert f"{plan['max_shops']} shop" in MIDORA_INFO_SYSTEM
     assert "OTP" in MIDORA_INFO_SYSTEM and "never send money" in MIDORA_INFO_SYSTEM
+
+
+def test_strip_shop_json():
+    from ai.service import strip_shop_json
+
+    reply = 'Great, here it is!\n```json\n{"name": "X"}\n```'
+    assert strip_shop_json(reply, True) == "Great, here it is!"
+    assert "drafted" in strip_shop_json('```json\n{"a": 1}\n```', True)
+    assert strip_shop_json('ok\n```json\n{"a": ', False) == "ok"

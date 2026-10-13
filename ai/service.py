@@ -906,7 +906,17 @@ async def chat_create_shop(
         except (json.JSONDecodeError, TypeError):
             pass
 
-    return reply, suggested
+    return strip_shop_json(reply, suggested is not None), suggested
+
+
+def strip_shop_json(reply: str, parsed: bool) -> str:
+    """Hide the machine-readable block from the chat bubble."""
+    text = re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", reply or "", flags=re.DOTALL)
+    # An unterminated block (model cut off) is also hidden.
+    text = re.sub(r"```(?:json)?\s*\{.*\Z", "", text, flags=re.DOTALL).strip()
+    if parsed and not text:
+        return "I've drafted your shop. Check the details below and change anything that isn't right."
+    return text or (reply or "").strip()
 
 
 # ---------------------------------------------------------------------------
