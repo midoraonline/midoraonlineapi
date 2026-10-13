@@ -447,7 +447,20 @@ Rules:
 - "fair" = accurate but thin (buyer will need to ask questions).
 - "good" = at least two clear sentences, covers condition/what's included/
   who it's for, and reads like the seller wrote it.
-- Suggestions must be concrete ("Add condition — new or used?"), not vague.
+- The listing comes with "Structured details": values the seller already
+  entered in dedicated form fields (price, location, condition, category
+  fields such as brand, size or deadline). Treat them as part of the listing.
+  NEVER suggest adding to the description, title or a suggestion anything a
+  structured detail already captures, and do not judge the description
+  "poor" for leaving those out. A field marked "(empty)" is one the seller
+  skipped: if it matters to buyers, suggest filling that field by its label
+  ("Fill in Brand"), not writing it into the description.
+- Focus suggestions on what is genuinely missing or weak: unclear or
+  misleading title, photos that don't show the item, missing selling points,
+  what's included, defects, warranty, delivery or pickup, who it suits, or
+  for services and jobs: scope, requirements, schedule, how to apply.
+- Prices are in UGX. Only comment on price if it looks like a typo.
+- Suggestions must be concrete ("Mention the charger is included"), not vague.
 - Keep feedback friendly and under 20 words.
 - suggested_title / suggested_description are OPTIONAL rewrites the
   merchant can accept or ignore — only propose one when it is a real
@@ -460,11 +473,27 @@ Rules:
 """
 
 
+def format_listing_details(details: dict[str, str] | None) -> str:
+    lines: list[str] = []
+    for label, value in (details or {}).items():
+        name = str(label).strip()[:60]
+        if not name:
+            continue
+        text = str(value or "").strip()[:200]
+        lines.append(f"- {name}: {text or '(empty)'}")
+        if len(lines) >= 40:
+            break
+    return "\n".join(lines) or "- none"
+
+
 async def check_listing_quality(
     title: str,
     description: str,
     image_urls: list[str],
     category: str | None = None,
+    subcategory: str | None = None,
+    listing_kind: str | None = None,
+    details: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Score a listing (title + description + images) for publish-readiness.
 
@@ -523,7 +552,11 @@ async def check_listing_quality(
 
     listing_text = (
         f"Category tree (parent: subcategories):\n{category_tree_for_prompt()}\n\n"
-        f"Current category: {category or 'unspecified'}\n\n"
+        f"Listing type: {listing_kind or 'product'}\n"
+        f"Current category: {category or 'unspecified'}"
+        f"{' > ' + subcategory if subcategory else ''}\n\n"
+        f"Structured details (already captured, do not ask for these in the description):\n"
+        f"{format_listing_details(details)}\n\n"
         f"Title: {title.strip()}\n\n"
         f"Description:\n{(description or '').strip()}"
     )

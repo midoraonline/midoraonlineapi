@@ -88,6 +88,11 @@ class ListingQualityRequest(BaseModel):
     description: str
     image_urls: list[str] = []
     category: str | None = None
+    subcategory: str | None = None
+    listing_kind: str | None = None
+    # Values the form already captures in dedicated fields (price, location,
+    # condition, category metadata such as brand or size). Label -> value.
+    details: dict[str, str] = Field(default_factory=dict)
 
 
 class ListingQualityResponse(BaseModel):

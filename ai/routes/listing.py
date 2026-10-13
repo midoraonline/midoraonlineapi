@@ -26,5 +26,8 @@ async def check_quality(
         description=body.description,
         image_urls=body.image_urls,
         category=body.category,
+        subcategory=body.subcategory,
+        listing_kind=body.listing_kind,
+        details=body.details,
     )
     return ListingQualityResponse(**result)
