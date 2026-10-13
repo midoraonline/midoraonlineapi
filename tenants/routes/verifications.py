@@ -42,6 +42,56 @@ BADGE_MAP = {
 }
 VALID_STAGES = (2, 3, 4)
 
+# What review needs per stage. Each inner tuple is "any one of these".
+REQUIRED_DOCS: dict[int, list[tuple[str, ...]]] = {
+    2: [("national_id_front", "passport", "driving_permit"), ("selfie",)],
+    3: [("shop_photo", "business_reg", "business_cert")],
+    4: [("professional_cred", "professional_license")],
+}
+_REQUIRED_LABELS = {
+    "national_id_front": "an ID (national ID front, passport or driving permit)",
+    "selfie": "a selfie holding the ID",
+    "shop_photo": "a shop photo or business registration",
+    "professional_cred": "a professional credential or licence",
+}
+
+
+def missing_required_docs(stage: int, docs: list[dict[str, Any]] | None) -> list[str]:
+    have = {str(d.get("type") or "") for d in (docs or []) if d.get("url")}
+    missing: list[str] = []
+    for group in REQUIRED_DOCS.get(stage, []):
+        if not have.intersection(group):
+            missing.append(_REQUIRED_LABELS.get(group[0], group[0]))
+    # A national ID needs both sides.
+    if stage == 2 and "national_id_front" in have and not have & {"passport", "driving_permit"}:
+        if "national_id_back" not in have:
+            missing.append("the back of the national ID")
+    return missing
+
+
+def _assert_required_docs(stage: int, docs: list[dict[str, Any]] | None) -> None:
+    missing = missing_required_docs(stage, docs)
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "detail": "Add " + ", ".join(missing) + " before requesting review.",
+                "code": "verification_docs_missing",
+            },
+        )
+
+
+def _clean_fields(raw: dict[str, Any] | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for key, value in (raw or {}).items():
+        k = str(key).strip()[:60]
+        v = str(value if value is not None else "").strip()[:300]
+        if k and v:
+            out[k] = v
+        if len(out) >= 20:
+            break
+    return out
+
 
 def _normalise_docs(raw: object) -> list[dict[str, Any]] | None:
     if isinstance(raw, list):
@@ -233,12 +283,18 @@ async def submit_for_verification(
             detail="Complete Identity Verification before Professional Verification.",
         )
 
+    if body.request_review:
+        _assert_required_docs(stage, docs_dict)
+
     now_iso = datetime.now(timezone.utc).isoformat()
     stage_status = "pending" if body.request_review else "submitted"
     meta[f"stage{stage}_status"] = stage_status
     meta[f"stage{stage}_requested_at"] = now_iso
     meta[f"stage{stage}_notes"] = body.notes
     meta[f"stage{stage}_docs"] = docs_dict
+    fields = _clean_fields(body.metadata)
+    if fields:
+        meta[f"stage{stage}_fields"] = fields
     meta.setdefault("badges", ["shop_listed"])
     meta.setdefault("stage4_status", "unverified")
 
@@ -304,6 +360,7 @@ async def request_verification_review(
         raise HTTPException(status_code=400, detail="This stage is already verified.")
     if current == "pending":
         return _row_to_response(row)
+    _assert_required_docs(stage, docs if isinstance(docs, list) else None)
 
     now_iso = datetime.now(timezone.utc).isoformat()
     meta[f"stage{stage}_status"] = "pending"
@@ -533,6 +590,9 @@ async def admin_get_verification_stages(shop_id: str) -> dict[str, Any]:
             "status": meta.get("stage2_status", "unverified"),
             "requested_at": meta.get("stage2_requested_at"),
             "notes": meta.get("stage2_notes"),
+            "review_notes": meta.get("stage2_review_notes"),
+            "reviewed_at": meta.get("stage2_reviewed_at"),
+            "fields": meta.get("stage2_fields") or {},
             "docs": meta.get("stage2_docs") or _normalise_docs(row.get("submitted_docs")),
             "phone": meta.get("stage2_phone") or row.get("submitted_phone"),
             "whatsapp": meta.get("stage2_whatsapp") or row.get("submitted_whatsapp"),
@@ -542,12 +602,18 @@ async def admin_get_verification_stages(shop_id: str) -> dict[str, Any]:
             "status": meta.get("stage3_status", "unverified"),
             "requested_at": meta.get("stage3_requested_at"),
             "notes": meta.get("stage3_notes"),
+            "review_notes": meta.get("stage3_review_notes"),
+            "reviewed_at": meta.get("stage3_reviewed_at"),
+            "fields": meta.get("stage3_fields") or {},
             "docs": meta.get("stage3_docs"),
         },
         "stage4": {
             "status": meta.get("stage4_status", "unverified"),
             "requested_at": meta.get("stage4_requested_at"),
             "notes": meta.get("stage4_notes"),
+            "review_notes": meta.get("stage4_review_notes"),
+            "reviewed_at": meta.get("stage4_reviewed_at"),
+            "fields": meta.get("stage4_fields") or {},
             "docs": meta.get("stage4_docs"),
         },
         "shop_duration_days": row.get("shop_duration_days") or 0,
@@ -604,7 +670,7 @@ async def admin_approve_verification(
     meta[f"stage{stage}_status"] = "verified"
     meta[f"stage{stage}_reviewed_at"] = datetime.now(timezone.utc).isoformat()
     meta[f"stage{stage}_reviewer"] = reviewer_id
-    meta[f"stage{stage}_notes"] = notes
+    meta[f"stage{stage}_review_notes"] = notes
     badges = list(meta.get("badges") or ["shop_listed"])
     if badge not in badges:
         badges.append(badge)
@@ -662,7 +728,12 @@ async def admin_reject_verification(
     claims=Depends(get_optional_claims),
 ) -> dict[str, Any]:
     reviewer_id = getattr(claims, "sub", None) if claims else None
-    notes = body.notes if body else None
+    notes = (body.notes or "").strip() if body else ""
+    if not notes:
+        raise HTTPException(
+            status_code=422,
+            detail={"detail": "Add a reason so the seller knows what to fix.", "code": "reason_required"},
+        )
     stage = _clamp_stage(stage)
 
     client = get_supabase_admin()
@@ -672,7 +743,7 @@ async def admin_reject_verification(
     meta[f"stage{stage}_status"] = "rejected"
     meta[f"stage{stage}_reviewed_at"] = datetime.now(timezone.utc).isoformat()
     meta[f"stage{stage}_reviewer"] = reviewer_id
-    meta[f"stage{stage}_notes"] = notes
+    meta[f"stage{stage}_review_notes"] = notes
 
     # Drop badge for this stage if it was previously granted
     badge = BADGE_MAP[stage]
