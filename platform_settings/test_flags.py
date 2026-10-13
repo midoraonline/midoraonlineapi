@@ -13,6 +13,7 @@ def test_defaults_when_table_is_empty(monkeypatch):
     public = flags.public_flags()
     assert public == {
         "analytics": False,
+        "analytics_all_plans": False,
         "signups_allowed": True,
         "listings_require_review": False,
         "ai_moderation": True,
@@ -39,3 +40,20 @@ def test_signups_closed(monkeypatch):
     except SignupsClosed:
         return
     raise AssertionError("expected SignupsClosed")
+
+
+def test_analytics_all_plans_grants_basic(monkeypatch):
+    from payments import plan_service
+
+    flags.invalidate_cache()
+    monkeypatch.setattr(plan_service, "get_user_plan", lambda client, uid: {"analytics_enabled": False})
+    monkeypatch.setattr(flags, "_load_rows", lambda: [])
+    assert plan_service.has_analytics_access(None, "u") is False
+    flags.invalidate_cache()
+    monkeypatch.setattr(
+        flags,
+        "_load_rows",
+        lambda: [{"key": "analytics_all_plans", "enabled": True, "value": {}, "updated_by": None, "updated_at": None}],
+    )
+    assert plan_service.has_analytics_access(None, "u") is True
+    flags.invalidate_cache()

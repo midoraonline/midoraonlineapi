@@ -187,4 +187,8 @@ def assert_identity_for_paid_plan(client: Any, shop_id: str, plan_tier: str) -> 
 
 
 def has_analytics_access(client: Any, user_id: str) -> bool:
+    from platform_settings.flags import analytics_all_plans
+
+    if analytics_all_plans():
+        return True
     return bool(get_user_plan(client, user_id).get("analytics_enabled"))

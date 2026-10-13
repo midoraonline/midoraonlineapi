@@ -22,6 +22,11 @@ FLAGS: dict[str, dict[str, Any]] = {
         "public": True,
         "description": "Record shop and listing analytics. When off, events are not stored and analytics responses say disabled.",
     },
+    "analytics_all_plans": {
+        "default": False,
+        "public": True,
+        "description": "Give every subscription plan, including Basic, access to shop analytics. Needs Analytics on.",
+    },
     "signups_allowed": {
         "default": True,
         "public": True,
@@ -118,6 +123,10 @@ def enabled(key: str) -> bool:
 
 def analytics_enabled() -> bool:
     return enabled("analytics")
+
+
+def analytics_all_plans() -> bool:
+    return enabled("analytics_all_plans")
 
 
 def signups_allowed() -> bool:
