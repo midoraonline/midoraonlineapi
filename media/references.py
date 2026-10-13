@@ -1,7 +1,7 @@
 """Which UploadThing keys are still used by a live record.
 
 Scanned columns: products.image_urls / image_keys / video_keys,
-shops.logo_url, profiles.avatar_url. Shops have no banner column.
+shops.logo_url, shops.theme_config.metadata.banner_url, profiles.avatar_url.
 """
 from __future__ import annotations
 
@@ -27,6 +27,17 @@ def referenced_key_set(products: list[dict], logos: list, avatars: list) -> set[
         if key:
             keys.add(key)
     return keys
+
+
+def shop_banner_url(theme_config) -> str | None:
+    """Banner lives in shops.theme_config.metadata.banner_url (no column)."""
+    if not isinstance(theme_config, dict):
+        return None
+    meta = theme_config.get("metadata")
+    if not isinstance(meta, dict):
+        return None
+    url = meta.get("banner_url")
+    return url.strip() if isinstance(url, str) and url.strip() else None
 
 
 def keys_on_product(row: dict) -> set[str]:
@@ -89,11 +100,12 @@ def load_referenced_keys(client) -> set[str]:
             ):
                 raise
             products = _rows(client, "products", "image_urls")
-        shops = _rows(client, "shops", "logo_url")
+        shops = _rows(client, "shops", "logo_url,theme_config")
         profiles = _rows(client, "profiles", "avatar_url")
     except Exception:
         logger.exception("UploadThing reference scan failed; refusing to delete files")
         raise
     logos = [row.get("logo_url") for row in shops if row.get("logo_url")]
+    logos += [b for b in (shop_banner_url(row.get("theme_config")) for row in shops) if b]
     avatars = [row.get("avatar_url") for row in profiles if row.get("avatar_url")]
     return referenced_key_set(products, logos, avatars)

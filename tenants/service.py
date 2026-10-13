@@ -375,6 +375,19 @@ def get_shop_by_slug(client: Any, slug: str, viewer_id: str | None = None) -> di
     return _decorate_seller(client, out)
 
 
+def shop_image_urls(client: Any, shop_id: str) -> list[str]:
+    """Logo and banner URLs currently stored on a shop."""
+    from media.references import shop_banner_url
+
+    try:
+        r = client.table("shops").select("logo_url,theme_config").eq("id", shop_id).limit(1).execute()
+    except Exception:
+        return []
+    row = (r.data or [{}])[0] if r.data else {}
+    urls = [row.get("logo_url"), shop_banner_url(row.get("theme_config"))]
+    return [u for u in urls if isinstance(u, str) and u.strip()]
+
+
 def update_shop(client: Any, shop_id: str, data: ShopUpdate, viewer_id: str | None = None) -> dict | None:
     """Update shop (partial). RLS: owner only.
 

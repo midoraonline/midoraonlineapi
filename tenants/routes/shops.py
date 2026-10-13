@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from supabase import Client
 
 from core.authz import ensure_shop_owner
@@ -40,6 +40,7 @@ async def update_shop(
     shop_id: str,
     body: ShopUpdate,
     client: Annotated[Client, Depends(get_supabase_client)],
+    background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user_id),
 ):
     from platform_settings.flags import assert_posting_open
@@ -52,9 +53,16 @@ async def update_shop(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
+    old_images = tenants_service.shop_image_urls(client, shop_id)
     shop = tenants_service.update_shop(client, shop_id, body, viewer_id=user_id)
     if not shop:
         raise HTTPException(status_code=404, detail="Shop not found")
+    new_images = tenants_service.shop_image_urls(client, shop_id)
+    if set(old_images) - set(new_images):
+        from media.cleanup import cleanup_removed_media
+
+        # Replaced or removed logo/banner: delete it from UploadThing if unused.
+        background_tasks.add_task(cleanup_removed_media, old_images, new_images)
     return shop
 
 
