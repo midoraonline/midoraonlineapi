@@ -17,18 +17,21 @@ from media.avatar_image import is_heic, prepare_avatar_upload
 
 
 def test_preferences_round_trip_and_partial_patch():
-    stored = coerce_preferences({"theme": "dark", "notifications": {"push": False}})
+    stored = coerce_preferences({"theme": "dark", "notifications": {"push": True}})
     assert stored["theme"] == "dark"
-    assert stored["notifications"]["push"] is False
-    assert stored["notifications"]["email"] is True
-    assert stored["notifications"]["reports"] is True
+    assert stored["notifications"]["push"] is True
+    # Unset toggles default OFF for new users (migration 055).
+    assert stored["notifications"]["email"] is False
+    assert stored["notifications"]["reports"] is False
+    # A saved choice is kept as-is.
+    assert coerce_preferences({"notifications": {"email": True}})["notifications"]["email"] is True
 
     merged = merge_preferences(
         stored,
         UserPreferencesPatch.model_validate({"notifications": {"messages": False}}),
     )
     assert merged["theme"] == "dark"
-    assert merged["notifications"]["push"] is False
+    assert merged["notifications"]["push"] is True
     assert merged["notifications"]["messages"] is False
 
     with pytest.raises(ValidationError):
@@ -54,14 +57,14 @@ def test_profile_payload_includes_theme_for_session():
     dumped = body.model_dump()
     assert dumped["bio"] == "Kampala tailor"
     assert dumped["preferences"]["theme"] == "light"
-    assert dumped["preferences"]["notifications"]["listing_approved"] is True
+    assert dumped["preferences"]["notifications"]["listing_approved"] is False
 
 
 def test_notification_toggles(monkeypatch):
     monkeypatch.setattr(
         "auth.preferences.load_preferences",
         lambda _user: coerce_preferences(
-            {"notifications": {"push": False, "email": True, "messages": False, "reports": False}}
+            {"notifications": {"push": False, "email": True, "listing_approved": True, "messages": False, "reports": False}}
         ),
     )
     assert notification_enabled("u", "listing_approved", "push") is False

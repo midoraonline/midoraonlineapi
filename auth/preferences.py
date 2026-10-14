@@ -22,13 +22,14 @@ NOTIFICATION_KINDS = (
 class NotificationPreferences(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    push: bool = True
-    email: bool = True
-    messages: bool = True
-    listing_approved: bool = True
-    listing_rejected: bool = True
-    reviews: bool = True
-    reports: bool = True
+    # New users opt in; defaults are OFF (migration 055).
+    push: bool = False
+    email: bool = False
+    messages: bool = False
+    listing_approved: bool = False
+    listing_rejected: bool = False
+    reviews: bool = False
+    reports: bool = False
 
 
 class UserPreferences(BaseModel):
@@ -99,7 +100,7 @@ def merge_preferences(current: Any, patch: UserPreferencesPatch) -> dict[str, An
 
 
 def load_preferences(user_id: str) -> dict[str, Any]:
-    """Read stored preferences. Missing column or row uses defaults (toggles on)."""
+    """Read stored preferences. Missing column or row uses defaults (toggles off since 055)."""
     from db.supabase import get_supabase_admin
 
     try:
