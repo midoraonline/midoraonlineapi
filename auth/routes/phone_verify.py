@@ -17,15 +17,21 @@ async def send_phone_code(
 
     from auth.providers.emailpassword import assert_phone_available
 
+    from auth.phone import PhoneError, normalize_phone
+
     try:
-        assert_phone_available(body.phone_number, user_id)
+        phone = normalize_phone(body.phone_number)
+    except PhoneError as exc:
+        raise HTTPException(status_code=400, detail={"detail": str(exc), "code": exc.code}) from exc
+    try:
+        assert_phone_available(phone, user_id)
     except ValueError as e:
-        raise HTTPException(status_code=409, detail={"detail": str(e), "code": "phone_taken"})
+        raise HTTPException(status_code=409, detail={"detail": str(e), "code": "phone_in_use"})
 
     try:
         send_verification_code(
             user_id=user_id,
-            phone_number=body.phone_number,
+            phone_number=phone,
             purpose="phone",
             channel="sms",
             target_type="user",
