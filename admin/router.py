@@ -16,6 +16,7 @@ from admin.routes import chat_admin as admin_chat
 from admin.routes import feedback as admin_feedback
 from admin.routes import feed_config as admin_feed_config
 from admin.routes import feature_flags as admin_feature_flags
+from admin.routes import users as admin_users
 from media.routes import admin_router as admin_media
 from tenants.routes import verifications as verif_admin
 
@@ -41,3 +42,4 @@ router.include_router(admin_feedback.router, prefix="", tags=["admin"])
 router.include_router(admin_feed_config.router, prefix="", tags=["admin"])
 router.include_router(verif_admin.admin_router, prefix="/shops", tags=["admin"])
 router.include_router(admin_media, tags=["admin"])
+router.include_router(admin_users.router, prefix="", tags=["admin"])
