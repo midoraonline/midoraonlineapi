@@ -152,6 +152,18 @@ class Settings(BaseSettings):
     )
 
     @property
+    def frontend_url(self) -> str:
+        """Public site origin for links in emails (reset, verification...)."""
+        front = (self.frontend_public_url or "").strip().rstrip("/")
+        if front:
+            return front
+        verify = (self.email_verification_frontend_url or "").strip()
+        if "://" in verify:
+            scheme, rest = verify.split("://", 1)
+            return f"{scheme}://{rest.split('/', 1)[0]}"
+        return "http://localhost:3000"
+
+    @property
     def is_production(self) -> bool:
         return self.environment.strip().lower() == "production"
 

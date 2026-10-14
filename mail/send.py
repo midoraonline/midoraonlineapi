@@ -117,6 +117,18 @@ async def send_verification_email(to: str, verification_link: str) -> None:
     await _enqueue(to=to, subject=subject, body_html=body)
 
 
+async def send_password_reset_email(to: str, link: str) -> None:
+    body = _html_shell(
+        "Reset your password",
+        f"<p>Someone asked to reset the password for your Midora account.</p>"
+        f'<p><a href="{link}" style="display:inline-block;background:#d4653c;color:#fff;'
+        f'padding:10px 18px;border-radius:10px;text-decoration:none;font-weight:600;">Choose a new password</a></p>'
+        "<p>The link works once and expires in 60 minutes. If you didn't ask, ignore this email; "
+        "your password stays the same.</p>",
+    )
+    await _enqueue(to=to, subject="Reset your Midora password", body_html=body)
+
+
 async def send_email_otp(to: str, code: str) -> None:
     body = _html_shell(
         "Your Midora code",
