@@ -1,6 +1,7 @@
 import asyncio
 import logging
 
+from auth.service import AccountInactive
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from auth.cookies import set_auth_cookies
@@ -35,6 +36,14 @@ async def login(
             user_agent=request.headers.get("user-agent"),
             ip=request.client.host if request.client else None,
         )
+    except AccountInactive as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "detail": "This account is suspended. Contact support if you think this is a mistake.",
+                "code": "account_suspended",
+            },
+        ) from exc
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid email or password")
     except Exception:

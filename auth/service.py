@@ -291,6 +291,36 @@ def _revoke_refresh_family(family_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+class AccountInactive(ValueError):
+    """Suspended, blocked or deleted accounts can't start or refresh sessions."""
+
+    def __init__(self, status: str):
+        super().__init__(f"Account is {status}")
+        self.status = status
+
+
+def assert_account_active(user_id: str) -> None:
+    """Raise AccountInactive unless users.status is active (or unreadable)."""
+    try:
+        res = (
+            get_supabase_admin()
+            .table("users")
+            .select("status")
+            .eq("id", user_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001 - never lock people out on a read error
+        logger.info("status check skipped for %s: %s", user_id, exc)
+        return
+    rows = getattr(res, "data", None) or []
+    if not rows or not isinstance(rows[0], dict):
+        return
+    status = str(rows[0].get("status") or "active")
+    if status != "active":
+        raise AccountInactive(status)
+
+
 def create_access_and_refresh_tokens(
     user_id: str,
     role: str,
@@ -298,6 +328,7 @@ def create_access_and_refresh_tokens(
     user_agent: str | None = None,
     ip: str | None = None,
 ) -> Tuple[str, str]:
+    assert_account_active(user_id)
     access = _encode_jwt(_build_access_claims(user_id, role))
     jti = uuid4().hex
     family_id = str(uuid4())
@@ -352,6 +383,11 @@ def rotate_refresh_token(
     # Re-read the live role from the DB so promotions (customer → merchant,
     # manual admin changes, etc.) take effect on the next refresh without
     # forcing the user to log out.
+    try:
+        assert_account_active(user_id)
+    except AccountInactive:
+        _revoke_refresh_family(_family_id_of(record, jti))
+        raise
     role = get_user_role(user_id) or str(claims.get("role") or "customer")
     family_id = _family_id_of(record, jti)
 

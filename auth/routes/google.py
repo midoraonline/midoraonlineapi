@@ -2,6 +2,8 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
+
+from auth.service import AccountInactive
 from urllib.parse import urlencode
 
 from auth.cookies import set_auth_cookies
@@ -71,6 +73,14 @@ async def google_oauth_callback(
             "token_type": "bearer",
         }
     except ValueError as exc:
+        if isinstance(exc, AccountInactive):
+            if frontend_callback_url:
+                fragment = urlencode({"error": "account_suspended", "provider": "google"})
+                return RedirectResponse(url=f"{frontend_callback_url}#{fragment}", status_code=302)
+            raise HTTPException(
+                status_code=403,
+                detail={"detail": "This account is suspended.", "code": "account_suspended"},
+            ) from exc
         if "signups are closed" in str(exc).lower():
             if frontend_callback_url:
                 fragment = urlencode({"error": "signups_closed", "provider": "google"})
@@ -95,6 +105,11 @@ async def google_oauth_exchange(body: GoogleCodeExchangeRequest, response: Respo
     try:
         result = await asyncio.to_thread(handle_callback, code=body.code, state=body.state)
     except ValueError as exc:
+        if isinstance(exc, AccountInactive):
+            raise HTTPException(
+                status_code=403,
+                detail={"detail": "This account is suspended.", "code": "account_suspended"},
+            ) from exc
         if "signups are closed" in str(exc).lower():
             raise HTTPException(
                 status_code=403,
