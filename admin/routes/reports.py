@@ -12,6 +12,106 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _rows(admin, table: str, cols: str, column: str, ids: list[str]) -> list[dict[str, Any]]:
+    ids = [i for i in dict.fromkeys(str(x) for x in ids if x)]
+    if not ids:
+        return []
+    try:
+        return admin.table(table).select(cols).in_(column, ids).execute().data or []
+    except Exception as exc:  # noqa: BLE001 - enrichment is best effort
+        logger.warning("report enrichment %s failed: %s", table, exc)
+        return []
+
+
+def _first_image(row: dict[str, Any]) -> str | None:
+    urls = row.get("image_urls") or []
+    if isinstance(urls, str):
+        urls = [u.strip() for u in urls.split(",") if u.strip()]
+    return urls[0] if urls else None
+
+
+def _reporters(admin, items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    rows = _rows(admin, "users", "id, full_name, email", "id", [r.get("reporter_id") for r in items])
+    return {str(u["id"]): {"id": str(u["id"]), "full_name": u.get("full_name"), "email": u.get("email")} for u in rows}
+
+
+def enrich_product_reports(admin, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach listing (thumb, title, price, type, status), seller and reporter."""
+    products = {
+        str(p["id"]): p
+        for p in _rows(
+            admin,
+            "products",
+            "id, title, price_ugx, discount_price, item_type, status, image_urls, shop_id",
+            "id",
+            [r.get("product_id") for r in items],
+        )
+    }
+    shops = {
+        str(s["id"]): s
+        for s in _rows(admin, "shops", "id, name, slug, owner_id", "id", [p.get("shop_id") for p in products.values()])
+    }
+    owners = {
+        str(u["id"]): u
+        for u in _rows(admin, "users", "id, full_name", "id", [s.get("owner_id") for s in shops.values()])
+    }
+    reporters = _reporters(admin, items)
+    out = []
+    for r in items:
+        p = products.get(str(r.get("product_id")))
+        listing = None
+        if p:
+            shop = shops.get(str(p.get("shop_id"))) or {}
+            owner = owners.get(str(shop.get("owner_id"))) or {}
+            listing = {
+                "id": str(p["id"]),
+                "title": p.get("title"),
+                "price_ugx": p.get("price_ugx"),
+                "discount_price": p.get("discount_price"),
+                "item_type": p.get("item_type") or "product",
+                "status": p.get("status"),
+                "thumbnail_url": _first_image(p),
+                "shop_name": shop.get("name"),
+                "shop_slug": shop.get("slug"),
+                "seller_name": owner.get("full_name") or shop.get("name"),
+            }
+        out.append({**r, "listing": listing, "reporter": reporters.get(str(r.get("reporter_id")))})
+    return out
+
+
+def enrich_seller_reports(admin, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach the reported seller's business (name, logo, verified, listing count) and reporter."""
+    seller_ids = [r.get("seller_id") for r in items]
+    users = {str(u["id"]): u for u in _rows(admin, "users", "id, full_name, email", "id", seller_ids)}
+    shops_by_owner: dict[str, list[dict[str, Any]]] = {}
+    for s in _rows(admin, "shops", "id, name, slug, logo_url, owner_id, trust_badges, is_active", "owner_id", seller_ids):
+        shops_by_owner.setdefault(str(s.get("owner_id")), []).append(s)
+    all_shop_ids = [s["id"] for lst in shops_by_owner.values() for s in lst]
+    counts: dict[str, int] = {}
+    for p in _rows(admin, "products", "id, shop_id", "shop_id", all_shop_ids):
+        counts[str(p.get("shop_id"))] = counts.get(str(p.get("shop_id")), 0) + 1
+    reporters = _reporters(admin, items)
+    out = []
+    for r in items:
+        sid = str(r.get("seller_id"))
+        user = users.get(sid) or {}
+        owned = shops_by_owner.get(sid, [])
+        main = next((s for s in owned if s.get("is_active")), owned[0] if owned else None)
+        badges = {b for s in owned for b in (s.get("trust_badges") or [])}
+        seller = {
+            "id": sid,
+            "name": (main or {}).get("name") or user.get("full_name") or "Unknown seller",
+            "owner_name": user.get("full_name"),
+            "logo_url": (main or {}).get("logo_url"),
+            "slug": (main or {}).get("slug"),
+            "verified": bool(badges & {"identity_verified", "business_verified"}),
+            "listing_count": sum(counts.get(str(s["id"]), 0) for s in owned),
+            "business_count": len(owned),
+        }
+        out.append({**r, "seller": seller, "reporter": reporters.get(str(r.get("reporter_id")))})
+    return out
+
+
 @router.get("/reports")
 def list_reports(
     resolved: bool | None = Query(None),
@@ -31,7 +131,7 @@ def list_reports(
 
         query = (
             admin.table("product_reports")
-            .select("*, product:product_id(title, shop_id), reporter:reporter_id(full_name)")
+            .select("*")
             .order("created_at", desc=True)
             .limit(limit)
         )
@@ -41,7 +141,7 @@ def list_reports(
         if offset:
             query = query.offset(offset)
         r = query.execute()
-        return {"items": r.data or [], "total": total}
+        return {"items": enrich_product_reports(admin, r.data or []), "total": total}
     except Exception as exc:
         logger.warning("list_reports failed: %s", exc, exc_info=True)
         return {"items": [], "total": 0}
@@ -73,7 +173,7 @@ def list_seller_reports(
         if offset:
             q = q.offset(offset)
         r = q.execute()
-        return {"items": r.data or [], "total": r.count if r.count is not None else len(r.data or [])}
+        return {"items": enrich_seller_reports(admin, r.data or []), "total": r.count if r.count is not None else len(r.data or [])}
     except Exception as exc:
         logger.warning("list_seller_reports failed: %s", exc, exc_info=True)
         return {"items": [], "total": 0}
@@ -103,25 +203,25 @@ def list_trust_queue(
     try:
         pr = (
             admin.table("product_reports")
-            .select("id, product_id, reason, description, created_at, resolved, product:product_id(title)")
+            .select("id, product_id, reporter_id, reason, description, created_at, resolved")
             .eq("resolved", False)
             .order("created_at", desc=True)
             .limit(limit)
             .execute()
         )
-        product_reports = pr.data or []
+        product_reports = enrich_product_reports(admin, pr.data or [])
     except Exception as exc:
         logger.warning("trust-queue product_reports failed: %s", exc)
     try:
         sr = (
             admin.table("seller_reports")
-            .select("id, seller_id, reason, description, created_at, resolved")
+            .select("id, seller_id, reporter_id, reason, description, created_at, resolved")
             .eq("resolved", False)
             .order("created_at", desc=True)
             .limit(limit)
             .execute()
         )
-        seller_reports = sr.data or []
+        seller_reports = enrich_seller_reports(admin, sr.data or [])
     except Exception as exc:
         logger.warning("trust-queue seller_reports failed: %s", exc)
     try:
