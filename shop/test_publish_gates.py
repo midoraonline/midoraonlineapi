@@ -24,7 +24,7 @@ def test_media_max_three():
     urls = [f"https://x/{i}.jpg" for i in range(4)]
     with pytest.raises(HTTPException) as ei:
         assert_media_limits(urls, publishing=False)
-    assert ei.value.detail["code"] == "too_many_media"
+    assert ei.value.detail["code"] == "too_many_photos"
 
 
 def test_price_required_for_product():
@@ -55,3 +55,25 @@ def test_media_still_required_for_product():
     with pytest.raises(HTTPException) as ei:
         assert_media_limits([], publishing=True, item_type="product")
     assert ei.value.detail["code"] == "photos_required"
+
+
+def test_media_limits_follow_admin_setting(monkeypatch):
+    import platform_settings.flags as flags
+
+    monkeypatch.setattr(flags, "media_limits", lambda: {"max_photos": 5, "max_videos": 0})
+    assert_media_limits([f"https://x/{i}.jpg" for i in range(5)], publishing=False)
+    with pytest.raises(HTTPException) as ei:
+        assert_media_limits([f"https://x/{i}.jpg" for i in range(6)], publishing=False)
+    assert ei.value.detail["code"] == "too_many_photos"
+    with pytest.raises(HTTPException) as ei:
+        assert_media_limits(["https://x/a.jpg", "https://x/v.mp4"], publishing=False)
+    assert ei.value.detail["code"] == "too_many_videos"
+
+
+def test_media_limits_value_validation():
+    from platform_settings.flags import normalize_media_limits_value
+
+    with pytest.raises(HTTPException):
+        normalize_media_limits_value({"max_photos": 0})
+    with pytest.raises(HTTPException):
+        normalize_media_limits_value({"max_videos": 99})
