@@ -93,7 +93,18 @@ def all_media_limits() -> dict[str, Any]:
     base = {"max_photos": DEFAULT_MAX_PHOTOS, "max_videos": DEFAULT_MAX_VIDEOS}
     default = _pair(value.get("default") if isinstance(value.get("default"), dict) else value, base)
     stored = value.get("plans") if isinstance(value.get("plans"), dict) else {}
-    plans = {tier: _pair(stored.get(tier), default) for tier in _plan_keys()}
+    plans = {}
+    for tier in _plan_keys():
+        # Admin Plans page (public.plans) wins; this setting is the fallback.
+        from_plan: dict[str, Any] = {}
+        try:
+            from payments.plans import get_plan
+
+            plan = get_plan(tier)
+            from_plan = {k: plan.get(k) for k in ("max_photos", "max_videos") if plan.get(k) is not None}
+        except Exception:  # noqa: BLE001
+            from_plan = {}
+        plans[tier] = _pair({**(stored.get(tier) or {}), **from_plan}, default)
     return {"default": default, "plans": plans}
 
 
