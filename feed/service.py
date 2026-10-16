@@ -274,6 +274,12 @@ def _apply_runtime_exclusions(
     return [pid for pid in product_ids if pid not in exclude_set]
 
 
+def get_supabase_admin():  # indirection so tests can patch one place
+    from db.supabase import get_supabase_admin as _g
+
+    return _g()
+
+
 def _page_ids_from_ranked(
     ranked_ids: list[str],
     *,
@@ -306,6 +312,19 @@ def _page_ids_from_ranked(
         apply_fatigue=apply_fatigue,
     )
     seq = list(boost_seq or [])
+    # Plan frequency caps apply on every page (fatigue stays page 2+ only).
+    if user_id or session_id:
+        from feed import frequency
+
+        capped = frequency.capped_listing_ids(
+            get_supabase_admin(),
+            buyer_id=user_id,
+            session_id=session_id,
+            boosted_ids={b["id"] for b in boost_slots.active_boosts(get_supabase_admin())},
+        )
+        if capped:
+            filtered = [pid for pid in filtered if pid not in capped]
+            seq = [b for b in seq if b not in capped]
     if seq and len(filtered) != len(ranked_ids):
         dropped = set(ranked_ids) - set(filtered)
         seq = [b for b in seq if b not in dropped]
@@ -573,6 +592,7 @@ def _get_latest_feed_page(
     page: int,
     limit: int,
     category: str | None = None,
+    session_id: str | None = None,
 ) -> tuple[list[ProductResponse], bool]:
     """Guest/latest page with diversity lite + optional category filter.
 
@@ -610,6 +630,16 @@ def _get_latest_feed_page(
     )
     if category:
         boost_seq = [b for b in boost_seq if b in set(ranked)]
+    if session_id:
+        from feed import frequency
+
+        capped = frequency.capped_listing_ids(
+            db, buyer_id=None, session_id=session_id,
+            boosted_ids={b["id"] for b in boost_slots.active_boosts(db)},
+        )
+        if capped:
+            ranked = [pid for pid in ranked if pid not in capped]
+            boost_seq = [b for b in boost_seq if b not in capped]
     page_ids, has_more = boost_slots.compose_page(ranked, boost_seq, page=page, limit=limit)
     if not has_more and len(ranked) >= 800:
         has_more = True
@@ -975,7 +1005,7 @@ def get_algorithm_feed(
             page, limit, category or "-",
         )
         items, has_more = _get_latest_feed_page(
-            db, page=page, limit=limit, category=category
+            db, page=page, limit=limit, category=category, session_id=session_id
         )
         return items, has_more, None
 
