@@ -48,7 +48,9 @@ def normalize_color(raw: str | None) -> str | None:
 async def remove_background_to_url(image_url: str, *, user_id: str, bg_color: str | None = None) -> str:
     api_key = (getattr(get_settings(), "remove_bg_api_key", "") or "").strip()
     if not api_key:
-        raise BackgroundRemovalUnavailable("Background removal isn't set up on the server yet.")
+        raise BackgroundRemovalUnavailable(
+            "Background removal isn't set up: REMOVE_BG_API_KEY is missing on the API server."
+        )
     if not _valid_source(image_url):
         raise BackgroundRemovalFailed("Use an uploaded photo URL.")
 
@@ -61,6 +63,10 @@ async def remove_background_to_url(image_url: str, *, user_id: str, bg_color: st
         resp = await client.post(REMOVE_BG_URL, data=data, headers={"X-Api-Key": api_key})
     if resp.status_code >= 400:
         logger.warning("remove.bg returned %s: %s", resp.status_code, resp.text[:300])
+        if resp.status_code in (401, 403):
+            raise BackgroundRemovalUnavailable("Background removal isn't set up: REMOVE_BG_API_KEY was rejected by remove.bg.")
+        if resp.status_code == 402:
+            raise BackgroundRemovalUnavailable("Background removal is out of remove.bg credits.")
         raise BackgroundRemovalFailed("Couldn't remove the background from this photo.")
 
     from media.uploadthing import upload_file_bytes
@@ -69,14 +75,17 @@ async def remove_background_to_url(image_url: str, *, user_id: str, bg_color: st
     try:
         url = await upload_file_bytes(resp.content, filename=f"{stem}-nobg.png", content_type="image/png")
     except RuntimeError as exc:
-        raise BackgroundRemovalFailed("Couldn't save the edited photo.") from exc
+        if str(exc) == "uploadthing_unconfigured":
+            raise BackgroundRemovalUnavailable(
+                "Background removal can't save photos: UPLOADTHING_TOKEN is not set on the API server."
+            ) from exc
+        raise BackgroundRemovalFailed("Couldn't save the edited photo to storage. Try again.") from exc
 
     try:
         from db.supabase import get_supabase_admin
         from media.registry import register_upload
 
-        key = url.rstrip("/").rsplit("/", 1)[-1]
-        register_upload(get_supabase_admin(), key=key, url=url, user_id=user_id, kind="listingPhoto")
+        register_upload(get_supabase_admin(), key="", url=url, user_id=user_id, kind="listingPhoto")
     except Exception as exc:  # noqa: BLE001 - registry is best effort
         logger.warning("register bg-removed upload failed: %s", exc)
     return url

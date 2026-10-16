@@ -51,7 +51,7 @@ FLAGS: dict[str, dict[str, Any]] = {
         "default": True,
         "public": False,
         "kind": "limits",
-        "description": "Maximum photos and videos per listing. Value: {max_photos, max_videos}.",
+        "description": "Maximum photos and videos per listing, per plan. Value: {default: {max_photos, max_videos}, plans: {basic|standard|premium: {...}}}.",
     },
 }
 
@@ -69,37 +69,85 @@ def _clamp_int(raw: Any, default: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, n))
 
 
-def media_limits() -> dict[str, int]:
-    """Admin-configured per-listing media caps (defaults: 3 photos, 1 video)."""
+def _plan_keys() -> list[str]:
+    from payments.plans import PLAN_ORDER
+
+    return list(PLAN_ORDER)
+
+
+def _pair(raw: Any, fallback: dict[str, int]) -> dict[str, int]:
+    raw = raw if isinstance(raw, dict) else {}
+    return {
+        "max_photos": _clamp_int(raw.get("max_photos"), fallback["max_photos"], 1, MAX_PHOTOS_CEILING),
+        "max_videos": _clamp_int(raw.get("max_videos"), fallback["max_videos"], 0, MAX_VIDEOS_CEILING),
+    }
+
+
+def all_media_limits() -> dict[str, Any]:
+    """{"default": {...}, "plans": {tier: {...}}}. Older flat values act as the default."""
     try:
         row = load_settings().get("listing_media_limits") or {}
     except Exception:  # noqa: BLE001
         row = {}
     value = row.get("value") if isinstance(row.get("value"), dict) else {}
-    return {
-        "max_photos": _clamp_int(value.get("max_photos"), DEFAULT_MAX_PHOTOS, 1, MAX_PHOTOS_CEILING),
-        "max_videos": _clamp_int(value.get("max_videos"), DEFAULT_MAX_VIDEOS, 0, MAX_VIDEOS_CEILING),
-    }
+    base = {"max_photos": DEFAULT_MAX_PHOTOS, "max_videos": DEFAULT_MAX_VIDEOS}
+    default = _pair(value.get("default") if isinstance(value.get("default"), dict) else value, base)
+    stored = value.get("plans") if isinstance(value.get("plans"), dict) else {}
+    plans = {}
+    for tier in _plan_keys():
+        # Admin Plans page (public.plans) wins; this setting is the fallback.
+        from_plan: dict[str, Any] = {}
+        try:
+            from payments.plans import get_plan
+
+            plan = get_plan(tier)
+            from_plan = {k: plan.get(k) for k in ("max_photos", "max_videos") if plan.get(k) is not None}
+        except Exception:  # noqa: BLE001
+            from_plan = {}
+        plans[tier] = _pair({**(stored.get(tier) or {}), **from_plan}, default)
+    return {"default": default, "plans": plans}
 
 
-def normalize_media_limits_value(value: dict[str, Any]) -> dict[str, int]:
+def media_limits(plan_tier: str | None = None) -> dict[str, int]:
+    """Caps for one plan; unknown/missing plan falls back to the default (3 photos / 1 video)."""
+    data = all_media_limits()
+    tier = (plan_tier or "").strip().lower()
+    return dict(data["plans"].get(tier) or data["default"])
+
+
+def _check_pair(raw: Any, where: str) -> dict[str, int]:
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=422, detail={"detail": f"{where} must be an object.", "code": "invalid_limit"})
+    out = {}
     for key, lo, hi in (("max_photos", 1, MAX_PHOTOS_CEILING), ("max_videos", 0, MAX_VIDEOS_CEILING)):
-        if key in value:
-            try:
-                n = int(value[key])
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=422, detail={"detail": f"{key} must be a whole number.", "code": "invalid_limit"})
-            if n < lo or n > hi:
-                raise HTTPException(status_code=422, detail={"detail": f"{key} must be between {lo} and {hi}.", "code": "invalid_limit"})
-    current = media_limits()
-    return {
-        "max_photos": int(value.get("max_photos", current["max_photos"])),
-        "max_videos": int(value.get("max_videos", current["max_videos"])),
-    }
+        if key not in raw:
+            continue
+        try:
+            n = int(raw[key])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail={"detail": f"{where} {key} must be a whole number.", "code": "invalid_limit"})
+        if n < lo or n > hi:
+            raise HTTPException(status_code=422, detail={"detail": f"{where} {key} must be between {lo} and {hi}.", "code": "invalid_limit"})
+        out[key] = n
+    return out
 
-_cache_rows: dict[str, dict[str, Any]] | None = None
-_cache_at: float = 0.0
-_cache_persisted: bool = False
+
+def normalize_media_limits_value(value: dict[str, Any]) -> dict[str, Any]:
+    """Accepts {default, plans:{tier:{...}}} or the older flat {max_photos, max_videos}."""
+    current = all_media_limits()
+    if "default" not in value and "plans" not in value:
+        value = {"default": value}
+    default = {**current["default"], **_check_pair(value.get("default", {}), "default")}
+    plans_in = value.get("plans") or {}
+    if not isinstance(plans_in, dict):
+        raise HTTPException(status_code=422, detail={"detail": "plans must be an object.", "code": "invalid_limit"})
+    unknown = [k for k in plans_in if k not in _plan_keys()]
+    if unknown:
+        raise HTTPException(status_code=422, detail={"detail": f"Unknown plan: {unknown[0]}.", "code": "invalid_limit"})
+    plans = {}
+    for tier in _plan_keys():
+        plans[tier] = {**current["plans"][tier], **_check_pair(plans_in.get(tier, {}), tier)}
+    return {"default": default, "plans": plans}
 
 
 class SignupsClosed(ValueError):

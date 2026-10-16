@@ -190,22 +190,16 @@ def premium_store_bonus(
 
 
 def boost_bonus(product: dict[str, Any], boost_map: dict[str, dict[str, Any]]) -> float:
-    """Reflects paid boost. `score_bonus` from `listing_boosts` is source-of-truth.
-
-    We interpret score_bonus tiers as:
-        <= 25   -> regular boost                (adds LISTING_BOOST_BONUS)
-        > 25    -> super boost                  (adds SUPER_BOOST_BONUS)
-
-    Sponsored slots are reserved by placement — no scoring impact here.
-    """
+    """Paid/plan boost. `listing_boosts.score_bonus` is the literal points added
+    (admin sets it per boost package; capped at 500). 0 -> regular bonus."""
     pid = str(product.get("id", ""))
     row = boost_map.get(pid)
     if not row:
         return 0.0
     sb = float(row.get("score_bonus") or 0.0)
-    if sb > 25:
-        return C.SUPER_BOOST_BONUS
-    return C.LISTING_BOOST_BONUS
+    if sb <= 0:
+        return C.LISTING_BOOST_BONUS
+    return min(sb, 500.0)
 
 
 def seen_penalty(product: dict[str, Any], signals: dict[str, Any]) -> float:
