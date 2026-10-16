@@ -379,7 +379,7 @@ def _merge_recent_unseen_ids(
     ranked_ids: list[str],
     refreshed_at: datetime | None,
 ) -> list[str]:
-    """Prepend newly created listings missing from a fresh cache."""
+    """Merge listings created or reposted since the cache was built (spread, not pinned)."""
     if not ranked_ids:
         return ranked_ids
     if refreshed_at and refreshed_at.tzinfo is None:
@@ -409,7 +409,35 @@ def _merge_recent_unseen_ids(
     unseen_recent = [pid for pid in recent_ids if pid not in seen]
     if not unseen_recent:
         return ranked_ids
-    return (unseen_recent + ranked_ids)[:FEED_CACHE_MAX_IDS]
+    return interleave_fresh(ranked_ids, unseen_recent)[:FEED_CACHE_MAX_IDS]
+
+
+FRESH_MERGE_PHASE = 4
+FRESH_MERGE_EVERY = 6
+
+
+def interleave_fresh(ranked_ids: list[str], fresh_ids: list[str]) -> list[str]:
+    """Spread listings created/reposted since the cache was built through it.
+
+    They count as fresh (one every FRESH_MERGE_EVERY positions, from
+    FRESH_MERGE_PHASE) instead of being pinned above everything the viewer's
+    scoring put first, so a repost can't take the top of every cached feed.
+    Fresh items left over go after the ranked list.
+    """
+    out: list[str] = []
+    fresh = list(fresh_ids)
+    ranked = list(ranked_ids)
+    pos = 1
+    while ranked or fresh:
+        if fresh and pos >= FRESH_MERGE_PHASE and (pos - FRESH_MERGE_PHASE) % FRESH_MERGE_EVERY == 0:
+            out.append(fresh.pop(0))
+        elif ranked:
+            out.append(ranked.pop(0))
+        else:
+            out.extend(fresh)
+            break
+        pos += 1
+    return out
 
 
 def invalidate_user_feed_cache(client: Any, user_id: str | None) -> None:
