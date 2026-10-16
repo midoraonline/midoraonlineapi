@@ -73,3 +73,80 @@ def test_invalidate_feed_caches_keeps_user_caches(monkeypatch):
     assert ("boosts", None) in calls
     assert ("feed_rank_snapshots", "delete") in calls
     assert ("mem", None) in calls
+
+
+def test_personalized_position_samples_cached_feeds(monkeypatch):
+    from feed import boost_slots
+    from shop import listing_actions as LA
+
+    rows = [
+        {"user_id": "owner", "ranked_ids": ["x"]},
+        {"user_id": "u1", "ranked_ids": ["a", "x"]},
+        {"user_id": "u2", "ranked_ids": ["a", "b", "c", "d", "e", "x"]},
+        {"user_id": "u3", "ranked_ids": ["a"]},
+    ]
+
+    class Q:
+        def __getattr__(self, n):
+            return lambda *a, **k: self
+
+        def execute(self):
+            return type("R", (), {"data": rows})
+
+    class DB:
+        def table(self, t):
+            return Q()
+
+    monkeypatch.setattr(boost_slots, "active_boosts", lambda c: [])
+    out = LA.personalized_position(DB(), "x", exclude_user_id="owner")
+    assert out["sampled"] == 3 and out["in_feeds"] == 2
+    assert out["best"] == 2 and out["median"] == 6
+    assert "signed-in" in out["label"] and not out["boosted_slots"]
+
+
+def test_shown_position_counts_boosted_slots(monkeypatch):
+    from shop import listing_actions as LA
+    from feed import config as C
+
+    monkeypatch.setattr(C, "BOOST_SLOT_EVERY", 7)
+    monkeypatch.setattr(C, "BOOST_SLOT_PHASE", 3)
+    assert LA._shown_position(0, True) == 1
+    assert LA._shown_position(2, True) == 4  # position 3 is a boosted slot
+    assert LA._shown_position(2, False) == 3
+
+
+def test_frequency_caps_never_hide_own_ads():
+    from feed import frequency as F
+
+    F._tier_cache.clear()
+    data = {
+        "listing_impressions": [{"listing_id": "mine"}, {"listing_id": "theirs"}],
+        "products": [{"id": "mine", "shop_id": "s_me"}, {"id": "theirs", "shop_id": "s_x"}],
+        "shops": [{"id": "s_me", "owner_id": "me"}, {"id": "s_x", "owner_id": "x"}],
+        "users": [{"id": "me", "plan_tier": "basic"}, {"id": "x", "plan_tier": "basic"}],
+    }
+
+    class Q:
+        def __init__(self, t):
+            self.t = t
+            self.owner = None
+
+        def eq(self, k, v):
+            if k == "owner_id":
+                self.owner = v
+            return self
+
+        def __getattr__(self, n):
+            return lambda *a, **k: self
+
+        def execute(self):
+            rows = data.get(self.t, [])
+            if self.owner:
+                rows = [r for r in rows if r.get("owner_id") == self.owner]
+            return type("R", (), {"data": rows})
+
+    class DB:
+        def table(self, t):
+            return Q(t)
+
+    assert F.capped_listing_ids(DB(), buyer_id="me", session_id=None) == {"theirs"}

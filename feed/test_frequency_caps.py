@@ -45,7 +45,7 @@ def test_capped_listing_ids_uses_impressions_and_owner_plan(monkeypatch):
         "shops": [{"id": "s1", "owner_id": "u1"}, {"id": "s2", "owner_id": "u2"}],
         "users": [{"id": "u1", "plan_tier": "basic"}, {"id": "u2", "plan_tier": "standard"}],
     })
-    capped = F.capped_listing_ids(db, buyer_id="v", session_id=None, boosted_ids={"b", "c"})
+    capped = F.capped_listing_ids(db, buyer_id=None, session_id="v", boosted_ids={"b", "c"})
     # basic: 1/day organic -> a capped; standard boosted 2/day -> b (2) capped, c (1) not
     assert capped == {"a", "b"}
 

@@ -95,7 +95,13 @@ def capped_listing_ids(
         for i in range(0, len(ids), 200):
             products += client.table("products").select("id,shop_id").in_("id", ids[i : i + 200]).execute().data or []
         shop_by_listing = {str(p["id"]): str(p.get("shop_id") or "") for p in products}
-        tiers = _shop_tiers(client, list({s for s in shop_by_listing.values() if s}))
+        shop_ids = list({s for s in shop_by_listing.values() if s})
+        tiers = _shop_tiers(client, shop_ids)
+        if buyer_id:
+            # Sellers always see their own ads (keeps "Find in feed" scroll-to working).
+            own = client.table("shops").select("id").eq("owner_id", buyer_id).execute().data or []
+            own_ids = {str(r["id"]) for r in own}
+            shop_by_listing = {k: v for k, v in shop_by_listing.items() if v not in own_ids}
         boosted_ids = boosted_ids or set()
         capped = set()
         for lid, n in counts.items():
