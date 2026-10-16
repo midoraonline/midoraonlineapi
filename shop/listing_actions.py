@@ -242,7 +242,7 @@ def repost_listing(admin: Any, listing_id: str, user_id: str) -> dict[str, Any]:
 
 
 def _scan_position(listing_id: str, *, category: str | None) -> tuple[int | None, int]:
-    """1-based position in the public feed (same ranking as /feed/home for guests)."""
+    """1-based position for visitors (guest ranking incl. boosted slots, as /feed/home)."""
     from db.supabase import get_supabase_admin
     from feed.catalog import ListingFilters
     from feed.service import get_algorithm_feed
@@ -279,10 +279,75 @@ def feed_position(admin: Any, listing_id: str, user_id: str) -> dict[str, Any]:
         "category": cat,
         "category_position": cat_position,
         "category_scanned": cat_scanned,
+        "position_label": f"#{position} for visitors" if position else None,
+        "personalized": personalized_position(admin, listing_id, exclude_user_id=user_id),
         "boosted": active_boost(admin, listing_id) is not None,
         "boost": active_boost(admin, listing_id),
         "computed_at": _now().isoformat(),
     }
+
+
+PERSONAL_SAMPLE = 50
+
+
+def _shown_position(index: int, boosts_live: bool) -> int:
+    """1-based on-screen position for a ranked index, counting boosted slots."""
+    if not boosts_live:
+        return index + 1
+    from feed import boost_slots
+
+    every, phase = boost_slots.slot_every(), boost_slots.slot_phase()
+    pos = index + 1
+    while pos - boost_slots.slots_before(pos, every, phase) < index + 1:
+        pos += 1
+    return pos
+
+
+def personalized_position(admin: Any, listing_id: str, *, exclude_user_id: str | None = None) -> dict[str, Any]:
+    """Typical position in signed-in shoppers' feeds, from recent cached rankings.
+
+    Samples up to PERSONAL_SAMPLE feeds refreshed in the last 24h. A boosted ad
+    also gets boosted slots, so `boosted_slots` says that it can show up there too.
+    """
+    out: dict[str, Any] = {
+        "median": None, "best": None, "in_feeds": 0, "sampled": 0, "label": None,
+        "boosted_slots": False, "slot_every": None,
+    }
+    try:
+        cutoff = (_now() - timedelta(hours=24)).isoformat()
+        rows = (
+            admin.table("user_feed_cache")
+            .select("user_id,ranked_ids")
+            .gte("refreshed_at", cutoff)
+            .order("refreshed_at", desc=True)
+            .limit(PERSONAL_SAMPLE + 1)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info("personalized position skipped: %s", exc)
+        return out
+    rows = [r for r in rows if str(r.get("user_id")) != str(exclude_user_id)][:PERSONAL_SAMPLE]
+    from feed import boost_slots
+
+    live_boosts = boost_slots.active_boosts(admin)
+    boosts_live = bool(live_boosts)
+    out["boosted_slots"] = any(b["id"] == str(listing_id) for b in live_boosts)
+    out["slot_every"] = boost_slots.slot_every()
+    found: list[int] = []
+    for r in rows:
+        ids = [str(x) for x in (r.get("ranked_ids") or [])]
+        if listing_id in ids:
+            found.append(_shown_position(ids.index(listing_id), boosts_live))
+    out["sampled"] = len(rows)
+    out["in_feeds"] = len(found)
+    if found:
+        found.sort()
+        out["median"] = found[len(found) // 2]
+        out["best"] = found[0]
+        out["label"] = f"around #{out['median']} for signed-in shoppers ({len(found)} of {len(rows)} feeds)"
+    return out
 
 
 def owner_boosts(admin: Any, user_id: str, listing_ids: list[str]) -> dict[str, Any]:

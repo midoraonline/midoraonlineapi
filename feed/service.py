@@ -32,6 +32,7 @@ from functools import partial
 from typing import Any
 
 from db.supabase import Client
+from feed import boost_slots
 from feed import config as C
 from feed import impressions as imp
 from feed import scoring as S
@@ -273,6 +274,12 @@ def _apply_runtime_exclusions(
     return [pid for pid in product_ids if pid not in exclude_set]
 
 
+def get_supabase_admin():  # indirection so tests can patch one place
+    from db.supabase import get_supabase_admin as _g
+
+    return _g()
+
+
 def _page_ids_from_ranked(
     ranked_ids: list[str],
     *,
@@ -281,8 +288,9 @@ def _page_ids_from_ranked(
     exclude_ids: list[str] | None,
     user_id: str | None,
     session_id: str | None,
+    boost_seq: list[str] | None = None,
 ) -> tuple[list[str], bool]:
-    """Slice the ranked ID list for this request.
+    """Slice the ranked ID list for this request (boosted slots woven in).
 
     Returns (page_ids, has_more). `has_more` is based on remaining ranked IDs,
     not on how many of this page hydrates into cards.
@@ -303,11 +311,67 @@ def _page_ids_from_ranked(
         exclude_ids=exclude_ids,
         apply_fatigue=apply_fatigue,
     )
-    if using_exclude:
-        return filtered[:limit], len(filtered) > limit
-    start_idx = max(0, (page - 1) * limit)
-    sliced = filtered[start_idx : start_idx + limit]
-    return sliced, start_idx + limit < len(filtered)
+    seq = list(boost_seq or [])
+    # Plan frequency caps apply on every page (fatigue stays page 2+ only).
+    if user_id or session_id:
+        from feed import frequency
+
+        capped = frequency.capped_listing_ids(
+            get_supabase_admin(),
+            buyer_id=user_id,
+            session_id=session_id,
+            boosted_ids={b["id"] for b in boost_slots.active_boosts(get_supabase_admin())},
+        )
+        if capped:
+            filtered = [pid for pid in filtered if pid not in capped]
+            seq = [b for b in seq if b not in capped]
+    if seq and len(filtered) != len(ranked_ids):
+        dropped = set(ranked_ids) - set(filtered)
+        seq = [b for b in seq if b not in dropped]
+    if seq and exclude_ids:
+        ex = set(exclude_ids)
+        seq = [b for b in seq if b not in ex]
+    return boost_slots.compose_page(
+        filtered, seq, page=1 if using_exclude else page, limit=limit
+    )
+
+
+def _viewer_boost_seq(
+    client: Client,
+    user_id: str,
+    ranked_ids: list[str],
+    *,
+    user_vector: list[float] | None = None,
+    categories: set[str] | None = None,
+) -> list[str]:
+    """Boosted-slot rotation for a signed-in viewer (relevance-gated)."""
+    if not boost_slots.active_boosts(client):
+        return []
+    if user_vector is None:
+        try:
+            r = (
+                client.table("user_feed_cache")
+                .select("preference_vector")
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            raw = (r.data or [{}])[0].get("preference_vector")
+            user_vector = parse_embedding(raw) if raw else None
+        except Exception as exc:  # noqa: BLE001
+            logger.info("boost slots: vector read skipped: %s", exc)
+    if categories is None:
+        categories = set()
+        head = ranked_ids[:60]
+        if head:
+            try:
+                r = client.table("products").select("category").in_("id", head).execute()
+                categories = {str(p["category"]) for p in (r.data or []) if p.get("category")}
+            except Exception as exc:  # noqa: BLE001
+                logger.info("boost slots: category read skipped: %s", exc)
+    return boost_slots.boosts_for_viewer(
+        client, user_vector=user_vector, categories=categories, signed_in=True
+    )
 
 
 def _merge_recent_unseen_ids(
@@ -315,7 +379,7 @@ def _merge_recent_unseen_ids(
     ranked_ids: list[str],
     refreshed_at: datetime | None,
 ) -> list[str]:
-    """Prepend newly created listings missing from a fresh cache."""
+    """Merge listings created or reposted since the cache was built (spread, not pinned)."""
     if not ranked_ids:
         return ranked_ids
     if refreshed_at and refreshed_at.tzinfo is None:
@@ -345,7 +409,35 @@ def _merge_recent_unseen_ids(
     unseen_recent = [pid for pid in recent_ids if pid not in seen]
     if not unseen_recent:
         return ranked_ids
-    return (unseen_recent + ranked_ids)[:FEED_CACHE_MAX_IDS]
+    return interleave_fresh(ranked_ids, unseen_recent)[:FEED_CACHE_MAX_IDS]
+
+
+FRESH_MERGE_PHASE = 4
+FRESH_MERGE_EVERY = 6
+
+
+def interleave_fresh(ranked_ids: list[str], fresh_ids: list[str]) -> list[str]:
+    """Spread listings created/reposted since the cache was built through it.
+
+    They count as fresh (one every FRESH_MERGE_EVERY positions, from
+    FRESH_MERGE_PHASE) instead of being pinned above everything the viewer's
+    scoring put first, so a repost can't take the top of every cached feed.
+    Fresh items left over go after the ranked list.
+    """
+    out: list[str] = []
+    fresh = list(fresh_ids)
+    ranked = list(ranked_ids)
+    pos = 1
+    while ranked or fresh:
+        if fresh and pos >= FRESH_MERGE_PHASE and (pos - FRESH_MERGE_PHASE) % FRESH_MERGE_EVERY == 0:
+            out.append(fresh.pop(0))
+        elif ranked:
+            out.append(ranked.pop(0))
+        else:
+            out.extend(fresh)
+            break
+        pos += 1
+    return out
 
 
 def invalidate_user_feed_cache(client: Any, user_id: str | None) -> None:
@@ -491,6 +583,38 @@ def _diversify_by_shop(
 # Anonymous fallback
 # ---------------------------------------------------------------------------
 
+def _catalog_page(
+    db: Client, filters: ListingFilters, *, page: int, limit: int
+) -> tuple[list[dict[str, Any]], int]:
+    """Filtered/category page. Relevance sort weaves in boosted slots drawn
+    from active boosts that pass the same filters."""
+    if filters.sort != "relevance":
+        return fetch_catalog_page(db, filters, select=_PRODUCT_CARD_SELECT, page=page, limit=limit)
+    boosts = boost_slots.active_boosts(db)
+    try:
+        from feed.catalog import matching_ids
+
+        ok = matching_ids(db, filters, [b["id"] for b in boosts]) if boosts else set()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("catalog boosts skipped: %s", exc)
+        ok = set()
+    seq = boost_slots.rotation([b for b in boosts if b["id"] in ok])
+    if not seq:
+        return fetch_catalog_page(db, filters, select=_PRODUCT_CARD_SELECT, page=page, limit=limit)
+    every, phase = boost_slots.slot_every(), boost_slots.slot_phase()
+    org_start = boost_slots.organic_offset(page, limit, every, phase, len(set(seq)))
+    rows, total = fetch_catalog_page(
+        db, filters, select=_PRODUCT_CARD_SELECT, page=page, limit=limit, offset=org_start
+    )
+    by_id = {str(r["id"]): r for r in rows if r.get("id")}
+    padded = [f"__pad{i}" for i in range(org_start)] + list(by_id)
+    page_ids, _ = boost_slots.compose_page(padded, seq, page=page, limit=limit, every=every, phase=phase)
+    missing = [pid for pid in page_ids if pid not in by_id]
+    for row in _fetch_products_by_ids(db, missing):
+        by_id[str(row["id"])] = row
+    return [by_id[pid] for pid in page_ids if pid in by_id], total
+
+
 def get_latest_feed(
     client: Client,
     limit: int = 20,
@@ -508,13 +632,7 @@ def get_latest_feed(
     if filters is not None and filters.is_active():
         from db.supabase import get_supabase_admin
 
-        rows, _total = fetch_catalog_page(
-            get_supabase_admin(),
-            filters,
-            select=_PRODUCT_CARD_SELECT,
-            page=page,
-            limit=limit,
-        )
+        rows, _total = _catalog_page(get_supabase_admin(), filters, page=page, limit=limit)
         return _with_ratings(get_supabase_admin(), [_to_response(row) for row in rows])
     items, _ = _get_latest_feed_page(
         client, page=page, limit=limit, category=category or (filters.category if filters else None)
@@ -528,6 +646,7 @@ def _get_latest_feed_page(
     page: int,
     limit: int,
     category: str | None = None,
+    session_id: str | None = None,
 ) -> tuple[list[ProductResponse], bool]:
     """Guest/latest page with diversity lite + optional category filter.
 
@@ -539,7 +658,6 @@ def _get_latest_feed_page(
 
     started = time.perf_counter()
     db = client
-    start_idx = max(0, (page - 1) * limit)
     source = "rebuild"
     ranked: list[str] | None = None
     if not category:
@@ -561,8 +679,22 @@ def _get_latest_feed_page(
             snapshots.remember(ranked)
             snapshots.save(db, ranked)
 
-    page_ids = ranked[start_idx : start_idx + limit]
-    has_more = start_idx + limit < len(ranked)
+    boost_seq = boost_slots.boosts_for_viewer(
+        db, user_vector=None, categories=None, signed_in=False
+    )
+    if category:
+        boost_seq = [b for b in boost_seq if b in set(ranked)]
+    if session_id:
+        from feed import frequency
+
+        capped = frequency.capped_listing_ids(
+            db, buyer_id=None, session_id=session_id,
+            boosted_ids={b["id"] for b in boost_slots.active_boosts(db)},
+        )
+        if capped:
+            ranked = [pid for pid in ranked if pid not in capped]
+            boost_seq = [b for b in boost_seq if b not in capped]
+    page_ids, has_more = boost_slots.compose_page(ranked, boost_seq, page=page, limit=limit)
     if not has_more and len(ranked) >= 800:
         has_more = True
     rows = _fetch_products_by_ids(db, page_ids)
@@ -600,7 +732,7 @@ def _build_recency_order(client: Client, *, category: str | None) -> list[str] |
     def _run():
         q = (
             client.table("products")
-            .select("id,shop_id,created_at")
+            .select("id,shop_id,created_at,title,image_urls")
             .eq("status", "active")
             .eq("is_published", True)
             .order("created_at", desc=True)
@@ -613,10 +745,43 @@ def _build_recency_order(client: Client, *, category: str | None) -> list[str] |
     except Exception as exc:
         logger.warning("guest rank build failed: %s", exc)
         return None
-    raw = list(resp.data or [])
+    raw = guest_quality_filter(client, list(resp.data or []))
     diversified = _diversify_by_shop(raw, limit=len(raw) or 1)
     ids = [str(row.get("id")) for row in diversified if row.get("id")]
     return promote_boosted(ids, sig.collect_boost_map(client, ids))
+
+
+GUEST_HIDDEN_FRAUD = frozenset({"high", "critical"})
+
+
+def _passes_quality_floor(row: dict[str, Any]) -> bool:
+    images = row.get("image_urls")
+    has_image = bool([u for u in images if u]) if isinstance(images, list) else bool(images)
+    return has_image and len((row.get("title") or "").strip()) >= 3
+
+
+def guest_quality_filter(client: Client, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Guest feed floor: a photo and a real title, live shop, no high/critical fraud."""
+    rows = [r for r in rows if r.get("id") and _passes_quality_floor(r)]
+    if not rows:
+        return rows
+    shop_by = {str(r["id"]): str(r.get("shop_id") or "") for r in rows}
+    try:
+        meta = sig.collect_shop_meta(client, list({s for s in shop_by.values() if s}))
+        fraud = sig.collect_fraud_severity(client, list(shop_by), shop_by, meta)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("guest fraud filter skipped: %s", exc)
+        return rows
+    out = []
+    for r in rows:
+        pid = str(r["id"])
+        if fraud.get(pid) in GUEST_HIDDEN_FRAUD:
+            continue
+        shop = meta.get(shop_by[pid])
+        if shop is not None and shop.get("is_active") is False:
+            continue
+        out.append(r)
+    return out
 
 
 BOOST_POINTS_PER_RANK = 5.0
@@ -911,13 +1076,7 @@ def get_algorithm_feed(
             "feed:path=catalog_filters page=%s limit=%s sort=%s",
             page, limit, active_filters.sort,
         )
-        rows, total = fetch_catalog_page(
-            db,
-            active_filters,
-            select=_PRODUCT_CARD_SELECT,
-            page=page,
-            limit=limit,
-        )
+        rows, total = _catalog_page(db, active_filters, page=page, limit=limit)
         has_more = page * limit < total
         return _with_ratings(db, [_to_response(row) for row in rows]), has_more, total
 
@@ -927,7 +1086,7 @@ def get_algorithm_feed(
             page, limit, category or "-",
         )
         items, has_more = _get_latest_feed_page(
-            db, page=page, limit=limit, category=category
+            db, page=page, limit=limit, category=category, session_id=session_id
         )
         return items, has_more, None
 
@@ -949,9 +1108,10 @@ def get_algorithm_feed(
             exclude_ids=exclude_ids,
             user_id=user_id,
             session_id=session_id,
+            boost_seq=_viewer_boost_seq(db, user_id, cached_ids),
         )
         if not page_ids:
-            return [], False
+            return [], False, None
         cached_rows = _fetch_products_by_ids(db, page_ids)
         if cached_rows:
             logger.info(
@@ -959,12 +1119,12 @@ def get_algorithm_feed(
                 user_id, page, len(cached_rows), len(cached_ids), FEED_CACHE_TTL_SECONDS,
             )
             return _with_ratings(db, [_to_response(row) for row in cached_rows]), has_more, None
+        # Every cached id on this page went inactive: fall through and re-score
+        # (any page) instead of returning an empty page that ends scrolling.
         logger.info(
-            "feed:path=cache_miss_empty_page user=%s page=%s ids=%s",
+            "feed:path=cache_miss_empty_page user=%s page=%s ids=%s -> rescore",
             user_id, page, len(page_ids),
         )
-        if page > 1:
-            return [], has_more, None
 
     score_started = time.perf_counter()
     signals = sig.collect_user_signals(db, user_id)
@@ -1129,6 +1289,11 @@ def get_algorithm_feed(
         exclude_ids=exclude_ids,
         user_id=user_id,
         session_id=session_id,
+        boost_seq=_viewer_boost_seq(
+            db, user_id, ranked_ids,
+            user_vector=user_vector or None,
+            categories=set(signals.get("categories") or set()),
+        ),
     )
     page_rows = _fetch_products_by_ids(db, page_ids)
     if page_rows:

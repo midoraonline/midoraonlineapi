@@ -96,11 +96,11 @@ def _products():
         {
             "id": pid,
             "shop_id": "s1",
-            "title": pid,
+            "title": f"Item {pid}",
             "description": "A long enough line.",
             "price_ugx": 1000,
             "stock_quantity": 1,
-            "image_urls": [],
+            "image_urls": [f"https://img.test/{pid}.jpg"],
             "category": "Phones",
             "item_type": "product",
             "is_published": True,
@@ -127,7 +127,7 @@ def test_guest_page_hydrates_from_snapshot_on_the_second_read():
     assert first[0].average_rating == 4.0
     assert first[0].review_count == 2
     lean = [entry[2] for entry in client.log if entry[0] == "select" and entry[1] == "products"]
-    assert lean[0] == "id,shop_id,created_at"
+    assert lean[0] == "id,shop_id,created_at,title,image_urls"
     assert any(item[0] == "upsert" for item in client.log)
 
     client.log.clear()
@@ -136,5 +136,5 @@ def test_guest_page_hydrates_from_snapshot_on_the_second_read():
     assert [card.id for card in second] == ["p1", "p2"]
     product_selects = [entry[2] for entry in client.log if entry[0] == "select" and entry[1] == "products"]
     assert product_selects
-    assert all(cols != "id,shop_id,created_at" for cols in product_selects)
+    assert all(cols != "id,shop_id,created_at,title,image_urls" for cols in product_selects)
     assert not any(item[0] == "upsert" for item in client.log)
