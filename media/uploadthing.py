@@ -77,32 +77,74 @@ def _uploaded_url(payload: object) -> str | None:
     return None
 
 
+PREPARE_URL = "https://api.uploadthing.com/v7/prepareUpload"
+
+
+def uploadthing_app_id() -> str | None:
+    raw = (os.getenv("UPLOADTHING_TOKEN") or "").strip()
+    if not raw:
+        try:
+            from core.config import get_settings
+
+            raw = (get_settings().uploadthing_token or "").strip()
+        except Exception:  # noqa: BLE001
+            raw = ""
+    for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+        try:
+            payload = json.loads(decoder(raw + "=" * (-len(raw) % 4)))
+        except Exception:
+            continue
+        if isinstance(payload, dict) and payload.get("appId"):
+            return str(payload["appId"])
+    return os.getenv("UPLOADTHING_APP_ID") or None
+
+
 async def upload_file_bytes(data: bytes, *, filename: str, content_type: str) -> str:
-    """Upload original bytes. Returns the file URL. Does not transcode."""
+    """Upload original bytes (no transcoding). Returns the public file URL.
+
+    v7 flow: ask UploadThing for a presigned ingest URL, then PUT the bytes.
+    (The old v6 uploadFiles endpoint only returns presigned URLs and never
+    accepted multipart bytes, so every server upload used to fail.)
+    """
     api_key = uploadthing_api_key()
     if not api_key:
         raise RuntimeError("uploadthing_unconfigured")
-    timeout = httpx.Timeout(30.0, connect=5.0)
+    timeout = httpx.Timeout(60.0, connect=10.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(
-            UPLOAD_URL,
-            headers={"x-uploadthing-api-key": api_key},
-            files={"files": (filename, data, content_type)},
+        prep = await client.post(
+            PREPARE_URL,
+            headers={"x-uploadthing-api-key": api_key, "content-type": "application/json"},
+            json={
+                "fileName": filename,
+                "fileSize": len(data),
+                "fileType": content_type,
+                "acl": "public-read",
+                "contentDisposition": "inline",
+            },
         )
-    if response.status_code >= 400:
-        logger.warning(
-            "UploadThing uploadFiles returned %s: %s",
-            response.status_code,
-            response.text[:300],
-        )
+        if prep.status_code >= 400:
+            logger.warning("UploadThing prepareUpload returned %s: %s", prep.status_code, prep.text[:300])
+            raise RuntimeError("upload_failed")
+        try:
+            info = prep.json()
+            key, put_url = str(info["key"]), str(info["url"])
+        except Exception as exc:
+            raise RuntimeError("upload_failed") from exc
+        put = await client.put(put_url, files={"file": (filename, data, content_type)})
+    if put.status_code >= 400:
+        logger.warning("UploadThing ingest PUT returned %s: %s", put.status_code, put.text[:300])
         raise RuntimeError("upload_failed")
+    url = None
     try:
-        url = _uploaded_url(response.json())
-    except Exception as exc:
-        raise RuntimeError("upload_failed") from exc
+        body = put.json()
+        if isinstance(body, dict):
+            url = body.get("ufsUrl") or body.get("url") or body.get("fileUrl")
+    except Exception:  # noqa: BLE001
+        url = None
     if not url:
-        raise RuntimeError("upload_failed")
-    return url
+        app_id = uploadthing_app_id()
+        url = f"https://{app_id}.ufs.sh/f/{key}" if app_id else f"https://utfs.io/f/{key}"
+    return str(url)
 
 
 async def delete_file_keys(keys: list[str]) -> None:
