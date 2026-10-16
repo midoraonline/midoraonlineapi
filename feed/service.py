@@ -615,7 +615,25 @@ def _build_recency_order(client: Client, *, category: str | None) -> list[str] |
         return None
     raw = list(resp.data or [])
     diversified = _diversify_by_shop(raw, limit=len(raw) or 1)
-    return [str(row.get("id")) for row in diversified if row.get("id")]
+    ids = [str(row.get("id")) for row in diversified if row.get("id")]
+    return promote_boosted(ids, sig.collect_boost_map(client, ids))
+
+
+BOOST_POINTS_PER_RANK = 5.0
+
+
+def promote_boosted(ids: list[str], boost_map: dict[str, dict[str, Any]]) -> list[str]:
+    """Guest order is recency-based; a boost lifts the ad by score_bonus / 5 places."""
+    if not boost_map:
+        return ids
+    out = list(ids)
+    for pid in [i for i in ids if i in boost_map]:
+        sb = float(boost_map[pid].get("score_bonus") or 0) or 50.0
+        idx = out.index(pid)
+        target = max(0, idx - int(sb / BOOST_POINTS_PER_RANK))
+        out.pop(idx)
+        out.insert(target, pid)
+    return out
 
 
 # ---------------------------------------------------------------------------
