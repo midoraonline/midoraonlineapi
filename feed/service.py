@@ -951,7 +951,7 @@ def get_algorithm_feed(
             session_id=session_id,
         )
         if not page_ids:
-            return [], False
+            return [], False, None
         cached_rows = _fetch_products_by_ids(db, page_ids)
         if cached_rows:
             logger.info(
@@ -959,12 +959,12 @@ def get_algorithm_feed(
                 user_id, page, len(cached_rows), len(cached_ids), FEED_CACHE_TTL_SECONDS,
             )
             return _with_ratings(db, [_to_response(row) for row in cached_rows]), has_more, None
+        # Every cached id on this page went inactive: fall through and re-score
+        # (any page) instead of returning an empty page that ends scrolling.
         logger.info(
-            "feed:path=cache_miss_empty_page user=%s page=%s ids=%s",
+            "feed:path=cache_miss_empty_page user=%s page=%s ids=%s -> rescore",
             user_id, page, len(page_ids),
         )
-        if page > 1:
-            return [], has_more, None
 
     score_started = time.perf_counter()
     signals = sig.collect_user_signals(db, user_id)
