@@ -85,7 +85,7 @@ async def _enforce_publish_gates(
 ) -> None:
     """Run Phase-1 publish gates when the listing will be public."""
     from shop.locations import is_online_location
-    from shop.publish_gates import assert_can_publish, assert_media_limits
+    from shop.publish_gates import assert_can_publish, assert_media_limits, poster_plan_tier
 
     if hasattr(body_or_row, "model_dump"):
         data = body_or_row.model_dump(exclude_unset=True)
@@ -128,7 +128,11 @@ async def _enforce_publish_gates(
         listing_meta = {}
 
     # Always cap media count (even drafts).
-    assert_media_limits(image_urls if isinstance(image_urls, list) else None, publishing=False)
+    assert_media_limits(
+        image_urls if isinstance(image_urls, list) else None,
+        publishing=False,
+        plan_tier=poster_plan_tier(None, user_id),
+    )
 
     if not publishing:
         return

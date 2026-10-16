@@ -88,25 +88,44 @@ def photos_required_for_item_type(item_type: str | None) -> bool:
     return kind not in PHOTO_OPTIONAL_ITEM_TYPES
 
 
+def poster_plan_tier(client: Any, user_id: str | None) -> str | None:
+    """Plan of the person posting (business owner or personal seller). None -> default limits."""
+    if not user_id:
+        return None
+    try:
+        from payments.plan_service import get_user_plan_tier
+
+        if client is None:
+            from db.supabase import get_supabase_admin
+
+            client = get_supabase_admin()
+        return get_user_plan_tier(client, user_id)
+    except Exception:  # noqa: BLE001 - fall back to Basic/default limits
+        return None
+
+
 def assert_media_limits(
     image_urls: list[str] | None,
     *,
     publishing: bool,
     item_type: str | None = None,
+    plan_tier: str | None = None,
 ) -> None:
     from platform_settings.flags import media_limits
 
-    limits = media_limits()
+    limits = media_limits(plan_tier)
     photos = count_photos(image_urls)
     videos = count_media(image_urls) - photos
     if photos > limits["max_photos"]:
         _http_gate(
-            f"At most {limits['max_photos']} photos per listing.",
+            f"Your plan allows at most {limits['max_photos']} photos per listing. Remove some or upgrade your plan.",
             "too_many_photos",
         )
     if videos > limits["max_videos"]:
         _http_gate(
-            f"At most {limits['max_videos']} videos per listing." if limits["max_videos"] else "Videos are not allowed on listings right now.",
+            f"Your plan allows at most {limits['max_videos']} videos per listing. Remove some or upgrade your plan."
+            if limits["max_videos"]
+            else "Your plan doesn't include videos on listings. Remove the video or upgrade your plan.",
             "too_many_videos",
         )
     if (
@@ -174,7 +193,7 @@ def assert_can_publish(
     """Hard gates for a listing that will be publicly published."""
     if not contact_already_verified:
         assert_contact_verified(user_id)
-    assert_media_limits(image_urls, publishing=True, item_type=item_type)
+    assert_media_limits(image_urls, publishing=True, item_type=item_type, plan_tier=poster_plan_tier(client, user_id))
     assert_price_for_publish(price_ugx, item_type)
 
     if not (category or "").strip():
