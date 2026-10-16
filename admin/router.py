@@ -18,6 +18,7 @@ from admin.routes import feed_config as admin_feed_config
 from admin.routes import feature_flags as admin_feature_flags
 from admin.routes import users as admin_users
 from admin.routes import plans_admin as admin_plans
+from admin.routes import boost_grants as admin_boost_grants
 from media.routes import admin_router as admin_media
 from tenants.routes import verifications as verif_admin
 
@@ -26,6 +27,7 @@ router = APIRouter(
     tags=["admin"],
     dependencies=[Depends(require_admin)],
 )
+router.include_router(admin_boost_grants.router, prefix="", tags=["admin"])
 router.include_router(admin_shops.router, prefix="/shops", tags=["admin"])
 router.include_router(admin_subs.router, prefix="/subscriptions", tags=["admin"])
 router.include_router(admin_stats.router, prefix="/stats", tags=["admin"])
