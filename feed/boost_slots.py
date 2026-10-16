@@ -57,6 +57,20 @@ def slots_before(n: int, every: int, phase: int) -> int:
     return (n - phase) // every + 1
 
 
+def page_slots(page: int, limit: int, every: int, phase: int, unique: int) -> list[int]:
+    """Slot positions used on `page`: at most one per distinct boost, so a
+    page never needs to repeat a boost (and never leaves a slot unfilled)."""
+    start = max(0, (page - 1) * limit)
+    hits = [g for g in range(start + 1, start + limit + 1) if is_slot(g, every, phase)]
+    return hits[: max(0, unique)]
+
+
+def organic_offset(page: int, limit: int, every: int, phase: int, unique: int) -> int:
+    """How many organic items pages 1..page-1 used."""
+    used = sum(len(page_slots(p, limit, every, phase, unique)) for p in range(1, page))
+    return max(0, (page - 1) * limit - used)
+
+
 def _load_rows(client: Any) -> list[dict[str, Any]]:
     from feed import signals as sig
 
@@ -195,14 +209,16 @@ def compose_page(
     start = max(0, (page - 1) * limit)
     if not boost_seq:
         return organic[start : start + limit], start + limit < len(organic)
-    k = slots_before(start, every, phase)
-    o = start - k
+    unique = len(set(boost_seq))
+    slots = set(page_slots(page, limit, every, phase, unique))
+    k = slots_before(start, every, phase)  # rotation offset, so pages rotate
+    o = organic_offset(page, limit, every, phase, unique)
     preview = set(organic[o : o + limit])
     out: list[str] = []
     on_page: set[str] = set()
     n = len(boost_seq)
     for g in range(start + 1, start + limit + 1):
-        if is_slot(g, every, phase):
+        if g in slots:
             pick = None
             for j in range(n):
                 cand = boost_seq[(k + j) % n]

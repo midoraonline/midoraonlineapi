@@ -240,8 +240,13 @@ def fetch_catalog_page(
     page: int,
     limit: int,
     refine: Refine | None = None,
+    offset: int | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Return one page and the filtered total. Filters run before range."""
+    """Return one page and the filtered total. Filters run before range.
+
+    `offset` overrides `(page-1)*limit` for SQL sorts (used when boosted slots
+    take some positions on a page).
+    """
     resolved = resolve_constraints(client, filters)
     if resolved.impossible:
         return [], 0
@@ -254,10 +259,24 @@ def fetch_catalog_page(
         )
     query = _filtered_query(client, select_cols, filters, resolved, refine)
     query = _apply_sql_order(query, filters.sort)
-    offset = (page - 1) * limit
+    if offset is None:
+        offset = (page - 1) * limit
+    offset = max(0, int(offset))
     resp = query.range(offset, offset + limit - 1).execute()
     total = int(resp.count) if getattr(resp, "count", None) is not None else len(resp.data or [])
     return _clean_rows(resp.data or []), total
+
+
+def matching_ids(client: Any, filters: ListingFilters, ids: list[str]) -> set[str]:
+    """Subset of `ids` that pass every filter (used to pick boosts for a category page)."""
+    if not ids:
+        return set()
+    resolved = resolve_constraints(client, filters)
+    if resolved.impossible:
+        return set()
+    query = _filtered_query(client, _select_for("id", resolved, filters.sort), filters, resolved, None)
+    resp = query.in_("id", ids[:300]).execute()
+    return {str(r["id"]) for r in (resp.data or []) if r.get("id")}
 
 
 def resolve_constraints(client: Any, filters: ListingFilters) -> ResolvedConstraints:

@@ -583,6 +583,38 @@ def _diversify_by_shop(
 # Anonymous fallback
 # ---------------------------------------------------------------------------
 
+def _catalog_page(
+    db: Client, filters: ListingFilters, *, page: int, limit: int
+) -> tuple[list[dict[str, Any]], int]:
+    """Filtered/category page. Relevance sort weaves in boosted slots drawn
+    from active boosts that pass the same filters."""
+    if filters.sort != "relevance":
+        return fetch_catalog_page(db, filters, select=_PRODUCT_CARD_SELECT, page=page, limit=limit)
+    boosts = boost_slots.active_boosts(db)
+    try:
+        from feed.catalog import matching_ids
+
+        ok = matching_ids(db, filters, [b["id"] for b in boosts]) if boosts else set()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("catalog boosts skipped: %s", exc)
+        ok = set()
+    seq = boost_slots.rotation([b for b in boosts if b["id"] in ok])
+    if not seq:
+        return fetch_catalog_page(db, filters, select=_PRODUCT_CARD_SELECT, page=page, limit=limit)
+    every, phase = boost_slots.slot_every(), boost_slots.slot_phase()
+    org_start = boost_slots.organic_offset(page, limit, every, phase, len(set(seq)))
+    rows, total = fetch_catalog_page(
+        db, filters, select=_PRODUCT_CARD_SELECT, page=page, limit=limit, offset=org_start
+    )
+    by_id = {str(r["id"]): r for r in rows if r.get("id")}
+    padded = [f"__pad{i}" for i in range(org_start)] + list(by_id)
+    page_ids, _ = boost_slots.compose_page(padded, seq, page=page, limit=limit, every=every, phase=phase)
+    missing = [pid for pid in page_ids if pid not in by_id]
+    for row in _fetch_products_by_ids(db, missing):
+        by_id[str(row["id"])] = row
+    return [by_id[pid] for pid in page_ids if pid in by_id], total
+
+
 def get_latest_feed(
     client: Client,
     limit: int = 20,
@@ -600,13 +632,7 @@ def get_latest_feed(
     if filters is not None and filters.is_active():
         from db.supabase import get_supabase_admin
 
-        rows, _total = fetch_catalog_page(
-            get_supabase_admin(),
-            filters,
-            select=_PRODUCT_CARD_SELECT,
-            page=page,
-            limit=limit,
-        )
+        rows, _total = _catalog_page(get_supabase_admin(), filters, page=page, limit=limit)
         return _with_ratings(get_supabase_admin(), [_to_response(row) for row in rows])
     items, _ = _get_latest_feed_page(
         client, page=page, limit=limit, category=category or (filters.category if filters else None)
@@ -706,7 +732,7 @@ def _build_recency_order(client: Client, *, category: str | None) -> list[str] |
     def _run():
         q = (
             client.table("products")
-            .select("id,shop_id,created_at")
+            .select("id,shop_id,created_at,title,image_urls")
             .eq("status", "active")
             .eq("is_published", True)
             .order("created_at", desc=True)
@@ -719,10 +745,43 @@ def _build_recency_order(client: Client, *, category: str | None) -> list[str] |
     except Exception as exc:
         logger.warning("guest rank build failed: %s", exc)
         return None
-    raw = list(resp.data or [])
+    raw = guest_quality_filter(client, list(resp.data or []))
     diversified = _diversify_by_shop(raw, limit=len(raw) or 1)
     ids = [str(row.get("id")) for row in diversified if row.get("id")]
     return promote_boosted(ids, sig.collect_boost_map(client, ids))
+
+
+GUEST_HIDDEN_FRAUD = frozenset({"high", "critical"})
+
+
+def _passes_quality_floor(row: dict[str, Any]) -> bool:
+    images = row.get("image_urls")
+    has_image = bool([u for u in images if u]) if isinstance(images, list) else bool(images)
+    return has_image and len((row.get("title") or "").strip()) >= 3
+
+
+def guest_quality_filter(client: Client, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Guest feed floor: a photo and a real title, live shop, no high/critical fraud."""
+    rows = [r for r in rows if r.get("id") and _passes_quality_floor(r)]
+    if not rows:
+        return rows
+    shop_by = {str(r["id"]): str(r.get("shop_id") or "") for r in rows}
+    try:
+        meta = sig.collect_shop_meta(client, list({s for s in shop_by.values() if s}))
+        fraud = sig.collect_fraud_severity(client, list(shop_by), shop_by, meta)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("guest fraud filter skipped: %s", exc)
+        return rows
+    out = []
+    for r in rows:
+        pid = str(r["id"])
+        if fraud.get(pid) in GUEST_HIDDEN_FRAUD:
+            continue
+        shop = meta.get(shop_by[pid])
+        if shop is not None and shop.get("is_active") is False:
+            continue
+        out.append(r)
+    return out
 
 
 BOOST_POINTS_PER_RANK = 5.0
@@ -1017,13 +1076,7 @@ def get_algorithm_feed(
             "feed:path=catalog_filters page=%s limit=%s sort=%s",
             page, limit, active_filters.sort,
         )
-        rows, total = fetch_catalog_page(
-            db,
-            active_filters,
-            select=_PRODUCT_CARD_SELECT,
-            page=page,
-            limit=limit,
-        )
+        rows, total = _catalog_page(db, active_filters, page=page, limit=limit)
         has_more = page * limit < total
         return _with_ratings(db, [_to_response(row) for row in rows]), has_more, total
 

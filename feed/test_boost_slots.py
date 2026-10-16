@@ -60,3 +60,11 @@ def test_guest_gets_all_boosts(monkeypatch):
             {"id": "b", "category": "y", "score_bonus": 25, "shop_id": "t"}]
     monkeypatch.setattr(B, "active_boosts", lambda c: rows)
     assert B.boosts_for_viewer(None, user_vector=None, categories=None, signed_in=False) == ["a", "b"]
+
+
+def test_single_boost_uses_one_slot_per_page_and_never_skips():
+    organic = [f"o{i}" for i in range(40)]
+    pages = [B.compose_page(organic, ["b"], page=p, limit=10, every=7, phase=3)[0] for p in (1, 2, 3)]
+    assert all(pg.count("b") == 1 and len(pg) == 10 for pg in pages)
+    flat = [i for pg in pages for i in pg if i != "b"]
+    assert flat == organic[:27]
