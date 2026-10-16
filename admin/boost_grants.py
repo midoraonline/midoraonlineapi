@@ -68,19 +68,9 @@ def _end_active(admin: Any, listing_ids: list[str]) -> None:
 
 
 def _refresh(listing_ids: list[str]) -> None:
-    from shop.listing_actions import _after_boost_change, _invalidate_guest_order
+    from feed.invalidate import after_rank_change
 
-    for lid in listing_ids[:50]:
-        try:
-            from ranking.service import calculate_listing_score
-
-            calculate_listing_score(lid)
-        except Exception:  # noqa: BLE001
-            pass
-    if len(listing_ids) == 1:
-        _after_boost_change(listing_ids[0])
-    else:
-        _invalidate_guest_order()
+    after_rank_change(listing_ids)
 
 
 def _owner(admin: Any, shop_id: str) -> dict[str, Any]:
@@ -141,7 +131,7 @@ def end_shop_boosts(admin: Any, shop_id: str) -> dict[str, Any]:
     return {"ended": len(ids)}
 
 
-def list_active(admin: Any, limit: int = 200) -> list[dict[str, Any]]:
+def list_active(admin: Any, limit: int = 1000) -> list[dict[str, Any]]:
     rows = (
         admin.table("listing_boosts")
         .select("id,listing_id,seller_id,shop_id,score_bonus,starts_at,ends_at,source,granted_by,boost_plan_id,"
@@ -164,7 +154,12 @@ def list_active(admin: Any, limit: int = 200) -> list[dict[str, Any]]:
         p = r.pop("products", None) or {}
         pk = r.pop("boost_plans", None) or {}
         sid = str(p.get("shop_id") or "")
+        from shop.boost_info import SOURCE_LABEL
+
+        src = r.get("source") or "paid"
         out.append({**r, "listing_title": p.get("title"), "listing_shop_id": sid or None,
-                    "shop_name": names.get(sid), "package_name": pk.get("name"),
+                    "shop_name": names.get(sid), "package_name": pk.get("name") or "Custom",
+                    "source_label": SOURCE_LABEL.get(src, src.title()),
+                    "scope": "shop" if r.get("shop_id") else "listing",
                     "business_wide": bool(r.get("shop_id"))})
     return out

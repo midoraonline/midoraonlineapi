@@ -141,32 +141,17 @@ def get_home_feed(
             logger.warning("home feed batch shop fetch failed: %s", exc)
 
     product_ids = [str(p.id) for p in algorithm_paged if p.id]
-    boosted_ids: set[str] = set()
+    boost_map: dict[str, dict[str, Any]] = {}
     viewer_liked_ids: set[str] = set()
 
-    def _boosts() -> set[str]:
-        if not product_ids:
-            return set()
+    def _boosts() -> dict[str, dict[str, Any]]:
+        from shop.boost_info import active_boost_map
+
         try:
-            now_iso = __import__("datetime").datetime.now(
-                __import__("datetime").timezone.utc
-            ).isoformat()
-            boosts_r = (
-                admin.table("listing_boosts")
-                .select("listing_id")
-                .in_("listing_id", product_ids)
-                .eq("active", True)
-                .gte("ends_at", now_iso)
-                .execute()
-            )
-            return {
-                str(b["listing_id"])
-                for b in (boosts_r.data or [])
-                if b.get("listing_id")
-            }
-        except Exception as exc:
+            return active_boost_map(admin, product_ids)
+        except Exception as exc:  # noqa: BLE001
             logger.warning("home feed batch boost fetch failed: %s", exc)
-            return set()
+            return {}
 
     if product_ids:
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -192,9 +177,10 @@ def get_home_feed(
 
                 fv = pool.submit(_viewer_likes)
                 viewer_liked_ids = fv.result()
-            boosted_ids = fb.result()
+            boost_map = fb.result()
 
     def _embed(products: list) -> list[dict[str, Any]]:
+        from shop.boost_info import card_fields
         out = []
         from shop.locations import listing_is_online
         from shop.serializers import clip_card_description
@@ -237,7 +223,7 @@ def get_home_feed(
                 "updated_at": getattr(p, "updated_at", None) or p.created_at,
                 "stock_quantity": int(getattr(p, "stock_quantity", 0) or 0),
                 "shop": shop,
-                "boosted": str(p.id) in boosted_ids,
+                **card_fields(boost_map.get(str(p.id))),
                 "average_rating": p.average_rating if p.review_count else None,
                 "review_count": int(p.review_count or 0),
                 "is_negotiable": getattr(p, "is_negotiable", True) is not False,

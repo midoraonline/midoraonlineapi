@@ -259,6 +259,9 @@ class ProductDetailResponse(BaseModel):
 
     # Boost status — resolved in the same call
     boosted: bool = False
+    is_boosted: bool = False
+    boost_ends_at: str | None = None
+    boost: dict | None = None
     average_rating: float | None = None
     review_count: int = 0
 
