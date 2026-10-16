@@ -7,7 +7,7 @@ def _e(pid, shop, score):
 
 
 def _pools(organic):
-    return {k: [] for k in ("super_boost", "boosted", "premium_store", "fresh", "exploration")} | {"organic": organic}
+    return {k: [] for k in ("premium_store", "fresh", "exploration")} | {"organic": organic}
 
 
 def test_no_sponsored_pool_or_cadence():

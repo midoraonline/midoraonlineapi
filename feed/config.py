@@ -119,9 +119,14 @@ class SlotCadence:
 # NOTE: `organic` is the residual pool; the cadences below reserve slots that
 # are pulled from other pools and inserted at deterministic positions.
 # Priority ties (same position) are broken by higher `priority` first.
+# Guaranteed boosted slots (feed/boost_slots.py): positions PHASE, PHASE+EVERY, ...
+BOOST_SLOT_EVERY = 7
+BOOST_SLOT_PHASE = 3
+# Signed-in viewers only get boosts whose taste similarity reaches this (or
+# that match one of their categories); falls back to all boosts.
+BOOST_RELEVANCE_MIN_SIMILARITY = 0.35
+
 COMPOSITION_CADENCE: tuple[SlotCadence, ...] = (
-    SlotCadence("super_boost",  25, phase=25, priority=6),  # ~4 per 100 (highest)
-    SlotCadence("boosted",       8, phase=8,  priority=4),  # ~12 per 100
     SlotCadence("premium_store", 14, phase=14, priority=3), # ~7 per 100
     SlotCadence("fresh",         16, phase=6,  priority=2), # ~6 per 100 — new sellers / new inventory
     SlotCadence("exploration",   25, phase=13, priority=1), # ~4 per 100 — off-profile discovery
@@ -218,6 +223,9 @@ OVERRIDABLE_KEYS: tuple[str, ...] = (
     "FATIGUE_WINDOW_HOURS",
     "DEDUP_WINDOW_HOURS",
     "DEDUP_MAX_LOOKBACK",
+    "BOOST_SLOT_EVERY",
+    "BOOST_SLOT_PHASE",
+    "BOOST_RELEVANCE_MIN_SIMILARITY",
 )
 
 # Snapshot of the ORIGINAL module defaults so admins can reset / see baseline.

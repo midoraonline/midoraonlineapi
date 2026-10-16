@@ -1,8 +1,7 @@
 """Post-ranking placement engine.
 
 Given the pre-scored candidate pool, produce the final ordered feed by:
-  1. Bucketing candidates into pools (organic / boosted /
-     super_boost / premium_store / fresh / exploration).
+  1. Bucketing candidates into pools (organic / premium_store / fresh / exploration).
   2. Placing reserved slots at deterministic cadences (every N positions).
   3. Filling residual positions from the organic pool.
   4. Applying a progressive vendor-diversity penalty during placement.
@@ -42,12 +41,10 @@ def bucketize(
     """Split scored candidates into named pools.
 
     Each candidate can only live in ONE pool (highest-priority wins).
-    Priority order: super_boost > boosted > premium_store >
+    Priority order: premium_store >
     fresh > exploration > organic.
     """
     pools: dict[str, list[dict[str, Any]]] = {
-        "super_boost": [],
-        "boosted": [],
         "premium_store": [],
         "fresh": [],
         "exploration": [],
@@ -61,19 +58,11 @@ def bucketize(
         pid = str(product.get("id", ""))
         shop_id = str(product.get("shop_id", ""))
         meta = shop_meta.get(shop_id, {})
-        boost = boost_map.get(pid)
 
+        # Boosts do NOT pull a listing out of its natural pool: the score
+        # bonus already lifts it, and guaranteed boosted slots are added at
+        # read time (feed/boost_slots.py).
         placed = False
-        if boost:
-            sb = float(boost.get("score_bonus") or 0.0)
-            if sb > 25:
-                pools["super_boost"].append(entry); placed = True
-            else:
-                pools["boosted"].append(entry); placed = True
-
-        if placed:
-            continue
-
         # Premium store — active subscription
         end = parse_timestamp(meta.get("subscription_end_date"))
         if end and end > now:
@@ -221,8 +210,7 @@ def place(
             return pick
         # No candidate found (all pools drained or window-blocked). Try
         # scanning any pool to fill this slot rather than leaving a gap.
-        for name in ("organic", "boosted", "super_boost",
-                     "premium_store", "fresh", "exploration"):
+        for name in ("organic", "premium_store", "fresh", "exploration"):
             if name == kind:
                 continue
             pick = _pick_from(name, allow_fallback=False, max_per_seller=max_per_seller)

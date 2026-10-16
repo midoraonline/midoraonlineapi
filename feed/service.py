@@ -32,6 +32,7 @@ from functools import partial
 from typing import Any
 
 from db.supabase import Client
+from feed import boost_slots
 from feed import config as C
 from feed import impressions as imp
 from feed import scoring as S
@@ -281,8 +282,9 @@ def _page_ids_from_ranked(
     exclude_ids: list[str] | None,
     user_id: str | None,
     session_id: str | None,
+    boost_seq: list[str] | None = None,
 ) -> tuple[list[str], bool]:
-    """Slice the ranked ID list for this request.
+    """Slice the ranked ID list for this request (boosted slots woven in).
 
     Returns (page_ids, has_more). `has_more` is based on remaining ranked IDs,
     not on how many of this page hydrates into cards.
@@ -303,11 +305,54 @@ def _page_ids_from_ranked(
         exclude_ids=exclude_ids,
         apply_fatigue=apply_fatigue,
     )
-    if using_exclude:
-        return filtered[:limit], len(filtered) > limit
-    start_idx = max(0, (page - 1) * limit)
-    sliced = filtered[start_idx : start_idx + limit]
-    return sliced, start_idx + limit < len(filtered)
+    seq = list(boost_seq or [])
+    if seq and len(filtered) != len(ranked_ids):
+        dropped = set(ranked_ids) - set(filtered)
+        seq = [b for b in seq if b not in dropped]
+    if seq and exclude_ids:
+        ex = set(exclude_ids)
+        seq = [b for b in seq if b not in ex]
+    return boost_slots.compose_page(
+        filtered, seq, page=1 if using_exclude else page, limit=limit
+    )
+
+
+def _viewer_boost_seq(
+    client: Client,
+    user_id: str,
+    ranked_ids: list[str],
+    *,
+    user_vector: list[float] | None = None,
+    categories: set[str] | None = None,
+) -> list[str]:
+    """Boosted-slot rotation for a signed-in viewer (relevance-gated)."""
+    if not boost_slots.active_boosts(client):
+        return []
+    if user_vector is None:
+        try:
+            r = (
+                client.table("user_feed_cache")
+                .select("preference_vector")
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            raw = (r.data or [{}])[0].get("preference_vector")
+            user_vector = parse_embedding(raw) if raw else None
+        except Exception as exc:  # noqa: BLE001
+            logger.info("boost slots: vector read skipped: %s", exc)
+    if categories is None:
+        categories = set()
+        head = ranked_ids[:60]
+        if head:
+            try:
+                r = client.table("products").select("category").in_("id", head).execute()
+                categories = {str(p["category"]) for p in (r.data or []) if p.get("category")}
+            except Exception as exc:  # noqa: BLE001
+                logger.info("boost slots: category read skipped: %s", exc)
+    return boost_slots.boosts_for_viewer(
+        client, user_vector=user_vector, categories=categories, signed_in=True
+    )
 
 
 def _merge_recent_unseen_ids(
@@ -539,7 +584,6 @@ def _get_latest_feed_page(
 
     started = time.perf_counter()
     db = client
-    start_idx = max(0, (page - 1) * limit)
     source = "rebuild"
     ranked: list[str] | None = None
     if not category:
@@ -561,8 +605,12 @@ def _get_latest_feed_page(
             snapshots.remember(ranked)
             snapshots.save(db, ranked)
 
-    page_ids = ranked[start_idx : start_idx + limit]
-    has_more = start_idx + limit < len(ranked)
+    boost_seq = boost_slots.boosts_for_viewer(
+        db, user_vector=None, categories=None, signed_in=False
+    )
+    if category:
+        boost_seq = [b for b in boost_seq if b in set(ranked)]
+    page_ids, has_more = boost_slots.compose_page(ranked, boost_seq, page=page, limit=limit)
     if not has_more and len(ranked) >= 800:
         has_more = True
     rows = _fetch_products_by_ids(db, page_ids)
@@ -949,6 +997,7 @@ def get_algorithm_feed(
             exclude_ids=exclude_ids,
             user_id=user_id,
             session_id=session_id,
+            boost_seq=_viewer_boost_seq(db, user_id, cached_ids),
         )
         if not page_ids:
             return [], False, None
@@ -1129,6 +1178,11 @@ def get_algorithm_feed(
         exclude_ids=exclude_ids,
         user_id=user_id,
         session_id=session_id,
+        boost_seq=_viewer_boost_seq(
+            db, user_id, ranked_ids,
+            user_vector=user_vector or None,
+            categories=set(signals.get("categories") or set()),
+        ),
     )
     page_rows = _fetch_products_by_ids(db, page_ids)
     if page_rows:
