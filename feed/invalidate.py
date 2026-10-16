@@ -1,21 +1,21 @@
 """One place to drop every cached feed order after a ranking change (boost, repost, end boost).
 
 Layers: in-process guest snapshot + `feed_rank_snapshots` row, the composite guest
-home cache, every signed-in user's `user_feed_cache` (marked stale so the next load
-re-ranks), and the Next.js tag/path cache (fire-and-forget).
+home cache, the active-boost list used for boosted slots, and the Next.js tag/path
+cache (fire-and-forget).
+
+Signed-in `user_feed_cache` rows are NOT touched: boosts reach those feeds at read
+time through boosted slots (feed/boost_slots.py) and reposts through the fresh-item
+merge, so one boost no longer forces every active user to re-score at once.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 logger = logging.getLogger(__name__)
-
-STALE_AT = "1970-01-01T00:00:00+00:00"
-
 
 def rescore(listing_ids: Iterable[str], limit: int = 50) -> None:
     try:
@@ -47,11 +47,11 @@ def invalidate_feed_caches(client: Any | None = None, *, notify_next: bool = Tru
     except Exception:  # noqa: BLE001
         pass
     try:
-        # Only rows still inside the 1h TTL need touching.
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
-        client.table("user_feed_cache").update({"refreshed_at": STALE_AT}).gte("refreshed_at", cutoff).execute()
-    except Exception as exc:  # noqa: BLE001
-        logger.info("user_feed_cache stale-mark skipped: %s", exc)
+        from feed import boost_slots
+
+        boost_slots.clear_cache()
+    except Exception:  # noqa: BLE001
+        pass
     if notify_next:
         def _bust() -> None:
             try:

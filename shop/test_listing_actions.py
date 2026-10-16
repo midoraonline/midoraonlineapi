@@ -34,7 +34,7 @@ def test_boost_info_describe_and_card_fields():
     assert card_fields(None) == {"boosted": False, "is_boosted": False, "boost_ends_at": None, "boost": None}
 
 
-def test_invalidate_feed_caches_marks_user_caches_stale(monkeypatch):
+def test_invalidate_feed_caches_keeps_user_caches(monkeypatch):
     from feed import invalidate, snapshots
 
     calls = []
@@ -64,8 +64,12 @@ def test_invalidate_feed_caches_marks_user_caches_stale(monkeypatch):
         def table(self, t):
             return Q(t)
 
+    from feed import boost_slots
+
     monkeypatch.setattr(snapshots, "clear_memory", lambda: calls.append(("mem", None)))
+    monkeypatch.setattr(boost_slots, "clear_cache", lambda: calls.append(("boosts", None)))
     invalidate.invalidate_feed_caches(C(), notify_next=False)
-    assert ("user_feed_cache", {"refreshed_at": invalidate.STALE_AT}) in calls
+    assert not any(t == "user_feed_cache" for t, _ in calls)
+    assert ("boosts", None) in calls
     assert ("feed_rank_snapshots", "delete") in calls
     assert ("mem", None) in calls
