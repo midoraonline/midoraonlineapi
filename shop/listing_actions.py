@@ -84,20 +84,9 @@ def boost_allowance(admin: Any, user_id: str, plan: dict[str, Any]) -> dict[str,
 
 
 def active_boost(admin: Any, listing_id: str) -> dict[str, Any] | None:
-    try:
-        r = (
-            admin.table("listing_boosts")
-            .select("id,ends_at,score_bonus,source,payment_status")
-            .eq("listing_id", listing_id)
-            .eq("active", True)
-            .gte("ends_at", _now().isoformat())
-            .order("ends_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-        return (r.data or [None])[0]
-    except Exception:  # noqa: BLE001
-        return None
+    from shop.boost_info import active_boost_map
+
+    return active_boost_map(admin, [listing_id]).get(str(listing_id))
 
 
 def repost_status(admin: Any, listing: dict[str, Any], user_id: str, plan: dict[str, Any]) -> dict[str, Any]:
@@ -225,29 +214,15 @@ def activate_paid_boost(admin: Any, boost_id: str, payment_reference: str) -> bo
 
 
 def _after_boost_change(listing_id: str) -> None:
-    try:
-        from ranking.service import calculate_listing_score
+    from feed.invalidate import after_rank_change
 
-        calculate_listing_score(listing_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("rescore after boost failed: %s", exc)
-    _invalidate_guest_order()
+    after_rank_change([listing_id])
 
 
 def _invalidate_guest_order() -> None:
-    try:
-        from db.supabase import get_supabase_admin
-        from feed import snapshots
+    from feed.invalidate import invalidate_feed_caches
 
-        snapshots.invalidate(get_supabase_admin())
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("guest order invalidate failed: %s", exc)
-    try:
-        from feed import composite
-
-        composite._guest_home_cache.clear()
-    except Exception:  # noqa: BLE001
-        pass
+    invalidate_feed_caches()
 
 
 def repost_listing(admin: Any, listing_id: str, user_id: str) -> dict[str, Any]:
@@ -262,13 +237,7 @@ def repost_listing(admin: Any, listing_id: str, user_id: str) -> dict[str, Any]:
         patch["first_posted_at"] = listing.get("created_at")
     admin.table("products").update(patch).eq("id", listing_id).execute()
     admin.table("listing_reposts").insert({"listing_id": listing_id, "user_id": user_id}).execute()
-    try:
-        from ranking.service import calculate_listing_score
-
-        calculate_listing_score(listing_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("rescore after repost failed: %s", exc)
-    _invalidate_guest_order()
+    _after_boost_change(listing_id)
     return {"status": "reposted", "posted_at": now, "repost": repost_status(admin, {**listing, **patch}, user_id, plan)}
 
 
@@ -311,5 +280,21 @@ def feed_position(admin: Any, listing_id: str, user_id: str) -> dict[str, Any]:
         "category_position": cat_position,
         "category_scanned": cat_scanned,
         "boosted": active_boost(admin, listing_id) is not None,
+        "boost": active_boost(admin, listing_id),
         "computed_at": _now().isoformat(),
     }
+
+
+def owner_boosts(admin: Any, user_id: str, listing_ids: list[str]) -> dict[str, Any]:
+    """Active boost info for the caller's own listings (My listings cards)."""
+    from shop.boost_info import active_boost_map
+
+    ids = [i for i in listing_ids if i][:200]
+    if not ids:
+        return {"items": {}}
+    shops = admin.table("shops").select("id").eq("owner_id", user_id).execute().data or []
+    shop_ids = [str(x["id"]) for x in shops]
+    if not shop_ids:
+        return {"items": {}}
+    owned = admin.table("products").select("id").in_("id", ids).in_("shop_id", shop_ids).execute().data or []
+    return {"items": active_boost_map(admin, [str(r["id"]) for r in owned])}

@@ -387,7 +387,7 @@ def get_product_detail(
 
     like_count = 0
     viewer_liked: bool | None = None
-    boosted = False
+    boost_info = None
     average_rating: float | None = None
     review_count = 0
 
@@ -416,21 +416,13 @@ def get_product_detail(
         except Exception:
             return 0, None
 
-    def _boost() -> bool:
+    def _boost() -> dict | None:
         try:
-            now_iso = datetime.now(timezone.utc).isoformat()
-            boost_r = (
-                client.table("listing_boosts")
-                .select("id")
-                .eq("listing_id", product_id)
-                .eq("active", True)
-                .gte("ends_at", now_iso)
-                .limit(1)
-                .execute()
-            )
-            return bool(boost_r.data)
+            from shop.boost_info import active_boost_map
+
+            return active_boost_map(client, [str(product_id)]).get(str(product_id))
         except Exception:
-            return False
+            return None
 
     def _ratings() -> tuple[float | None, int]:
         try:
@@ -457,7 +449,7 @@ def get_product_detail(
         fut_boost = pool.submit(_boost)
         fut_ratings = pool.submit(_ratings)
         like_count, viewer_liked = fut_likes.result()
-        boosted = fut_boost.result()
+        boost_info = fut_boost.result()
         average_rating, review_count = fut_ratings.result()
 
     image_urls = row.get("image_urls") or []
@@ -495,7 +487,10 @@ def get_product_detail(
         viewer_liked=viewer_liked,
         whatsapp_clicks=0,
         messages=0,
-        boosted=boosted,
+        boosted=boost_info is not None,
+        is_boosted=boost_info is not None,
+        boost_ends_at=(boost_info or {}).get("ends_at"),
+        boost=boost_info,
         average_rating=average_rating,
         review_count=review_count,
         shop=shop_snapshot,
