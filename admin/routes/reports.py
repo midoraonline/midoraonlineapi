@@ -82,9 +82,9 @@ def enrich_product_reports(admin, items: list[dict[str, Any]]) -> list[dict[str,
 def enrich_seller_reports(admin, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Attach the reported seller's business (name, logo, verified, listing count) and reporter."""
     seller_ids = [r.get("seller_id") for r in items]
-    users = {str(u["id"]): u for u in _rows(admin, "users", "id, full_name, email", "id", seller_ids)}
+    users = {str(u["id"]): u for u in _rows(admin, "users", "*", "id", seller_ids)}
     shops_by_owner: dict[str, list[dict[str, Any]]] = {}
-    for s in _rows(admin, "shops", "id, name, slug, logo_url, owner_id, trust_badges, is_active", "owner_id", seller_ids):
+    for s in _rows(admin, "shops", "*", "owner_id", seller_ids):
         shops_by_owner.setdefault(str(s.get("owner_id")), []).append(s)
     all_shop_ids = [s["id"] for lst in shops_by_owner.values() for s in lst]
     counts: dict[str, int] = {}
@@ -107,6 +107,32 @@ def enrich_seller_reports(admin, items: list[dict[str, Any]]) -> list[dict[str, 
             "verified": bool(badges & {"identity_verified", "business_verified"}),
             "listing_count": sum(counts.get(str(s["id"]), 0) for s in owned),
             "business_count": len(owned),
+            "owner": {
+                "email": user.get("email"),
+                "phone_number": user.get("phone_number"),
+                "phone_verified": user.get("phone_verified"),
+                "email_verified": user.get("email_verified"),
+                "status": user.get("status"),
+                "role": user.get("user_role") or user.get("role"),
+                "joined_at": user.get("created_at"),
+            },
+            "businesses": [
+                {
+                    "id": str(s["id"]),
+                    "name": s.get("name"),
+                    "slug": s.get("slug"),
+                    "logo_url": s.get("logo_url"),
+                    "location": s.get("location") or s.get("district") or s.get("address"),
+                    "whatsapp": s.get("whatsapp_number") or s.get("phone_number"),
+                    "email": s.get("shop_email") or s.get("email"),
+                    "description": s.get("description"),
+                    "is_active": s.get("is_active"),
+                    "trust_badges": s.get("trust_badges") or [],
+                    "listing_count": counts.get(str(s["id"]), 0),
+                    "created_at": s.get("created_at"),
+                }
+                for s in owned
+            ],
         }
         out.append({**r, "seller": seller, "reporter": reporters.get(str(r.get("reporter_id")))})
     return out
