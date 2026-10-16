@@ -81,6 +81,9 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("UPLOADTHING_SECRET", "uploadthing_secret"),
     )
 
+    # Server-side background removal (remove.bg). Full-resolution PNG output.
+    remove_bg_api_key: str = Field(default="", alias="REMOVE_BG_API_KEY")
+
     # Africa's Talking — SMS (phone verification) + WhatsApp (WhatsApp verification)
     africastalking_api_key: str = Field(default="", alias="AFRICASTALKING_API_KEY")
     africastalking_username: str = Field(default="", alias="AFRICASTALKING_USERNAME")
