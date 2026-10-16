@@ -1,7 +1,7 @@
 """Post-ranking placement engine.
 
 Given the pre-scored candidate pool, produce the final ordered feed by:
-  1. Bucketing candidates into pools (organic / boosted / sponsored /
+  1. Bucketing candidates into pools (organic / boosted /
      super_boost / premium_store / fresh / exploration).
   2. Placing reserved slots at deterministic cadences (every N positions).
   3. Filling residual positions from the organic pool.
@@ -23,6 +23,9 @@ from typing import Any, Callable, Iterable
 from feed import config as C
 from feed.signals import parse_timestamp
 
+# How many window-eligible entries to compare when applying the vendor penalty.
+PENALTY_LOOKAHEAD = 12
+
 
 # ---------------------------------------------------------------------------
 # Pool bucketing
@@ -39,12 +42,11 @@ def bucketize(
     """Split scored candidates into named pools.
 
     Each candidate can only live in ONE pool (highest-priority wins).
-    Priority order: super_boost > sponsored > boosted > premium_store >
+    Priority order: super_boost > boosted > premium_store >
     fresh > exploration > organic.
     """
     pools: dict[str, list[dict[str, Any]]] = {
         "super_boost": [],
-        "sponsored": [],
         "boosted": [],
         "premium_store": [],
         "fresh": [],
@@ -67,9 +69,6 @@ def bucketize(
             if sb > 25:
                 pools["super_boost"].append(entry); placed = True
             else:
-                # `boost_plans.name` naming isn't standard yet — treat all
-                # paid boosts as `boosted`. Sponsored slots are managed by
-                # a separate admin flow (see docs).
                 pools["boosted"].append(entry); placed = True
 
         if placed:
@@ -191,8 +190,12 @@ def place(
             if max_per_seller is None
             else max_per_seller
         )
-        # Try primary pool; if empty and allow_fallback, drop to organic
+        # Try primary pool; if empty and allow_fallback, drop to organic.
+        # Among the first PENALTY_LOOKAHEAD window-eligible entries pick the
+        # best score after the progressive per-shop penalty, so a shop that
+        # already has many items placed loses ties to fresher sellers.
         for pool_ref in ([pool] if not allow_fallback else [pool, pools.get("organic", [])]):
+            best_i, best_eff, seen_ok = -1, float("-inf"), 0
             for i, entry in enumerate(pool_ref):
                 pid = str(entry["product"].get("id", ""))
                 if pid in used_product_ids:
@@ -200,13 +203,16 @@ def place(
                 shop_id = str(entry["product"].get("shop_id", ""))
                 if cap > 0 and _seller_at_window_capacity(window, shop_id, cap):
                     continue
-                # Apply progressive vendor penalty to see if it still ranks
                 penalty = _progressive_vendor_penalty(seller_rank_so_far.get(shop_id, 0) + 1)
                 effective = float(entry["score"]) - penalty
-                # We commit to the top candidate that passes the window rule.
-                pool_ref.pop(i)
-                entry_out = {**entry, "adjusted_score": effective, "pool": pool_name}
-                return entry_out
+                if effective > best_eff:
+                    best_i, best_eff = i, effective
+                seen_ok += 1
+                if seen_ok >= PENALTY_LOOKAHEAD:
+                    break
+            if best_i >= 0:
+                entry = pool_ref.pop(best_i)
+                return {**entry, "adjusted_score": best_eff, "pool": pool_name}
         return None
 
     def _pick_any(kind: str, *, max_per_seller: int | None = None) -> dict[str, Any] | None:
@@ -215,7 +221,7 @@ def place(
             return pick
         # No candidate found (all pools drained or window-blocked). Try
         # scanning any pool to fill this slot rather than leaving a gap.
-        for name in ("organic", "boosted", "sponsored", "super_boost",
+        for name in ("organic", "boosted", "super_boost",
                      "premium_store", "fresh", "exploration"):
             if name == kind:
                 continue

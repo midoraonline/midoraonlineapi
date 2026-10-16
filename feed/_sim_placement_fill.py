@@ -26,7 +26,6 @@ def _entry(pid: str, shop: str, score: float) -> dict:
 def main() -> None:
     pools = {
         "super_boost": [],
-        "sponsored": [],
         "boosted": [],
         "premium_store": [],
         "fresh": [],

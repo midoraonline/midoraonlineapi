@@ -26,7 +26,7 @@ EXPLORATION_BONUS = 20.0           # slot-based, applied by placement engine
 SELLER_QUALITY_CAP = 25.0          # response rate, verified, low disputes
 GLOBAL_POPULARITY_CAP = 30.0       # marketplace demand (aggregate)
 PREMIUM_STORE_BONUS = 15.0         # active subscription
-SPONSORED_LISTING_BONUS = 25.0     # guaranteed exposure tier
+SPONSORED_LISTING_BONUS = 25.0     # unused: no sponsored tier (kept so saved feed_config overrides stay valid)
 LISTING_BOOST_BONUS = 50.0         # paid seller boost (regular)
 SUPER_BOOST_BONUS = 75.0           # short-duration premium boost
 
@@ -121,7 +121,6 @@ class SlotCadence:
 # Priority ties (same position) are broken by higher `priority` first.
 COMPOSITION_CADENCE: tuple[SlotCadence, ...] = (
     SlotCadence("super_boost",  25, phase=25, priority=6),  # ~4 per 100 (highest)
-    SlotCadence("sponsored",     8, phase=4,  priority=5),  # ~12 per 100
     SlotCadence("boosted",       8, phase=8,  priority=4),  # ~12 per 100
     SlotCadence("premium_store", 14, phase=14, priority=3), # ~7 per 100
     SlotCadence("fresh",         16, phase=6,  priority=2), # ~6 per 100 — new sellers / new inventory
