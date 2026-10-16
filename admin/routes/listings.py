@@ -208,3 +208,46 @@ async def admin_reindex_embeddings(
 
     admin = get_supabase_admin()
     return backfill_missing_embeddings(admin, limit=limit)
+
+
+@router.get("/listings/{listing_id}")
+async def admin_get_listing(listing_id: str) -> dict:
+    """Admin view of any listing (incl. hidden/rejected/unpublished) with seller, business and reports."""
+    from fastapi import HTTPException
+
+    admin = get_supabase_admin()
+    rows = admin.table("products").select("*").eq("id", listing_id).limit(1).execute().data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    product = rows[0]
+    shop: dict = {}
+    owner: dict = {}
+    try:
+        srows = admin.table("shops").select("*").eq("id", product.get("shop_id")).limit(1).execute().data or []
+        shop = srows[0] if srows else {}
+        if shop.get("owner_id"):
+            urows = admin.table("users").select("*").eq("id", shop["owner_id"]).limit(1).execute().data or []
+            owner = {k: v for k, v in (urows[0] if urows else {}).items() if "password" not in k and "token" not in k and "secret" not in k}
+            cnt = admin.table("shops").select("id").eq("owner_id", shop["owner_id"]).execute().data or []
+            ids = [c["id"] for c in cnt]
+            if ids:
+                pc = admin.table("products").select("id", count="exact").in_("shop_id", ids).limit(1).execute()
+                owner["listing_count"] = pc.count or 0
+            owner["business_count"] = len(ids)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("admin listing detail enrichment failed: %s", exc)
+    reports: list = []
+    try:
+        reports = (
+            admin.table("product_reports")
+            .select("id, reason, description, resolved, created_at, reporter_id")
+            .eq("product_id", listing_id)
+            .order("created_at", desc=True)
+            .limit(50)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return {"listing": product, "shop": shop or None, "owner": owner or None, "reports": reports}

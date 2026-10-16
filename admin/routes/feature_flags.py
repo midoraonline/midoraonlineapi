@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from core.security import TokenPayload, require_admin_role
-from platform_settings.flags import FLAGS, admin_items, invalidate_cache, settings_persisted
+from platform_settings.flags import FLAGS, normalize_media_limits_value, admin_items, invalidate_cache, settings_persisted
 
 router = APIRouter()
 
@@ -54,6 +54,8 @@ def _write(body: SettingPatch, updated_by: str | None) -> dict[str, Any]:
     value = body.value if body.value is not None else (previous or {}).get("value") or {}
     if not isinstance(value, dict):
         value = {}
+    if body.key == "listing_media_limits":
+        value = normalize_media_limits_value(value)
 
     row = {
         "key": body.key,

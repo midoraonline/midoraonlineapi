@@ -71,6 +71,8 @@ class AIContextResponse(BaseModel):
 class RemoveBackgroundRequest(BaseModel):
     image_url: str | None = None
     image_base64: str | None = None
+    # Optional fill colour (#rrggbb). Omit for a transparent PNG.
+    bg_color: str | None = None
 
 
 class RemoveBackgroundResponse(BaseModel):

@@ -13,7 +13,7 @@ from fastapi import HTTPException
 
 # Still photos required to publish; videos do not count toward the minimum.
 MIN_PUBLISH_PHOTOS = 2
-MAX_LISTING_MEDIA = 3
+MAX_LISTING_MEDIA = 3  # legacy default; live caps come from platform_settings.media_limits()
 
 # Quote-style (price 0) allowed only for these kinds.
 QUOTE_OK_ITEM_TYPES = frozenset({"service", "job", "opportunity"})
@@ -94,11 +94,20 @@ def assert_media_limits(
     publishing: bool,
     item_type: str | None = None,
 ) -> None:
-    media = count_media(image_urls)
-    if media > MAX_LISTING_MEDIA:
+    from platform_settings.flags import media_limits
+
+    limits = media_limits()
+    photos = count_photos(image_urls)
+    videos = count_media(image_urls) - photos
+    if photos > limits["max_photos"]:
         _http_gate(
-            f"At most {MAX_LISTING_MEDIA} photos or videos per listing.",
-            "too_many_media",
+            f"At most {limits['max_photos']} photos per listing.",
+            "too_many_photos",
+        )
+    if videos > limits["max_videos"]:
+        _http_gate(
+            f"At most {limits['max_videos']} videos per listing." if limits["max_videos"] else "Videos are not allowed on listings right now.",
+            "too_many_videos",
         )
     if (
         publishing
