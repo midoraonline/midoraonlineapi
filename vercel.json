@@ -14,23 +14,5 @@
   ],
   "routes": [
     { "src": "/(.*)", "dest": "main.py" }
-  ],
-  "crons": [
-    {
-      "path": "/api/v1/moderation/drain",
-      "schedule": "0 0 * * *"
-    },
-    {
-      "path": "/api/v1/media/sweep",
-      "schedule": "30 3 * * *"
-    },
-    {
-      "path": "/api/v1/mail/drain",
-      "schedule": "45 4 * * *"
-    },
-    {
-      "path": "/api/v1/feed/cron/refresh",
-      "schedule": "0 4 * * *"
-    }
   ]
 }

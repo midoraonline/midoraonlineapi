@@ -14,7 +14,7 @@ router = APIRouter()
 
 
 @router.get("/me")
-async def list_my_shops(
+def list_my_shops(
     client: Annotated[Client, Depends(get_supabase_client)],
     params: Annotated[PaginationParams, Depends()],
     user_id: str = Depends(get_current_user_id),
@@ -24,7 +24,7 @@ async def list_my_shops(
 
 
 @router.get("/{shop_id}", response_model=ShopResponse)
-async def get_shop(
+def get_shop(
     shop_id: str,
     client: Annotated[Client, Depends(get_supabase_client)],
     viewer_id: str | None = Depends(get_optional_user_id),
@@ -36,7 +36,7 @@ async def get_shop(
 
 
 @router.patch("/{shop_id}", response_model=ShopResponse)
-async def update_shop(
+def update_shop(
     shop_id: str,
     body: ShopUpdate,
     client: Annotated[Client, Depends(get_supabase_client)],
@@ -67,7 +67,7 @@ async def update_shop(
 
 
 @router.post("/{shop_id}/logo/generate")
-async def generate_shop_logo(
+def generate_shop_logo(
     shop_id: str,
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
@@ -83,7 +83,7 @@ async def generate_shop_logo(
 
 
 @router.post("/{shop_id}/toggle-availability", response_model=ShopResponse)
-async def toggle_shop_availability(
+def toggle_shop_availability(
     shop_id: str,
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),

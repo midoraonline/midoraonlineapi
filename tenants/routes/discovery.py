@@ -11,7 +11,7 @@ router = APIRouter()
 
 
 @router.get("/by-slug/{slug}")
-async def get_shop_by_slug(
+def get_shop_by_slug(
     slug: str,
     response: Response,
     client: Annotated[Client, Depends(get_supabase_client)],

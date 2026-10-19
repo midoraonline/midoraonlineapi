@@ -15,7 +15,7 @@ router = APIRouter()
 
 
 @router.post("/{product_id}/events")
-async def record_listing_event(
+def record_listing_event(
     product_id: str,
     event_type: str = Query(..., description="Event type: viewed, whatsapp_clicked, call_clicked, saved, shared, reported, updated"),
     current_user_id: str | None = Depends(get_optional_user_id),
@@ -69,7 +69,7 @@ async def record_listing_event(
 
 
 @router.get("/{product_id}/events/stats")
-async def get_listing_event_stats(product_id: str) -> dict[str, Any]:
+def get_listing_event_stats(product_id: str) -> dict[str, Any]:
     """Get aggregated event counts for a listing."""
     admin = get_supabase_admin()
     stats = {"views": 0, "whatsapp_clicks": 0, "call_clicks": 0, "saves": 0, "shares": 0, "reports": 0, "messages": 0}
@@ -104,7 +104,7 @@ async def get_listing_event_stats(product_id: str) -> dict[str, Any]:
 
 
 @router.get("/stats/user/{user_id}")
-async def get_user_event_stats(user_id: str) -> dict[str, Any]:
+def get_user_event_stats(user_id: str) -> dict[str, Any]:
     """Get aggregated event counts for a user (as buyer or seller)."""
     admin = get_supabase_admin()
     stats: dict[str, Any] = {"whatsapp_clicks": 0, "messages": 0}

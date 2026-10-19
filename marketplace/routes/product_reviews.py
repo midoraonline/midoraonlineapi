@@ -73,7 +73,7 @@ async def _rating_from_request(
 
 
 @router.get("/{product_id}/reviews")
-async def get_product_reviews_endpoint(
+def get_product_reviews_endpoint(
     product_id: str,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
@@ -83,7 +83,7 @@ async def get_product_reviews_endpoint(
 
 
 @router.get("/{product_id}/reviews/mine")
-async def get_my_product_review(
+def get_my_product_review(
     product_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ) -> dict[str, Any] | None:
@@ -139,7 +139,7 @@ async def create_product_review_endpoint(
 
 
 @router.get("/{product_id}/reviews/stats")
-async def get_product_review_stats_endpoint(
+def get_product_review_stats_endpoint(
     product_id: str,
 ) -> dict[str, Any]:
     """Get aggregated review stats for a product."""

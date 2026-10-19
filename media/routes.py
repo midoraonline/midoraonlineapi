@@ -85,7 +85,7 @@ class DiscardBody(BaseModel):
 
 
 @cron_router.post("/uploads")
-async def register_media_upload(
+def register_media_upload(
     body: RegisterUploadBody,
     x_media_secret: Optional[str] = Header(default=None),
 ) -> dict:

@@ -234,7 +234,7 @@ def _persist_verification(client: Any, shop_id: str, payload: dict[str, Any]) ->
 
 
 @router.get("/{shop_id}/verification", response_model=VerificationResponse)
-async def get_verification(
+def get_verification(
     shop_id: str,
     user_id: Annotated[str, Depends(get_current_user_id)],
 ) -> VerificationResponse:
@@ -491,7 +491,7 @@ admin_router = APIRouter()
 
 
 @admin_router.get("/verifications")
-async def admin_list_verifications(
+def admin_list_verifications(
     status: Annotated[str | None, Query()] = "pending",
     stage: Annotated[int | None, Query(description="Filter by stage 2/3/4")] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 50,
@@ -568,7 +568,7 @@ async def admin_list_verifications(
 
 
 @admin_router.get("/verifications/{shop_id}/stages")
-async def admin_get_verification_stages(shop_id: str) -> dict[str, Any]:
+def admin_get_verification_stages(shop_id: str) -> dict[str, Any]:
     client = get_supabase_admin()
     r = client.table("shop_verifications").select("*").eq("shop_id", shop_id).limit(1).execute()
     if not r.data:

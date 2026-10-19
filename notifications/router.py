@@ -34,7 +34,7 @@ class UnsubscribeBody(BaseModel):
 
 
 @router.get("/public-key")
-async def get_vapid_public_key() -> dict[str, str]:
+def get_vapid_public_key() -> dict[str, str]:
     """Return the VAPID public key so the browser can subscribe.
 
     Exposed anonymously — the public key is safe to serve to unauthenticated
@@ -44,7 +44,7 @@ async def get_vapid_public_key() -> dict[str, str]:
 
 
 @router.post("/subscribe")
-async def subscribe(
+def subscribe(
     body: PushSubscriptionBody,
     request: Request,
     user_id: Annotated[str, Depends(get_current_user_id)],
@@ -60,7 +60,7 @@ async def subscribe(
 
 
 @router.post("/unsubscribe")
-async def unsubscribe(
+def unsubscribe(
     body: UnsubscribeBody,
     _user_id: Annotated[str, Depends(get_current_user_id)],
 ) -> dict[str, str]:
@@ -69,7 +69,7 @@ async def unsubscribe(
 
 
 @router.post("/test")
-async def send_test_push(
+def send_test_push(
     user_id: Annotated[str, Depends(get_current_user_id)],
 ) -> dict[str, Any]:
     """Fire a test push to the current user's registered devices."""

@@ -39,13 +39,13 @@ def _rows() -> list[dict[str, Any]]:
 
 
 @router.get("/settings/categories")
-async def admin_get_categories() -> list[dict[str, Any]]:
+def admin_get_categories() -> list[dict[str, Any]]:
     """Admin: list categories with normalized field definitions."""
     return _rows()
 
 
 @router.get("/settings/categories/{slug}")
-async def admin_get_category(slug: str) -> dict[str, Any]:
+def admin_get_category(slug: str) -> dict[str, Any]:
     for item in _rows():
         if item.get("slug") == slug:
             return item
@@ -53,7 +53,7 @@ async def admin_get_category(slug: str) -> dict[str, Any]:
 
 
 @router.post("/settings/categories")
-async def admin_create_category(body: CategoryCreateRequest) -> dict[str, Any]:
+def admin_create_category(body: CategoryCreateRequest) -> dict[str, Any]:
     """Admin: create a category or subcategory, including its own fields."""
     admin = get_supabase_admin()
     payload = {
@@ -72,7 +72,7 @@ async def admin_create_category(body: CategoryCreateRequest) -> dict[str, Any]:
 
 
 @router.patch("/settings/categories/{slug}")
-async def admin_update_category(slug: str, body: CategoryUpdateRequest) -> dict[str, Any]:
+def admin_update_category(slug: str, body: CategoryUpdateRequest) -> dict[str, Any]:
     """Admin: update label, parent, sort order, or replace field definitions."""
     admin = get_supabase_admin()
     payload: dict[str, Any] = {}
@@ -97,7 +97,7 @@ async def admin_update_category(slug: str, body: CategoryUpdateRequest) -> dict[
 
 
 @router.put("/settings/categories/{slug}/fields/order")
-async def admin_reorder_fields(slug: str, body: FieldReorderRequest) -> dict[str, Any]:
+def admin_reorder_fields(slug: str, body: FieldReorderRequest) -> dict[str, Any]:
     try:
         return reorder_category_fields(get_supabase_admin(), slug, body.keys)
     except FieldEditError as exc:
@@ -105,7 +105,7 @@ async def admin_reorder_fields(slug: str, body: FieldReorderRequest) -> dict[str
 
 
 @router.post("/settings/categories/{slug}/fields")
-async def admin_add_field(slug: str, body: FieldDefinitionWrite) -> dict[str, Any]:
+def admin_add_field(slug: str, body: FieldDefinitionWrite) -> dict[str, Any]:
     try:
         return add_category_field(get_supabase_admin(), slug, body.model_dump(exclude_unset=True))
     except FieldEditError as exc:
@@ -113,7 +113,7 @@ async def admin_add_field(slug: str, body: FieldDefinitionWrite) -> dict[str, An
 
 
 @router.patch("/settings/categories/{slug}/fields/{key}")
-async def admin_update_field(slug: str, key: str, body: FieldDefinitionWrite) -> dict[str, Any]:
+def admin_update_field(slug: str, key: str, body: FieldDefinitionWrite) -> dict[str, Any]:
     try:
         return update_category_field(
             get_supabase_admin(), slug, key, body.model_dump(exclude_unset=True)
@@ -123,7 +123,7 @@ async def admin_update_field(slug: str, key: str, body: FieldDefinitionWrite) ->
 
 
 @router.delete("/settings/categories/{slug}/fields/{key}")
-async def admin_delete_field(slug: str, key: str) -> dict[str, Any]:
+def admin_delete_field(slug: str, key: str) -> dict[str, Any]:
     try:
         return delete_category_field(get_supabase_admin(), slug, key)
     except FieldEditError as exc:
@@ -131,7 +131,7 @@ async def admin_delete_field(slug: str, key: str) -> dict[str, Any]:
 
 
 @router.delete("/settings/categories/{slug}")
-async def admin_delete_category(slug: str) -> dict[str, Any]:
+def admin_delete_category(slug: str) -> dict[str, Any]:
     """Admin: delete a category (fails if it still has subcategories)."""
     admin = get_supabase_admin()
     children = (

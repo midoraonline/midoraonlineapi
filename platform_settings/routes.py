@@ -6,7 +6,7 @@ router = APIRouter(tags=["settings"])
 
 
 @router.get("/settings/public")
-async def public_settings(response: Response) -> dict:
+def public_settings(response: Response) -> dict:
     """Non-sensitive feature switches. Safe to cache at the edge."""
     response.headers["Cache-Control"] = "public, s-maxage=30, stale-while-revalidate=120"
     data = all_media_limits()

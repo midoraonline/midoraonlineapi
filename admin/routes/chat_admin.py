@@ -14,7 +14,7 @@ router = APIRouter()
 
 
 @router.get("/chat/conversations")
-async def admin_list_conversations(
+def admin_list_conversations(
     limit: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
     admin = get_supabase_admin()
@@ -35,7 +35,7 @@ async def admin_list_conversations(
 
 
 @router.get("/chat/messages/count")
-async def admin_message_count() -> dict[str, Any]:
+def admin_message_count() -> dict[str, Any]:
     admin = get_supabase_admin()
     try:
         r = admin.table("messages").select("id", count="exact").execute()

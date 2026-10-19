@@ -13,7 +13,7 @@ router = APIRouter()
 
 
 @router.post("/{shop_id}/whatsapp/send-code")
-async def send_shop_whatsapp_code(
+def send_shop_whatsapp_code(
     shop_id: str,
     body: SendShopWhatsAppCodeRequest,
     client: Annotated[Client, Depends(get_supabase_client)],
@@ -46,7 +46,7 @@ async def send_shop_whatsapp_code(
 
 
 @router.post("/{shop_id}/whatsapp/verify", response_model=ShopResponse)
-async def verify_shop_whatsapp_code(
+def verify_shop_whatsapp_code(
     shop_id: str,
     body: ConfirmShopWhatsAppCodeRequest,
     client: Annotated[Client, Depends(get_supabase_client)],

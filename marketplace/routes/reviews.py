@@ -17,7 +17,7 @@ router = APIRouter()
 
 
 @router.get("/{shop_id}/reviews")
-async def get_shop_reviews(
+def get_shop_reviews(
     shop_id: str,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
@@ -32,7 +32,7 @@ async def get_shop_reviews(
 
 
 @router.get("/{shop_id}/reviews/mine")
-async def get_my_shop_review(
+def get_my_shop_review(
     shop_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ) -> dict[str, Any] | None:
@@ -46,7 +46,7 @@ async def get_my_shop_review(
 
 
 @router.post("/{shop_id}/reviews")
-async def create_shop_review(
+def create_shop_review(
     shop_id: str,
     rating: int = Query(..., ge=1, le=5),
     comment: str | None = Query(None),
@@ -77,7 +77,7 @@ async def create_shop_review(
 
 
 @router.get("/{shop_id}/reviews/stats")
-async def get_shop_review_stats_endpoint(shop_id: str) -> dict[str, Any]:
+def get_shop_review_stats_endpoint(shop_id: str) -> dict[str, Any]:
     """Get aggregated review stats for a shop's seller."""
     admin = get_supabase_admin()
     shop_r = admin.table("shops").select("owner_id").eq("id", shop_id).execute()

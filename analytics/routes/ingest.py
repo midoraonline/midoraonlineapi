@@ -65,7 +65,7 @@ def _clean_properties(props: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.post("/events", response_model=AnalyticsAck, status_code=status.HTTP_202_ACCEPTED)
-async def ingest_events(
+def ingest_events(
     batch: AnalyticsBatch,
     _: RateLimitIngest,
     current_user_id: Annotated[str | None, Depends(get_optional_user_id)] = None,

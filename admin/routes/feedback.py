@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.get("/feedback")
-async def list_feedback(
+def list_feedback(
     limit: int = 100,
     current_admin_id: str = Depends(get_current_user_id),
 ) -> dict[str, Any]:

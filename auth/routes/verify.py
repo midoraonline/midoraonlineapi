@@ -10,7 +10,11 @@ from core.config import get_settings
 router = APIRouter()
 
 
-@router.api_route("/verify-email", methods=["GET", "POST"])
+# A single APIRoute spanning both methods gives the GET and POST OpenAPI
+# operations the same operation_id (FastAPI assigns one id per route, not
+# per method) — split into two routes so each gets a distinct id.
+@router.get("/verify-email", operation_id="verify_email_get")
+@router.post("/verify-email", operation_id="verify_email_post")
 async def verify_email_endpoint(request: Request, token: str = Query(...)):
     settings = get_settings()
     frontend_verify_url = settings.email_verification_frontend_url.strip()

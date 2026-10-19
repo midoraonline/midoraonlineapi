@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/boosts/overview")
-async def admin_boost_overview(
+def admin_boost_overview(
     days: int = Query(30, ge=1, le=365),
 ) -> dict[str, Any]:
     """Admin: boost analytics — revenue, active boosts, top sellers."""
@@ -94,7 +94,7 @@ async def admin_boost_overview(
 
 
 @router.get("/boosts/plans")
-async def admin_list_boost_plans() -> list[dict[str, Any]]:
+def admin_list_boost_plans() -> list[dict[str, Any]]:
     """Admin: list all boost plans."""
     admin = get_supabase_admin()
     r = admin.table("boost_plans").select("*").order("price_amount").execute()
@@ -102,7 +102,7 @@ async def admin_list_boost_plans() -> list[dict[str, Any]]:
 
 
 @router.post("/boosts/plans")
-async def admin_create_boost_plan(
+def admin_create_boost_plan(
     name: str = Query(...),
     duration_hours: int = Query(..., ge=1),
     price_amount: float = Query(..., ge=0),
@@ -125,7 +125,7 @@ async def admin_create_boost_plan(
 
 
 @router.patch("/boosts/plans/{plan_id}")
-async def admin_update_boost_plan(
+def admin_update_boost_plan(
     plan_id: str,
     name: str | None = Query(None),
     duration_hours: int | None = Query(None, ge=1),

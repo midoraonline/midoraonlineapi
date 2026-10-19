@@ -167,7 +167,7 @@ SELLER_REPORT_REASONS = [
 
 
 @router.post("/sellers/{seller_id}/reports")
-async def report_seller(
+def report_seller(
     seller_id: str,
     reason: str,
     description: str | None = None,
@@ -215,7 +215,7 @@ async def report_seller(
 
 
 @router.post("/sellers/{seller_id}/block")
-async def block_seller(
+def block_seller(
     seller_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ) -> dict[str, Any]:
@@ -245,7 +245,7 @@ async def block_seller(
 
 
 @router.delete("/sellers/{seller_id}/block")
-async def unblock_seller(
+def unblock_seller(
     seller_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ) -> dict[str, Any]:
@@ -259,7 +259,7 @@ async def unblock_seller(
 
 
 @router.get("/me/blocked-sellers")
-async def list_blocked_sellers(
+def list_blocked_sellers(
     current_user_id: str = Depends(get_current_user_id),
 ) -> dict[str, Any]:
     admin = get_supabase_admin()

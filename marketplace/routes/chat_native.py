@@ -138,7 +138,7 @@ def _enrich_message_avatars(admin: Any, rows: list[dict[str, Any]]) -> list[dict
 
 
 @router.get("/chat/conversations")
-async def list_conversations(
+def list_conversations(
     limit: int = Query(50, ge=1, le=100),
     current_user_id: str = Depends(get_current_user_id),
 ) -> list[dict[str, Any]]:
@@ -159,7 +159,7 @@ async def list_conversations(
 
 
 @router.post("/chat/conversations")
-async def create_conversation(
+def create_conversation(
     body: CreateConversationBody,
     current_user_id: str = Depends(get_current_user_id),
 ) -> dict[str, Any]:
@@ -209,7 +209,7 @@ async def create_conversation(
 
 
 @router.get("/chat/conversations/{conversation_id}/messages")
-async def list_messages(
+def list_messages(
     conversation_id: str,
     before: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
@@ -241,7 +241,7 @@ async def list_messages(
 
 
 @router.post("/chat/conversations/{conversation_id}/messages")
-async def send_message(
+def send_message(
     conversation_id: str,
     body: SendMessageBody,
     current_user_id: str = Depends(get_current_user_id),
@@ -341,7 +341,7 @@ def _notify_recipient(
 
 
 @router.put("/chat/conversations/{conversation_id}/read")
-async def mark_read(
+def mark_read(
     conversation_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ) -> dict[str, Any]:
@@ -382,7 +382,7 @@ async def mark_read(
 
 
 @router.get("/chat/unread")
-async def unread_count(
+def unread_count(
     current_user_id: str = Depends(get_current_user_id),
 ) -> dict[str, Any]:
     return {"unread_count": _unread_for(current_user_id)}

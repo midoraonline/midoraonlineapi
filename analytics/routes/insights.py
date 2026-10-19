@@ -75,7 +75,7 @@ class CategoryFillRateResponse(BaseModel):
 
 
 @router.get("/category-fill-rate", response_model=CategoryFillRateResponse)
-async def category_fill_rate(
+def category_fill_rate(
     window_days: int = Query(30, ge=1, le=365),
     min_results: int = Query(3, ge=1, le=50),
 ) -> CategoryFillRateResponse:
@@ -125,7 +125,7 @@ class SearchToContactResponse(BaseModel):
 
 
 @router.get("/search-to-contact", response_model=SearchToContactResponse)
-async def search_to_contact(
+def search_to_contact(
     window_days: int = Query(30, ge=1, le=365),
 ) -> SearchToContactResponse:
     """Sessions with any search → sessions with any WhatsApp click within the window."""
@@ -169,7 +169,7 @@ class VerificationFunnelResponse(BaseModel):
 
 
 @router.get("/verification-funnel", response_model=VerificationFunnelResponse)
-async def verification_funnel(
+def verification_funnel(
     window_days: int = Query(90, ge=1, le=365),
 ) -> VerificationFunnelResponse:
     """Started → submitted → approved/rejected counts from analytics_events."""
@@ -210,7 +210,7 @@ class StaleListingResponse(BaseModel):
 
 
 @router.get("/stale-listing-rate", response_model=StaleListingResponse)
-async def stale_listing_rate(
+def stale_listing_rate(
     window_days: int = Query(14, ge=1, le=180),
 ) -> StaleListingResponse:
     """Active published listings with zero listing_events / analytics_events views in the window."""
@@ -296,7 +296,7 @@ class ShopConversionResponse(BaseModel):
 
 
 @router.get("/shop-conversion", response_model=ShopConversionResponse)
-async def shop_conversion(
+def shop_conversion(
     window_days: int = Query(30, ge=1, le=365),
     limit: int = Query(25, ge=1, le=200),
 ) -> ShopConversionResponse:
@@ -400,7 +400,7 @@ class RatingCoverageResponse(BaseModel):
 
 
 @router.get("/rating-coverage", response_model=RatingCoverageResponse)
-async def rating_coverage(
+def rating_coverage(
     window_days: int = Query(30, ge=1, le=365),
 ) -> RatingCoverageResponse:
     since, _ = _window_bounds(window_days)
@@ -433,7 +433,7 @@ class ReportRateResponse(BaseModel):
 
 
 @router.get("/report-rate", response_model=ReportRateResponse)
-async def report_rate(
+def report_rate(
     window_days: int = Query(30, ge=1, le=365),
     dimension: str = Query("category", pattern="^(category|shop)$"),
 ) -> ReportRateResponse:
@@ -498,7 +498,7 @@ class DiscountEngagementResponse(BaseModel):
 
 
 @router.get("/discount-engagement", response_model=DiscountEngagementResponse)
-async def discount_engagement(
+def discount_engagement(
     window_days: int = Query(30, ge=1, le=365),
 ) -> DiscountEngagementResponse:
     since, _ = _window_bounds(window_days)
@@ -555,7 +555,7 @@ class EventTrendResponse(BaseModel):
 
 
 @router.get("/event-trend", response_model=EventTrendResponse)
-async def event_trend(
+def event_trend(
     event_type: str = Query(..., min_length=1, max_length=80),
     window_days: int = Query(30, ge=1, le=365),
 ) -> EventTrendResponse:

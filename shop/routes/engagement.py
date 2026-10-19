@@ -19,7 +19,7 @@ router = APIRouter()
 
 
 @router.get("/{shop_id}/engagement", response_model=ShopEngagementState)
-async def get_shop_engagement(
+def get_shop_engagement(
     shop_id: str,
     client: Annotated[Client, Depends(get_supabase_client)],
     viewer_id: str | None = Depends(get_optional_user_id),
@@ -36,7 +36,7 @@ async def get_shop_engagement(
 
 
 @router.post("/{shop_id}/follow", response_model=ShopEngagementState)
-async def follow_shop(
+def follow_shop(
     shop_id: str,
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
@@ -48,7 +48,7 @@ async def follow_shop(
 
 
 @router.delete("/{shop_id}/follow", response_model=ShopEngagementState)
-async def unfollow_shop(
+def unfollow_shop(
     shop_id: str,
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
@@ -57,7 +57,7 @@ async def unfollow_shop(
 
 
 @router.post("/{shop_id}/like", response_model=ShopEngagementState)
-async def like_shop(
+def like_shop(
     shop_id: str,
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
@@ -69,7 +69,7 @@ async def like_shop(
 
 
 @router.post("/{shop_id}/views", response_model=ViewCountResponse)
-async def record_shop_view(
+def record_shop_view(
     shop_id: str,
     client: Annotated[Client, Depends(get_supabase_client)],
 ):
@@ -86,7 +86,7 @@ async def record_shop_view(
 
 
 @router.post("/{shop_id}/events")
-async def record_shop_event(
+def record_shop_event(
     shop_id: str,
     event_type: str = Query(..., description="Event type: whatsapp_clicked, messaged"),
     current_user_id: str | None = Depends(get_optional_user_id),
@@ -128,7 +128,7 @@ async def record_shop_event(
 
 
 @router.delete("/{shop_id}/like", response_model=ShopEngagementState)
-async def unlike_shop(
+def unlike_shop(
     shop_id: str,
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
@@ -157,7 +157,7 @@ def _enrich_shop_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("/me/followed")
-async def my_followed_shops(user_id: str = Depends(get_current_user_id)) -> dict:
+def my_followed_shops(user_id: str = Depends(get_current_user_id)) -> dict:
     """Return the shops the authenticated user follows, enriched with counts."""
     admin = get_supabase_admin()
     # RLS on shop_follows allows the owner's row, but we use admin client here
@@ -189,7 +189,7 @@ async def my_followed_shops(user_id: str = Depends(get_current_user_id)) -> dict
 
 
 @router.get("/me/liked")
-async def my_liked_shops(user_id: str = Depends(get_current_user_id)) -> dict:
+def my_liked_shops(user_id: str = Depends(get_current_user_id)) -> dict:
     """Return the shops the authenticated user has liked."""
     admin = get_supabase_admin()
     lr = (
@@ -217,7 +217,7 @@ async def my_liked_shops(user_id: str = Depends(get_current_user_id)) -> dict:
 
 
 @router.get("/{shop_id}/dashboard")
-async def shop_dashboard(
+def shop_dashboard(
     shop_id: str,
     user_id: str = Depends(get_current_user_id),
 ) -> dict[str, Any]:
@@ -362,7 +362,7 @@ async def shop_dashboard(
 
 
 @router.get("/me/stats")
-async def my_shops_stats(user_id: str = Depends(get_current_user_id)) -> dict:
+def my_shops_stats(user_id: str = Depends(get_current_user_id)) -> dict:
     """Aggregate engagement metrics across all shops owned by the current user."""
     admin = get_supabase_admin()
     shops_r = (
@@ -483,7 +483,7 @@ async def my_shops_stats(user_id: str = Depends(get_current_user_id)) -> dict:
 
 
 @router.get("/me/analytics")
-async def my_shops_analytics(
+def my_shops_analytics(
     user_id: str = Depends(get_current_user_id),
     days: int = Query(30, ge=1, le=180),
 ) -> dict:

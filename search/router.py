@@ -13,7 +13,7 @@ router = APIRouter(prefix="/search", tags=["search"])
 
 
 @router.get("/products")
-async def search_products(
+def search_products(
     params: Annotated[PaginationParams, Depends()],
     filters: Annotated[ListingFilters, Depends(listing_filters)],
     q: str = Query(..., min_length=2, max_length=200, description="Search query"),
@@ -38,7 +38,7 @@ async def search_products(
 
 
 @router.get("/trending")
-async def trending_searches(
+def trending_searches(
     client: Annotated[Client, Depends(get_supabase_client)],
     limit: int = Query(10, ge=1, le=50),
     days: int = Query(30, ge=1, le=90, description="Look-back window in days"),
@@ -49,7 +49,7 @@ async def trending_searches(
 
 
 @router.get("/recent")
-async def recent_searches(
+def recent_searches(
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
     limit: int = Query(10, ge=1, le=30),

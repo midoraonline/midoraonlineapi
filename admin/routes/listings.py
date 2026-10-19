@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/listings")
-async def admin_list_listings(
+def admin_list_listings(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     status: str | None = Query(None),
@@ -200,7 +200,7 @@ async def admin_review_listing(
 
 
 @router.post("/listings/reindex-embeddings")
-async def admin_reindex_embeddings(
+def admin_reindex_embeddings(
     limit: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
     """Backfill or refresh product embeddings for the personalized feed."""
@@ -211,7 +211,7 @@ async def admin_reindex_embeddings(
 
 
 @router.get("/listings/{listing_id}")
-async def admin_get_listing(listing_id: str) -> dict:
+def admin_get_listing(listing_id: str) -> dict:
     """Admin view of any listing (incl. hidden/rejected/unpublished) with seller, business and reports."""
     from fastapi import HTTPException
 

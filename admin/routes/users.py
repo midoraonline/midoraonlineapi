@@ -40,7 +40,7 @@ def _get_user(client, user_id: str) -> dict[str, Any]:
 
 
 @router.get("/users")
-async def admin_list_users(
+def admin_list_users(
     q: str | None = Query(None, max_length=120),
     role: str | None = Query(None),
     verified: Literal["email", "phone", "unverified"] | None = Query(None),
@@ -79,7 +79,7 @@ async def admin_list_users(
 
 
 @router.get("/users/{user_id}")
-async def admin_get_user(user_id: str) -> dict[str, Any]:
+def admin_get_user(user_id: str) -> dict[str, Any]:
     client = get_supabase_admin()
     user = _get_user(client, user_id)
     shops: list[dict] = []
@@ -124,7 +124,7 @@ class RoleBody(BaseModel):
 
 
 @router.patch("/users/{user_id}/role")
-async def admin_change_role(
+def admin_change_role(
     user_id: str,
     body: RoleBody,
     payload: TokenPayload | None = Depends(require_admin_role),
@@ -149,7 +149,7 @@ class StatusBody(BaseModel):
 
 
 @router.post("/users/{user_id}/status")
-async def admin_set_status(
+def admin_set_status(
     user_id: str,
     body: StatusBody,
     payload: TokenPayload | None = Depends(require_admin_role),

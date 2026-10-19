@@ -10,12 +10,12 @@ router = APIRouter()
 
 
 @router.get("/")
-async def list_all_shops(params: Annotated[PaginationParams, Depends()]):
+def list_all_shops(params: Annotated[PaginationParams, Depends()]):
     return admin_service.list_all_shops(page=params.page, limit=params.limit)
 
 
 @router.patch("/{shop_id}/active")
-async def set_shop_active(shop_id: str, is_active: bool = True):
+def set_shop_active(shop_id: str, is_active: bool = True):
     result = admin_service.set_shop_active(shop_id, is_active)
     if not result:
         raise HTTPException(status_code=404, detail="Shop not found")
@@ -23,7 +23,7 @@ async def set_shop_active(shop_id: str, is_active: bool = True):
 
 
 @router.get("/submitted")
-async def list_submitted_verifications(
+def list_submitted_verifications(
     stage: int | None = Query(None, description="Filter by stage: 2=Identity, 3=Business"),
     status: str = Query("pending", description="Filter by stage status: pending, verified, rejected"),
     limit: int = Query(50, ge=1, le=200),

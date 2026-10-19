@@ -10,7 +10,7 @@ router = APIRouter()
 
 
 @router.post("/notifications/broadcast")
-async def admin_broadcast_notification(
+def admin_broadcast_notification(
     title: str = Query(...),
     body: str | None = Query(None),
     user_ids: str | None = Query(None, description="Comma-separated user IDs. Omit to send to all users."),

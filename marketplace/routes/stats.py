@@ -50,7 +50,7 @@ def _cleanup_stale_presence(admin: Any, older_than_hours: int = 2) -> None:
 
 
 @router.post("/presence/ping")
-async def ping_presence(
+def ping_presence(
     body: PresencePingRequest,
     user_id: str | None = Depends(get_optional_user_id),
 ) -> dict[str, str]:
@@ -72,7 +72,7 @@ async def ping_presence(
 
 
 @router.post("/presence/leave")
-async def leave_presence(
+def leave_presence(
     body: PresencePingRequest,
     user_id: str | None = Depends(get_optional_user_id),
 ) -> dict[str, str]:
@@ -91,7 +91,7 @@ async def leave_presence(
 
 
 @router.get("/online-users")
-async def get_online_users() -> dict[str, Any]:
+def get_online_users() -> dict[str, Any]:
     """Count distinct app instances active in the last 15 minutes."""
     admin = get_supabase_admin()
     since = (datetime.now(timezone.utc) - timedelta(minutes=WINDOW_MINUTES)).isoformat()

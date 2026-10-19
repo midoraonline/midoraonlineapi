@@ -24,7 +24,7 @@ _VALID_STATUSES = {"responded", "ignored", "closed"}
 
 
 @router.post("/{shop_id}/products/{product_id}/leads")
-async def create_lead(
+def create_lead(
     shop_id: str,
     product_id: str,
     source: str = Query("whatsapp", description="Lead source: whatsapp, call, contact_form, email"),
@@ -60,7 +60,7 @@ async def create_lead(
 
 
 @router.get("/{shop_id}/leads/stats")
-async def get_shop_lead_stats(
+def get_shop_lead_stats(
     shop_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ) -> dict[str, Any]:
@@ -71,7 +71,7 @@ async def get_shop_lead_stats(
 
 
 @router.get("/{shop_id}/leads")
-async def get_shop_leads(
+def get_shop_leads(
     shop_id: str,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
@@ -90,7 +90,7 @@ async def get_shop_leads(
 
 
 @router.patch("/{shop_id}/leads/{lead_id}/status")
-async def change_lead_status(
+def change_lead_status(
     shop_id: str,
     lead_id: str,
     status: str = Query(..., description="New status: responded, ignored, closed"),

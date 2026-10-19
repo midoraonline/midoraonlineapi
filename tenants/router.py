@@ -24,7 +24,7 @@ def _split_ids(raw: str | None) -> list[str]:
 
 @router.get("", include_in_schema=True)
 @router.get("/", include_in_schema=False)
-async def list_shops(
+def list_shops(
     client: Annotated[Client, Depends(get_supabase_client)],
     params: Annotated[PaginationParams, Depends()],
     response: Response,
@@ -55,7 +55,7 @@ async def list_shops(
 
 
 @router.get("/product-categories")
-async def shop_product_categories(
+def shop_product_categories(
     client: Annotated[Client, Depends(get_supabase_client)],
     shop_ids: str = Query(..., description="Comma-separated shop UUIDs (max 200)"),
 ):

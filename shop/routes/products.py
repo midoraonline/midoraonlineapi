@@ -182,7 +182,9 @@ async def create_product(
 
 
 @router.get("/{shop_id}/products")
-async def list_products(
+# Pure sync Supabase calls below; plain def lets FastAPI dispatch this to
+# its worker threadpool instead of blocking the single event loop.
+def list_products(
   shop_id: str,
   response: Response,
   client: Annotated[Client, Depends(get_supabase_client)],
@@ -278,7 +280,7 @@ async def create_listing(
 
 
 @router_products.get("/me")
-async def my_listings(
+def my_listings(
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
     page: int = Query(1, ge=1),
@@ -289,7 +291,7 @@ async def my_listings(
 
 
 @router_products.get("/me/liked", response_model=PaginatedProductCards)
-async def my_liked_products(
+def my_liked_products(
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
     page: int = Query(1, ge=1),
@@ -366,7 +368,7 @@ async def my_liked_products(
 
 
 @router_products.get("/{product_id}/engagement", response_model=ProductEngagementState)
-async def get_product_engagement(
+def get_product_engagement(
     product_id: str,
     client: Annotated[Client, Depends(get_supabase_client)],
     viewer_id: str | None = Depends(get_optional_user_id),
@@ -377,7 +379,7 @@ async def get_product_engagement(
 
 
 @router_products.post("/{product_id}/like", response_model=ProductEngagementState)
-async def like_product(
+def like_product(
     product_id: str,
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
@@ -391,7 +393,7 @@ async def like_product(
 
 
 @router_products.delete("/{product_id}/like", response_model=ProductEngagementState)
-async def unlike_product(
+def unlike_product(
     product_id: str,
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
@@ -402,7 +404,7 @@ async def unlike_product(
 
 
 @router_products.post("/{product_id}/views", response_model=ViewCountResponse)
-async def record_product_view(
+def record_product_view(
     product_id: str,
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str | None = Depends(get_optional_user_id),
@@ -464,7 +466,7 @@ def _fetch_carousel_products(
 
 
 @router_products.get("/premium", response_model=list[ProductCard])
-async def get_premium_products(
+def get_premium_products(
     client: Annotated[Client, Depends(get_supabase_client)],
     limit: int = Query(10, ge=1, le=50),
 ) -> list[ProductCard]:
@@ -473,7 +475,7 @@ async def get_premium_products(
 
 
 @router_products.get("/trending", response_model=list[ProductCard])
-async def get_trending_products(
+def get_trending_products(
     client: Annotated[Client, Depends(get_supabase_client)],
     limit: int = Query(12, ge=1, le=50),
 ) -> list[ProductCard]:
@@ -482,7 +484,7 @@ async def get_trending_products(
 
 
 @router_products.get("/{product_id}/similar")
-async def get_similar_products(
+def get_similar_products(
     product_id: str,
     response: Response,
     client: Annotated[Client, Depends(get_supabase_client)],
@@ -494,7 +496,7 @@ async def get_similar_products(
 
 
 @router_products.get("/{product_id}", response_model=ProductDetailResponse)
-async def get_product(
+def get_product(
     product_id: str,
     response: Response,
     client: Annotated[Client, Depends(get_supabase_client)],
@@ -574,7 +576,7 @@ async def update_product(
 
 
 @router_products.delete("/{product_id}")
-async def delete_product(
+def delete_product(
   product_id: str,
   background_tasks: BackgroundTasks,
   client: Annotated[Client, Depends(get_supabase_client)],
@@ -605,7 +607,7 @@ async def delete_product(
 
 
 @router_products.post("/{product_id}/repost", response_model=ProductResponse)
-async def repost_product(
+def repost_product(
   product_id: str,
   client: Annotated[Client, Depends(get_supabase_client)],
   user_id: str = Depends(get_current_user_id),
@@ -627,7 +629,7 @@ async def repost_product(
 
 
 @router_products.post("/{product_id}/discount", response_model=ProductResponse)
-async def set_product_discount(
+def set_product_discount(
     product_id: str,
     body: DiscountSet,
     client: Annotated[Client, Depends(get_supabase_client)],
@@ -723,7 +725,7 @@ async def toggle_product_availability(
 
 
 @router_products.post("/generate-from-image")
-async def generate_from_image(
+def generate_from_image(
   client: Annotated[Client, Depends(get_supabase_client)],
   user_id: str = Depends(get_current_user_id),
 ):

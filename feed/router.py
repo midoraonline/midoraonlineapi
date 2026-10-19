@@ -1,3 +1,4 @@
+import asyncio
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Cookie, Depends, Header, Query, Response
@@ -92,7 +93,10 @@ async def home_feed(
     if not user_id:
         # Anonymous home feed is safe to edge-cache briefly.
         response.headers["Cache-Control"] = "public, s-maxage=60, stale-while-revalidate=120"
-    return get_home_feed(
+    # get_home_feed does several sequential blocking Supabase calls; run it
+    # off the event loop so one slow request can't stall every other request.
+    return await asyncio.to_thread(
+        get_home_feed,
         limit=limit,
         page=effective_page,
         user_id=user_id,
@@ -113,7 +117,7 @@ async def refresh_guest_ranking(
     from feed.service import rebuild_guest_ranking
 
     authorize_cron(authorization)
-    return rebuild_guest_ranking()
+    return await asyncio.to_thread(rebuild_guest_ranking)
 
 
 @router.get("/latest", response_model=list[ProductResponse])
@@ -125,7 +129,8 @@ async def get_latest_feed(
 ):
     """Latest products, services, and opportunities; public and edge-cache friendly."""
     response.headers["Cache-Control"] = _PUBLIC_CACHE_HEADER
-    return feed_service.get_latest_feed(
+    return await asyncio.to_thread(
+        feed_service.get_latest_feed,
         client,
         limit=params.limit,
         page=params.page,

@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/sellers")
-async def admin_list_sellers(
+def admin_list_sellers(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     status: str | None = Query(None, description="Filter by user status: active, suspended, blocked"),
@@ -97,7 +97,7 @@ async def admin_list_sellers(
 
 
 @router.patch("/sellers/{user_id}/status")
-async def admin_update_seller_status(
+def admin_update_seller_status(
     user_id: str,
     status: str = Query(..., description="New status: active, suspended, blocked"),
 ) -> dict[str, Any]:

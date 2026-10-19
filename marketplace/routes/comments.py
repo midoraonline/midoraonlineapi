@@ -19,7 +19,7 @@ class CommentBody(BaseModel):
 
 
 @router.get("/products/{product_id}/comments")
-async def get_product_comments(product_id: str) -> list[dict[str, Any]]:
+def get_product_comments(product_id: str) -> list[dict[str, Any]]:
     """Get all comments for a product."""
     admin = get_supabase_admin()
     try:
@@ -39,7 +39,7 @@ async def get_product_comments(product_id: str) -> list[dict[str, Any]]:
 
 
 @router.post("/products/{product_id}/comments")
-async def create_product_comment(
+def create_product_comment(
     product_id: str,
     body: CommentBody,
     current_user_id: str = Depends(get_current_user_id),
@@ -65,7 +65,7 @@ async def create_product_comment(
 
 
 @router.get("/shops/{shop_id}/comments")
-async def get_shop_comments(shop_id: str) -> list[dict[str, Any]]:
+def get_shop_comments(shop_id: str) -> list[dict[str, Any]]:
     """Get all comments for a shop."""
     admin = get_supabase_admin()
     try:
@@ -85,7 +85,7 @@ async def get_shop_comments(shop_id: str) -> list[dict[str, Any]]:
 
 
 @router.post("/shops/{shop_id}/comments")
-async def create_shop_comment(
+def create_shop_comment(
     shop_id: str,
     body: CommentBody,
     current_user_id: str = Depends(get_current_user_id),

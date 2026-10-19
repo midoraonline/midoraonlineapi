@@ -98,12 +98,12 @@ def _now() -> str:
 
 
 @router.get("/settings")
-async def list_settings() -> dict[str, Any]:
+def list_settings() -> dict[str, Any]:
     return {"items": admin_items(), "persisted": settings_persisted()}
 
 
 @router.patch("/settings")
-async def patch_setting(
+def patch_setting(
     body: SettingPatch,
     claims: TokenPayload | None = Depends(require_admin_role),
 ) -> dict[str, Any]:

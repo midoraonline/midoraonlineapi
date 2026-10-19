@@ -16,6 +16,13 @@ logger = logging.getLogger(__name__)
 
 _TTL_SECONDS = 30.0
 
+# Module-level cache state. Must be bound here (not just inside
+# invalidate_cache()) or the first load_settings() call in a fresh process
+# raises NameError before anything ever assigns these names.
+_cache_rows: dict[str, dict[str, Any]] | None = None
+_cache_at: float = 0.0
+_cache_persisted: bool = False
+
 FLAGS: dict[str, dict[str, Any]] = {
     "analytics": {
         "default": False,

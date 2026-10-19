@@ -10,13 +10,13 @@ router = APIRouter()
 
 
 @router.get("")
-async def get_boost_plans() -> list[dict[str, Any]]:
+def get_boost_plans() -> list[dict[str, Any]]:
     """List active boost plans available for purchase."""
     return list_active_boost_plans()
 
 
 @router.get("/listing/{listing_id}/active")
-async def get_listing_active_boost(listing_id: str) -> dict[str, Any] | None:
+def get_listing_active_boost(listing_id: str) -> dict[str, Any] | None:
     """Get active boost for a listing."""
     boost = get_active_boost_for_listing(listing_id)
     if boost:

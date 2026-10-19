@@ -15,12 +15,12 @@ router = APIRouter()
 
 
 @router.get("/plans", response_model=list[PlanResponse])
-async def get_plans():
+def get_plans():
     return list_plans()
 
 
 @router.post("/subscribe")
-async def create_subscription(
+def create_subscription(
     body: SubscribeRequest,
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
@@ -51,7 +51,7 @@ async def create_subscription(
 
 
 @router.get("/subscriptions")
-async def list_subscriptions(
+def list_subscriptions(
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
 ):

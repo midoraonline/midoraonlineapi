@@ -13,7 +13,7 @@ router = APIRouter()
 
 
 @router.get("/comments")
-async def list_all_comments(
+def list_all_comments(
     flagged: bool | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
@@ -46,7 +46,7 @@ async def list_all_comments(
 
 
 @router.patch("/comments/{comment_id}/flag")
-async def toggle_comment_flag(comment_id: str, table: str = Query(...)) -> dict[str, Any]:
+def toggle_comment_flag(comment_id: str, table: str = Query(...)) -> dict[str, Any]:
     if table not in ("product_comments", "shop_comments"):
         return {"error": "Invalid table"}
     admin = get_supabase_admin()

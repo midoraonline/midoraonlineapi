@@ -1,0 +1,25 @@
+[Unit]
+Description=Midora API (FastAPI/uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=midora
+Group=midora
+WorkingDirectory=/opt/midoraapi
+ExecStart=/opt/midoraapi/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=3
+# Single worker: droplet has ~512Mi RAM, in-process workers (mail/moderation
+# queues) also run inside this process (see core/runtime.py:is_serverless).
+TimeoutStopSec=15
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/midoraapi
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

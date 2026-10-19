@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/fraud-flags")
-async def admin_list_fraud(
+def admin_list_fraud(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     resolved: bool | None = Query(None),
@@ -24,13 +24,13 @@ async def admin_list_fraud(
 
 
 @router.get("/fraud-flags/seller/{seller_id}")
-async def admin_seller_fraud_history(seller_id: str) -> list[dict[str, Any]]:
+def admin_seller_fraud_history(seller_id: str) -> list[dict[str, Any]]:
     """Admin: view fraud history for a specific seller."""
     return get_seller_fraud_history(seller_id)
 
 
 @router.post("/fraud-flags/{flag_id}/resolve")
-async def admin_resolve_fraud_flag(
+def admin_resolve_fraud_flag(
     flag_id: str,
     notes: str | None = Query(None),
 ) -> dict[str, Any]:
@@ -42,7 +42,7 @@ async def admin_resolve_fraud_flag(
 
 
 @router.post("/fraud-flags/{flag_id}/penalize")
-async def admin_penalize_seller(
+def admin_penalize_seller(
     flag_id: str,
     seller_id: str = Query(...),
 ) -> dict[str, Any]:
