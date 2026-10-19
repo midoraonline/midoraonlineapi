@@ -465,6 +465,42 @@ def _fetch_carousel_products(
     ]
 
 
+def _fetch_products_by_id_order(client: Client, ids: list[str]) -> list[ProductCard]:
+    """Hydrate published/active products for an explicit id list, preserving order."""
+    if not ids:
+        return []
+    r = (
+        client.table("products")
+        .select(
+            "id, shop_id, title, price_ugx, discount_price, discount_expires_at, "
+            "image_urls, category, item_type, is_negotiable, stock_quantity, listing_meta, "
+            "view_count, listing_score, created_at, is_published, status"
+        )
+        .in_("id", ids)
+        .eq("is_published", True)
+        .eq("status", "active")
+        .execute()
+    )
+    by_id = {str(p["id"]): p for p in (r.data or []) if p.get("id")}
+    ordered = [by_id[pid] for pid in ids if pid in by_id]
+    shop_ids = list({str(p["shop_id"]) for p in ordered if p.get("shop_id")})
+
+    shops_map = shop_service._load_card_shops(client, shop_ids)
+    from feed.catalog import card_rating, rating_map
+
+    ratings = rating_map(client, [str(p["id"]) for p in ordered if p.get("id")])
+
+    return [
+        serialize_product_card(
+            p,
+            shop_row=shops_map.get(str(p.get("shop_id", ""))),
+            average_rating=card_rating(ratings, str(p.get("id")))[0],
+            review_count=card_rating(ratings, str(p.get("id")))[1],
+        )
+        for p in ordered
+    ]
+
+
 @router_products.get("/premium", response_model=list[ProductCard])
 def get_premium_products(
     client: Annotated[Client, Depends(get_supabase_client)],
@@ -479,7 +515,21 @@ def get_trending_products(
     client: Annotated[Client, Depends(get_supabase_client)],
     limit: int = Query(12, ge=1, le=50),
 ) -> list[ProductCard]:
-    """Return trending products (highest view count) for the trending carousel."""
+    """Return trending products for the trending carousel.
+
+    Prefers Redis's real-time view-velocity sorted set (updated on every
+    product view, see shop/engagement_service.py:record_product_view) so this
+    reflects recent attention rather than all-time view_count. Falls back to
+    the Postgres view_count ordering when Redis has no data yet (fresh
+    deploy) or isn't configured.
+    """
+    from core.cache import trending_top
+
+    top = trending_top("trending:products", limit)
+    if top:
+        cards = _fetch_products_by_id_order(client, [pid for pid, _score in top])
+        if cards:
+            return cards
     return _fetch_carousel_products(client, order_by="view_count", limit=limit)
 
 

@@ -45,6 +45,10 @@ from shop.schemas import ProductResponse
 logger = logging.getLogger(__name__)
 FEED_CACHE_TTL = timedelta(hours=1)
 FEED_CACHE_TTL_SECONDS = int(FEED_CACHE_TTL.total_seconds())
+# Redis-backed cache has no time-based expiry (see feed/incremental.py — it's
+# updated in place as signals change). This TTL is only a safety net so an
+# abandoned account's cache eventually evicts instead of living forever.
+FEED_CACHE_PERSIST_TTL_SECONDS = 30 * 24 * 3600
 FEED_CACHE_MAX_IDS = 800
 VECTOR_MATCH_COUNT = 220
 
@@ -143,11 +147,37 @@ def _cache_age_seconds(refreshed_at: Any) -> int | None:
     return max(0, int((datetime.now(timezone.utc) - ts).total_seconds()))
 
 
+def _user_feed_cache_key(user_id: str) -> str:
+    return f"feed:user:{user_id}"
+
+
 def _load_cached_ranked_ids(
     client: Client,
     user_id: str,
 ) -> tuple[list[str], bool, datetime | None]:
-    """Return (ranked_ids, is_fresh, refreshed_at) for a user's cached feed."""
+    """Return (ranked_ids, is_fresh, refreshed_at) for a user's cached feed.
+
+    Redis-backed caches never expire by time — the base ranking is computed
+    once and then specific items are repositioned in place as the user's own
+    signals change (feed/incremental.py) instead of recomputing everything on
+    a schedule. `is_fresh` is simply "does a current-schema cache exist" here.
+    An old-schema payload (missing `scores`, from before this change) is
+    treated as a miss once so it gets rebuilt in the new format.
+    Falls back to the old 1-hour TTL table behaviour only when Redis isn't
+    configured.
+    """
+    from core.cache import cache_get_json, get_redis
+
+    if get_redis() is not None:
+        cached = cache_get_json(_user_feed_cache_key(user_id))
+        if not cached or "scores" not in cached:
+            logger.info("feed-cache: miss user=%s (redis, no cache or pre-slide schema)", user_id)
+            return [], False, None
+        ids = [str(x) for x in (cached.get("ranked_ids") or []) if x][:FEED_CACHE_MAX_IDS]
+        refreshed_at = _parse_ts(cached.get("refreshed_at"))
+        logger.info("feed-cache: hit user=%s ids=%s (redis, persistent)", user_id, len(ids))
+        return ids, bool(ids), refreshed_at
+
     try:
         row = (
             client.table("user_feed_cache")
@@ -185,6 +215,7 @@ def _save_cached_ranked_ids(
     *,
     preference_vector: list[float] | None = None,
     candidate_count: int = 0,
+    scores: dict[str, float] | None = None,
 ) -> None:
     if not ranked_ids:
         return
@@ -196,6 +227,20 @@ def _save_cached_ranked_ids(
     }
     if preference_vector:
         payload["preference_vector"] = [round(float(v), 6) for v in preference_vector]
+
+    from core.cache import cache_set_json, get_redis
+
+    if get_redis() is not None:
+        if scores:
+            payload["scores"] = {k: round(float(v), 4) for k, v in scores.items()}
+        cache_set_json(
+            _user_feed_cache_key(user_id), payload, ttl_seconds=FEED_CACHE_PERSIST_TTL_SECONDS
+        )
+        logger.info(
+            "feed-cache: saved user=%s ranked=%s scored=%s (redis, persistent)",
+            user_id, len(ranked_ids), len(scores or {}),
+        )
+        return
     try:
         client.table("user_feed_cache").upsert(
             payload,
@@ -348,18 +393,25 @@ def _viewer_boost_seq(
     if not boost_slots.active_boosts(client):
         return []
     if user_vector is None:
-        try:
-            r = (
-                client.table("user_feed_cache")
-                .select("preference_vector")
-                .eq("user_id", user_id)
-                .limit(1)
-                .execute()
-            )
-            raw = (r.data or [{}])[0].get("preference_vector")
+        from core.cache import cache_get_json, get_redis
+
+        if get_redis() is not None:
+            cached = cache_get_json(_user_feed_cache_key(user_id))
+            raw = cached.get("preference_vector") if cached else None
             user_vector = parse_embedding(raw) if raw else None
-        except Exception as exc:  # noqa: BLE001
-            logger.info("boost slots: vector read skipped: %s", exc)
+        else:
+            try:
+                r = (
+                    client.table("user_feed_cache")
+                    .select("preference_vector")
+                    .eq("user_id", user_id)
+                    .limit(1)
+                    .execute()
+                )
+                raw = (r.data or [{}])[0].get("preference_vector")
+                user_vector = parse_embedding(raw) if raw else None
+            except Exception as exc:  # noqa: BLE001
+                logger.info("boost slots: vector read skipped: %s", exc)
     if categories is None:
         categories = set()
         head = ranked_ids[:60]
@@ -456,6 +508,12 @@ def invalidate_user_feed_cache(client: Any, user_id: str | None) -> None:
 def invalidate_user_feed_cache_now(client: Any, user_id: str | None) -> None:
     """Hard-drop cached ranking (admin / explicit rebuild only)."""
     if not user_id:
+        return
+    from core.cache import cache_delete, get_redis
+
+    if get_redis() is not None:
+        cache_delete(_user_feed_cache_key(user_id))
+        logger.info("feed-cache: forced invalidate user=%s (redis)", user_id)
         return
     try:
         from db.supabase import get_supabase_admin
@@ -1256,6 +1314,11 @@ def get_algorithm_feed(
         for item in placed
         if item.get("product") and item["product"].get("id")
     ]
+    scores_map = {
+        str(item["product"].get("id")): float(item.get("score") or 0.0)
+        for item in placed
+        if item.get("product") and item["product"].get("id")
+    }
     if not category:
         _save_cached_ranked_ids(
             db,
@@ -1263,6 +1326,7 @@ def get_algorithm_feed(
             ranked_ids,
             preference_vector=user_vector,
             candidate_count=len(candidates),
+            scores=scores_map,
         )
 
     logger.info(

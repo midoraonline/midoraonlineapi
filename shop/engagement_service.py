@@ -287,6 +287,9 @@ def record_shop_view(client: Any, shop_id: str) -> int:
     v = _parse_rpc_int(r.data)
     if v is None:
         raise ValueError("Failed to record shop view (apply migration 20260213_shop_view_counts.sql)")
+    from core.cache import trending_bump
+
+    trending_bump("trending:shops", shop_id)
     return v
 
 
@@ -329,6 +332,9 @@ def record_product_view(client: Any, product_id: str, buyer_id: str | None = Non
     v = _parse_rpc_int(r.data)
     if v is None:
         raise ValueError("Failed to record product view (apply migration 20260213_shop_view_counts.sql)")
+    from core.cache import trending_bump
+
+    trending_bump("trending:products", product_id)
     if buyer_id:
         _record_buyer_listing_event(product_id, buyer_id, "viewed")
     return v
@@ -338,13 +344,17 @@ def follow_shop(client: Any, user_id: str, shop_id: str) -> dict[str, Any]:
     if not shop_exists(client, shop_id):
         raise ValueError("Shop not found")
     client.table("shop_follows").upsert({"user_id": user_id, "shop_id": shop_id}).execute()
-    invalidate_user_feed_cache(client, user_id)
+    from feed.incremental import on_shop_follow_changed
+
+    on_shop_follow_changed(user_id, shop_id)
     return get_shop_engagement(client, shop_id, user_id)
 
 
 def unfollow_shop(client: Any, user_id: str, shop_id: str) -> dict[str, Any]:
     client.table("shop_follows").delete().eq("user_id", user_id).eq("shop_id", shop_id).execute()
-    invalidate_user_feed_cache(client, user_id)
+    from feed.incremental import on_shop_follow_changed
+
+    on_shop_follow_changed(user_id, shop_id)
     return get_shop_engagement(client, shop_id, user_id)
 
 
@@ -366,11 +376,15 @@ def like_product(client: Any, user_id: str, product_id: str) -> dict[str, Any]:
     if not product_exists(client, product_id):
         raise ValueError("Product not found")
     client.table("product_likes").upsert({"user_id": user_id, "product_id": product_id}).execute()
-    invalidate_user_feed_cache(client, user_id)
+    from feed.incremental import on_product_signal_changed
+
+    on_product_signal_changed(user_id, product_id)
     return get_product_engagement(client, product_id, user_id)
 
 
 def unlike_product(client: Any, user_id: str, product_id: str) -> dict[str, Any]:
     client.table("product_likes").delete().eq("user_id", user_id).eq("product_id", product_id).execute()
-    invalidate_user_feed_cache(client, user_id)
+    from feed.incremental import on_product_signal_changed
+
+    on_product_signal_changed(user_id, product_id)
     return get_product_engagement(client, product_id, user_id)
