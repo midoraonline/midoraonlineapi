@@ -1,9 +1,4 @@
-"""In-process sliding-window rate limiter.
-
-Per-instance only (uvicorn worker / serverless isolate). That is enough to
-stop credential stuffing and ingest floods on a single node; a shared store
-would be the next step if we run many replicas.
-"""
+"""Sliding-window rate limiter backed by Supabase (migration 060), in-memory fallback."""
 from __future__ import annotations
 
 import logging
@@ -28,21 +23,48 @@ def client_ip(request: Request) -> str:
     return "unknown"
 
 
+def _raise_limited(bucket: str, retry: int) -> None:
+    logger.warning("rate limit exceeded bucket=%s retry=%s", bucket.split(":")[0], retry)
+    raise HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail="Too many requests",
+        headers={"Retry-After": str(retry)},
+    )
+
+
+def _persistent_retry_after(bucket: str, limit: int, window_seconds: int) -> int | None:
+    """Seconds to wait from the shared store, or None when it is unavailable."""
+    try:
+        from db.supabase import get_supabase_admin
+
+        res = get_supabase_admin().rpc(
+            "rate_limit_hit",
+            {"p_bucket": bucket[:200], "p_limit": limit, "p_window_seconds": window_seconds},
+        ).execute()
+        return int(res.data or 0)
+    except Exception as exc:
+        logger.warning("persistent rate limit unavailable: %s", type(exc).__name__)
+        return None
+
+
 def check_rate_limit(bucket: str, *, limit: int, window_seconds: int) -> None:
     """Raise 429 when `bucket` has exceeded `limit` hits in `window_seconds`."""
+    retry_after = _persistent_retry_after(bucket, limit, window_seconds)
+    if retry_after:
+        _raise_limited(bucket, retry_after)
+    if retry_after == 0:
+        return
+    _check_memory(bucket, limit=limit, window_seconds=window_seconds)
+
+
+def _check_memory(bucket: str, *, limit: int, window_seconds: int) -> None:
     now = monotonic()
     cutoff = now - window_seconds
     q = _hits[bucket]
     while q and q[0] <= cutoff:
         q.popleft()
     if len(q) >= limit:
-        retry = max(1, int(window_seconds - (now - q[0])))
-        logger.warning("rate limit exceeded bucket=%s retry=%s", bucket.split(":")[0], retry)
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many requests",
-            headers={"Retry-After": str(retry)},
-        )
+        _raise_limited(bucket, max(1, int(window_seconds - (now - q[0]))))
     q.append(now)
     if len(_hits) > _MAX_KEYS:
         stale = [key for key, hits in _hits.items() if not hits or hits[-1] <= cutoff]
