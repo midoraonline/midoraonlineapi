@@ -35,7 +35,7 @@ def _safe(label: str, fn: Callable[[], Any]) -> Any:
         return None
 
 
-def _is_last_admin(client, user_id: str) -> bool:
+def is_last_admin(client, user_id: str) -> bool:
     rows = (
         client.table("users")
         .select("id")
@@ -140,7 +140,7 @@ async def delete_account(
     user = rows[0]
     if user.get("status") == "deleted":
         raise DeletionError("Account is already deleted", "already_deleted")
-    if user.get("user_role") == "admin" and _is_last_admin(client, user_id):
+    if user.get("user_role") == "admin" and is_last_admin(client, user_id):
         raise DeletionError("You can't delete the last admin account.", "last_admin")
 
     from media.keys import file_key_from_url

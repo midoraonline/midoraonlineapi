@@ -5,9 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from admin.audit import actor_id, record_admin_action
+from core.security import TokenPayload, require_admin_role
 from db.supabase import get_supabase_admin
 from payments.plans import EDITABLE_FIELDS, PLAN_ORDER, PLANS, invalidate_plans_cache, list_plans
 
@@ -73,7 +75,11 @@ def admin_list_plans() -> dict[str, Any]:
 
 
 @router.patch("/plans/{key}")
-def admin_update_plan(key: str, body: dict[str, Any]) -> dict[str, Any]:
+def admin_update_plan(
+    key: str,
+    body: dict[str, Any],
+    payload: TokenPayload | None = Depends(require_admin_role),
+) -> dict[str, Any]:
     key = key.strip().lower()
     if key not in PLANS:
         raise HTTPException(status_code=404, detail={"detail": "Unknown plan.", "code": "unknown_plan"})
@@ -92,6 +98,15 @@ def admin_update_plan(key: str, body: dict[str, Any]) -> dict[str, Any]:
             status_code=503,
             detail={"detail": "Plans can't be saved until migration 058 is applied.", "code": "migration_required"},
         ) from exc
+    record_admin_action(
+        admin,
+        actor=actor_id(payload),
+        action="plan.updated",
+        target_type="plan",
+        target_id=key,
+        before={k: current.get(k) for k in patch},
+        after=patch,
+    )
     invalidate_plans_cache()
     try:
         from platform_settings.flags import invalidate_cache
