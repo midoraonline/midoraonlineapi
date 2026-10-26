@@ -27,6 +27,24 @@ REPORT_REASONS = [
 ]
 
 
+OTHER_DETAILS_MIN = 3
+REPORT_DETAILS_MAX = 1000
+
+
+def clean_report_details(reason: str, description: str | None) -> str | None:
+    """'Other' needs a written explanation; enforce here, not only in the form."""
+    text = (description or "").strip()
+    if len(text) > REPORT_DETAILS_MAX:
+        raise HTTPException(status_code=400, detail=f"Details must be {REPORT_DETAILS_MAX} characters or fewer")
+    if reason == "Other" and len(text) < OTHER_DETAILS_MIN:
+        raise HTTPException(status_code=400, detail="Please describe the problem when choosing 'Other'")
+    return text or None
+
+
+def already_reported(what: str) -> HTTPException:
+    return HTTPException(status_code=409, detail=f"You have already reported this {what}. Our team is reviewing it.")
+
+
 @router.post("/products/{product_id}/reports")
 async def report_product(
     product_id: str,
@@ -42,6 +60,7 @@ async def report_product(
         )
     if not current_user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
+    description = clean_report_details(reason, description)
 
     admin = get_supabase_admin()
     try:
@@ -54,7 +73,7 @@ async def report_product(
             .execute()
         )
         if existing.data:
-            return {"status": "already_reported", "message": "You have already reported this listing"}
+            raise already_reported("listing")
 
         # Insert into product_reports (admin reports page queries this)
         r = admin.table("product_reports").insert({
@@ -151,6 +170,8 @@ async def report_product(
                 logger.warning("Failed to send report notification: %s", exc)
 
         return r.data[0] if r.data else {"status": "reported"}
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.warning("report_product failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to submit report") from exc
@@ -184,6 +205,7 @@ async def report_seller(
         raise HTTPException(status_code=401, detail="Authentication required")
     if current_user_id == seller_id:
         raise HTTPException(status_code=400, detail="You cannot report yourself")
+    description = clean_report_details(reason, description)
 
     admin = get_supabase_admin()
     try:
@@ -197,7 +219,7 @@ async def report_seller(
             .execute()
         )
         if existing.data:
-            return {"status": "already_reported", "message": "You have already reported this seller"}
+            raise already_reported("seller")
 
         payload = {
             "seller_id": seller_id,
@@ -209,6 +231,8 @@ async def report_seller(
             payload["shop_id"] = shop_id
         r = admin.table("seller_reports").insert(payload).execute()
         return r.data[0] if r.data else {"status": "reported"}
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.warning("report_seller failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to submit seller report") from exc
