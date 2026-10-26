@@ -234,7 +234,7 @@ async def create_listing(
 
     assert_posting_open()
     try:
-        shop_id, created_personal = resolve_shop_for_direct_post(client, user_id)
+        shop_id, _created_personal = resolve_shop_for_direct_post(client, user_id)
     except ShopChoiceRequired:
         raise HTTPException(
             status_code=400,
@@ -257,22 +257,22 @@ async def create_listing(
     product = await _insert_owned_product(client, user_id, shop_id, body)
     await publish_product_created(product, seller_id=user_id, background=background_tasks)
 
-    if created_personal:
-        new_role, changed = auth_service.promote_to_merchant(user_id)
-        if changed and new_role:
-            access, refresh = auth_service.create_access_and_refresh_tokens(
-                user_id,
-                new_role,
-                user_agent=request.headers.get("user-agent"),
-                ip=request.client.host if request.client else None,
-            )
-            set_auth_cookies(
-                response,
-                access_token=access,
-                refresh_token=refresh,
-                access_ttl_seconds=auth_service.access_ttl_seconds(),
-                refresh_ttl_seconds=auth_service.refresh_ttl_seconds(),
-            )
+    # Any first post turns a customer into a merchant; no-op for merchants/admins.
+    new_role, changed = auth_service.promote_to_merchant(user_id)
+    if changed and new_role:
+        access, refresh = auth_service.create_access_and_refresh_tokens(
+            user_id,
+            new_role,
+            user_agent=request.headers.get("user-agent"),
+            ip=request.client.host if request.client else None,
+        )
+        set_auth_cookies(
+            response,
+            access_token=access,
+            refresh_token=refresh,
+            access_ttl_seconds=auth_service.access_ttl_seconds(),
+            refresh_ttl_seconds=auth_service.refresh_ttl_seconds(),
+        )
 
     return product
 

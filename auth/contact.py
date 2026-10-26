@@ -11,10 +11,11 @@ def contact_verification_status(row: dict[str, Any] | None) -> dict[str, Any]:
     email = (data.get("email") or "").strip() or None
     phone_verified = bool(data.get("phone_verified"))
     email_verified = bool(data.get("email_verified"))
-    can_post = phone_verified or email_verified
+    # Joel's rule: both channels must be verified before posting.
+    can_post = phone_verified and email_verified
     if can_post:
         required_channel = None
-    elif phone:
+    elif not phone_verified:
         required_channel = "phone"
     else:
         required_channel = "email"

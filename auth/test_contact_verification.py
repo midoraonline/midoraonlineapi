@@ -129,23 +129,26 @@ def test_normalize_phone_defaults_to_uganda():
     assert exc.value.code == "invalid_phone"
 
 
-def test_posting_requires_a_verified_channel():
-    blocked = contact_verification_status(
+def test_posting_requires_both_channels_verified():
+    # Arrange / Act
+    nothing = contact_verification_status(
         {"email": "a@midora.app", "email_verified": False, "phone_number": "0700", "phone_verified": False}
     )
-    assert blocked["can_post"] is False
-    assert blocked["required_channel"] == "phone"
-
     email_only = contact_verification_status(
-        {"email": "a@midora.app", "email_verified": False, "phone_number": None, "phone_verified": False}
+        {"email": "a@midora.app", "email_verified": True, "phone_number": None, "phone_verified": False}
     )
-    assert email_only["required_channel"] == "email"
+    phone_only = contact_verification_status(
+        {"email": "a@midora.app", "email_verified": False, "phone_number": "0700", "phone_verified": True}
+    )
+    both = contact_verification_status(
+        {"email": "a@midora.app", "email_verified": True, "phone_number": "0700", "phone_verified": True}
+    )
+    # Assert
+    assert (nothing["can_post"], nothing["required_channel"]) == (False, "phone")
+    assert (email_only["can_post"], email_only["required_channel"]) == (False, "phone")
+    assert (phone_only["can_post"], phone_only["required_channel"]) == (False, "email")
+    assert (both["can_post"], both["required_channel"]) == (True, None)
 
-    google = contact_verification_status(
-        {"email": "a@midora.app", "email_verified": True, "phone_number": "0700", "phone_verified": False}
-    )
-    assert google["can_post"] is True
-    assert google["required_channel"] is None
 
 
 def test_code_is_stored_hashed_and_confirm_updates(codes):
@@ -337,6 +340,20 @@ def test_unverified_seller_is_blocked_from_posting(monkeypatch):
                 "email_verified": True,
                 "phone_number": None,
                 "phone_verified": False,
+            }
+        ),
+    )
+    with pytest.raises(HTTPException):
+        assert_contact_verified("user-1")
+
+    monkeypatch.setattr(
+        "db.supabase.get_supabase_admin",
+        lambda: _UsersAdmin(
+            {
+                "email": "a@midora.app",
+                "email_verified": True,
+                "phone_number": "+256700123456",
+                "phone_verified": True,
             }
         ),
     )
