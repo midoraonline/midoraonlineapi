@@ -66,6 +66,17 @@ def _update_review(admin: Any, product_id: str, user_id: str, rating: int, comme
     return updated.data[0]
 
 
+def _is_listing_owner(admin: Any, product_id: str, user_id: str) -> bool:
+    rows = admin.table("products").select("shop_id").eq("id", product_id).limit(1).execute().data or []
+    if not rows:
+        raise ReviewWriteError("That listing was not found.", "product_not_found", 404)
+    shop_id = rows[0].get("shop_id")
+    if not shop_id:
+        return False
+    owner = admin.table("shops").select("owner_id").eq("id", shop_id).limit(1).execute().data or []
+    return bool(owner) and str(owner[0].get("owner_id") or "") == user_id
+
+
 def create_product_review(
     product_id: str,
     user_id: str,
@@ -79,6 +90,11 @@ def create_product_review(
         raise ReviewWriteError("Rating must be between 1 and 5.", "invalid_rating", 422)
 
     admin = client or get_supabase_admin()
+    try:
+        if _is_listing_owner(admin, product_id, user_id):
+            raise ReviewWriteError("You can't review your own listing.", "own_listing", 403)
+    except APIError as exc:
+        _raise_db(exc)
     try:
         existing = (
             admin.table("product_reviews")

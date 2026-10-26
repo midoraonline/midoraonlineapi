@@ -58,11 +58,16 @@ class _Query:
 
 class _Admin:
     def __init__(self):
-        self.store: dict = {"rows": []}
+        self.stores: dict = {
+            "product_reviews": {"rows": []},
+            "products": {"rows": [{"id": "p1", "shop_id": "s1"}]},
+            "shops": {"rows": [{"id": "s1", "owner_id": "owner"}]},
+        }
+        self.store = self.stores["product_reviews"]
         self.query = _Query(self.store)
 
-    def table(self, _name):
-        self.query = _Query(self.store)
+    def table(self, name):
+        self.query = _Query(self.stores[name])
         self.query.fail = self.fail
         return self.query
 
@@ -132,5 +137,38 @@ def test_dropped_rating_column_trigger_is_not_a_500():
     except ReviewWriteError as exc:
         assert exc.status == 503
         assert exc.code == "review_trigger"
+    else:
+        raise AssertionError("expected ReviewWriteError")
+
+
+def test_anyone_signed_in_can_review_without_contact():
+    # Arrange
+    admin = _Admin()
+    # Act
+    review = create_product_review("p1", "stranger", 5, None, client=admin)
+    # Assert
+    assert review["user_id"] == "stranger"
+
+
+def test_owner_cannot_review_own_listing():
+    # Arrange
+    admin = _Admin()
+    # Act
+    try:
+        create_product_review("p1", "owner", 5, None, client=admin)
+    except ReviewWriteError as exc:
+        # Assert
+        assert exc.status == 403
+        assert exc.code == "own_listing"
+    else:
+        raise AssertionError("expected ReviewWriteError")
+    assert admin.store["rows"] == []
+
+
+def test_missing_listing_is_404():
+    try:
+        create_product_review("nope", "u1", 5, None, client=_Admin())
+    except ReviewWriteError as exc:
+        assert exc.status == 404
     else:
         raise AssertionError("expected ReviewWriteError")
