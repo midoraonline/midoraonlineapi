@@ -10,7 +10,7 @@ from db.supabase import get_supabase_admin, get_supabase_client
 from core.security import TokenPayload, get_current_claims, get_current_user_id, get_optional_user_id
 from payments import plan_service
 from ranking.service import calculate_listing_score
-from shop import engagement_service, service as shop_service
+from shop import engagement_service, listing_actions, service as shop_service
 from platform_settings.flags import analytics_enabled, assert_posting_open
 from shop.events import (
     product_update_requires_moderation,
@@ -606,24 +606,16 @@ async def delete_product(
 
 @router_products.post("/{product_id}/repost", response_model=ProductResponse)
 async def repost_product(
-  product_id: str,
-  client: Annotated[Client, Depends(get_supabase_client)],
-  user_id: str = Depends(get_current_user_id),
+    product_id: str,
+    client: Annotated[Client, Depends(get_supabase_client)],
+    user_id: str = Depends(get_current_user_id),
 ):
-    try:
-        ensure_product_owner(client, product_id, user_id)
-    except LookupError:
+    """Legacy route: same plan-based repost limits as /listings/{id}/repost."""
+    listing_actions.repost_listing(get_supabase_admin(), product_id, user_id)
+    updated = shop_service.get_product(client, product_id, user_id)
+    if not updated:
         raise HTTPException(status_code=404, detail="Product not found")
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
-    try:
-        updated = shop_service.repost_product(client, product_id)
-        if not updated:
-            raise HTTPException(status_code=404, detail="Product not found")
-        return updated
-    except ValueError as e:
-        raise HTTPException(status_code=429, detail=str(e))
+    return updated
 
 
 @router_products.post("/{product_id}/discount", response_model=ProductResponse)
