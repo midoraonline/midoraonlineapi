@@ -86,10 +86,6 @@ async def record_shop_view(
     client: Annotated[Client, Depends(get_supabase_client)],
 ):
     """Increment shop page view (click) count. Call once when a customer opens the storefront."""
-    from platform_settings.flags import analytics_enabled
-
-    if not analytics_enabled():
-        return ViewCountResponse(view_count=0)
     try:
         n = engagement_service.record_shop_view(client, shop_id)
         return ViewCountResponse(view_count=n)
@@ -104,11 +100,6 @@ async def record_shop_event(
     current_user_id: str | None = Depends(get_optional_user_id),
 ):
     """Record a shop-level event (whatsapp click, message, etc.)."""
-    from platform_settings.flags import analytics_enabled
-
-    if not analytics_enabled():
-        return {"enabled": False, "status": "disabled"}
-
     valid_types = {"whatsapp_clicked", "messaged"}
     if event_type not in valid_types:
         raise HTTPException(

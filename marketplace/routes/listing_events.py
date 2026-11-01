@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 
-from core.security import get_optional_user_id, get_current_user_id
+from core.security import get_optional_user_id
 from db.supabase import get_supabase_admin
 
 logger = logging.getLogger(__name__)
@@ -22,11 +22,6 @@ async def record_listing_event(
     device_hash: str | None = Query(None),
 ) -> dict[str, Any]:
     """Record a listing event (view, click, share, report, etc.)."""
-    from platform_settings.flags import analytics_enabled
-
-    if not analytics_enabled():
-        return {"enabled": False, "status": "disabled"}
-
     valid_types = {"viewed", "whatsapp_clicked", "call_clicked", "saved", "shared", "reported", "updated", "messaged"}
     if event_type not in valid_types:
         return {"error": f"Invalid event_type. Must be one of: {', '.join(sorted(valid_types))}"}

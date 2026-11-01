@@ -11,7 +11,7 @@ from core.security import TokenPayload, get_current_claims, get_current_user_id,
 from payments import plan_service
 from ranking.service import calculate_listing_score
 from shop import engagement_service, listing_actions, service as shop_service
-from platform_settings.flags import analytics_enabled, assert_posting_open
+from platform_settings.flags import assert_posting_open
 from shop.events import (
     product_update_requires_moderation,
     publish_product_created,
@@ -408,8 +408,6 @@ async def record_product_view(
     user_id: str | None = Depends(get_optional_user_id),
 ):
     """Increment product view count and record a per-user viewed event when authenticated."""
-    if not analytics_enabled():
-        return ViewCountResponse(view_count=0)
     try:
         n = engagement_service.record_product_view(client, product_id, buyer_id=user_id)
         calculate_listing_score(product_id)
