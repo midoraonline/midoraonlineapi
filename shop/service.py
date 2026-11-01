@@ -540,28 +540,6 @@ def delete_product(client: Any, product_id: str) -> bool:
     return bool(r.data)
 
 
-def repost_product(client: Any, product_id: str) -> dict | None:
-    from datetime import datetime, timezone, timedelta
-    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-    
-    logs = client.table("product_reposts_log").select("id").eq("product_id", product_id).gte("created_at", yesterday).execute()
-    
-    if logs.data and len(logs.data) >= 2:
-        raise ValueError("Repost limit reached (2x per 24 hours)")
-        
-    # Insert log
-    client.table("product_reposts_log").insert({"product_id": product_id}).execute()
-    
-    # Update product created_at
-    r = client.table("products").update({"created_at": datetime.now(timezone.utc).isoformat()}).eq("id", product_id).execute()
-    
-    if not r.data or len(r.data) == 0:
-        return None
-    from ranking.service import calculate_listing_score
-    calculate_listing_score(product_id)
-    return _row_to_product_response(r.data[0])
-
-
 def _row_to_product_response(row: dict) -> dict:
     image_urls = row.get("image_urls")
     if isinstance(image_urls, list):

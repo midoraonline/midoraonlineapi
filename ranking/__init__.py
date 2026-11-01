@@ -4,8 +4,6 @@ from ranking.service import (
 )
 from ranking.boost_service import (
     list_active_boost_plans,
-    purchase_boost,
-    expire_stale_boosts,
     get_active_boost_for_listing,
 )
 from ranking.lead_service import (

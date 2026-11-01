@@ -84,7 +84,7 @@ class _Client:
 
 
 def _publish(client, location_name, shop_location="Kampala"):
-    client.db["users"] = [{"id": "user-1", "phone_verified": True, "email_verified": False}]
+    client.db["users"] = [{"id": "user-1", "phone_verified": True, "email_verified": True}]
     client.db["shops"] = [{"id": "shop-1", "location": shop_location}]
     with patch("db.supabase.get_supabase_admin", return_value=client):
         _assert_publish(client, location_name)

@@ -6,11 +6,34 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 
-from core.security import get_current_user_id
+from admin.audit import actor_id, record_admin_action
+from core.security import TokenPayload, get_current_user_id, require_admin_role
 from db.supabase import get_supabase_admin
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _listing_status(admin, listing_id: str) -> str | None:
+    try:
+        rows = admin.table("products").select("status").eq("id", listing_id).limit(1).execute().data or []
+    except Exception:  # noqa: BLE001
+        return None
+    return rows[0].get("status") if rows else None
+
+
+def _audit_status(
+    admin, actor: str | None, listing_id: str, before: str | None, after: str, notes: str | None = None
+) -> None:
+    record_admin_action(
+        admin,
+        actor=actor,
+        action="listing.status_changed",
+        target_type="listing",
+        target_id=listing_id,
+        before={"status": before},
+        after={"status": after, **({"notes": notes} if notes else {})},
+    )
 
 
 @router.get("/listings")
@@ -95,6 +118,7 @@ async def admin_list_listings(
 async def admin_update_listing_status(
     listing_id: str,
     status: str = Query(..., description="New status: active, hidden, rejected, pending_review"),
+    payload: TokenPayload | None = Depends(require_admin_role),
 ) -> dict[str, Any]:
     """Admin: update listing status (approve, reject, hide, etc.)."""
     valid_statuses = {"active", "hidden", "rejected", "pending_review"}
@@ -103,6 +127,7 @@ async def admin_update_listing_status(
 
     admin = get_supabase_admin()
     now = datetime.now(timezone.utc).isoformat()
+    previous = _listing_status(admin, listing_id)
     r = (
         admin.table("products")
         .update({"status": status, "reviewed_at": now})
@@ -111,6 +136,7 @@ async def admin_update_listing_status(
     )
     if not r.data:
         return {"error": "Listing not found"}
+    _audit_status(admin, actor_id(payload), listing_id, previous, status)
 
     if status in {"active", "rejected"}:
         queue_status = "approved" if status == "active" else "rejected"
@@ -154,6 +180,7 @@ async def admin_review_listing(
     new_status = "active" if action == "approve" else "rejected"
     admin = get_supabase_admin()
     now = datetime.now(timezone.utc).isoformat()
+    previous = _listing_status(admin, listing_id)
 
     r = (
         admin.table("products")
@@ -168,6 +195,7 @@ async def admin_review_listing(
     )
     if not r.data:
         return {"error": "Listing not found"}
+    _audit_status(admin, admin_id, listing_id, previous, new_status, notes)
 
     # Close any open moderation-queue rows so reconcile/drain cannot
     # re-apply an automated decision over the admin verdict.
@@ -203,7 +231,7 @@ async def admin_review_listing(
 async def admin_reindex_embeddings(
     limit: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
-    """Backfill or refresh product embeddings for the personalized feed."""
+    """Backfill or refresh product embeddings for semantic search."""
     from feed.embeddings import backfill_missing_embeddings
 
     admin = get_supabase_admin()

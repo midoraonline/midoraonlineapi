@@ -1,21 +1,17 @@
-"""Composite endpoint that returns feed data with shop details and boost
-status embedded — eliminating the N+1 pattern on the frontend.
-"""
-
 from __future__ import annotations
 
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from typing import Any
 
 from db.supabase import get_supabase_admin
 from feed.catalog import ListingFilters
-from shop.schemas import ProductResponse
+from feed.status import visible_status
 
 logger = logging.getLogger(__name__)
 
-MAX_CARDS = 72
+MAX_CARDS = 40
 _GUEST_HOME_TTL_S = 60.0
 _guest_home_cache: dict[tuple[int, int, str], tuple[float, dict[str, Any]]] = {}
 
@@ -50,12 +46,8 @@ def get_home_feed(
     session_id: str | None = None,
     category: str | None = None,
     filters: ListingFilters | None = None,
+    version: str | None = None,
 ) -> dict[str, Any]:
-    """Return the ranked home algorithm feed with shop + boost data embedded.
-
-    Home UI only renders `algorithm`. `trending` / `premium` / `fresh` stay
-    empty so first paint does not hydrate unused sub-feeds.
-    """
     from feed.service import get_algorithm_feed
 
     admin = get_supabase_admin()
@@ -71,8 +63,7 @@ def get_home_feed(
         if hit and (time.monotonic() - hit[0]) < _GUEST_HOME_TTL_S:
             return hit[1]
 
-    algorithm_paged, algo_has_more, filtered_total = get_algorithm_feed(
-        admin,
+    feed = get_algorithm_feed(
         user_id=user_id,
         page=page,
         limit=limit,
@@ -80,7 +71,9 @@ def get_home_feed(
         session_id=session_id,
         category=active.category,
         filters=active,
+        version=version,
     )
+    algorithm_paged = feed.items
     shop_ids = list({str(p.shop_id) for p in algorithm_paged if p.shop_id})
 
     shops_map: dict[str, dict[str, Any]] = {}
@@ -141,47 +134,23 @@ def get_home_feed(
             logger.warning("home feed batch shop fetch failed: %s", exc)
 
     product_ids = [str(p.id) for p in algorithm_paged if p.id]
-    boost_map: dict[str, dict[str, Any]] = {}
     viewer_liked_ids: set[str] = set()
-
-    def _boosts() -> dict[str, dict[str, Any]]:
-        from shop.boost_info import active_boost_map
-
+    if product_ids and user_id:
         try:
-            return active_boost_map(admin, product_ids)
+            vr = (
+                admin.table("product_likes")
+                .select("product_id")
+                .eq("user_id", user_id)
+                .in_("product_id", product_ids)
+                .execute()
+            )
+            viewer_liked_ids = {str(row["product_id"]) for row in (vr.data or []) if row.get("product_id")}
         except Exception as exc:  # noqa: BLE001
-            logger.warning("home feed batch boost fetch failed: %s", exc)
-            return {}
-
-    if product_ids:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            fb = pool.submit(_boosts)
-            if not is_guest and user_id:
-                def _viewer_likes() -> set[str]:
-                    try:
-                        vr = (
-                            admin.table("product_likes")
-                            .select("product_id")
-                            .eq("user_id", user_id)
-                            .in_("product_id", product_ids)
-                            .execute()
-                        )
-                        return {
-                            str(row.get("product_id"))
-                            for row in (vr.data or [])
-                            if row.get("product_id")
-                        }
-                    except Exception as exc:
-                        logger.warning("home feed viewer-liked fetch failed: %s", exc)
-                        return set()
-
-                fv = pool.submit(_viewer_likes)
-                viewer_liked_ids = fv.result()
-            boost_map = fb.result()
+            logger.warning("home feed viewer-liked fetch failed: %s", exc)
 
     def _embed(products: list) -> list[dict[str, Any]]:
-        from shop.boost_info import card_fields
         out = []
+        now = datetime.now(timezone.utc)
         from shop.locations import listing_is_online
         from shop.serializers import clip_card_description
 
@@ -220,26 +189,34 @@ def get_home_feed(
                     else {}
                 ),
                 "created_at": p.created_at,
+                "first_posted_at": p.first_posted_at or p.created_at,
                 "updated_at": getattr(p, "updated_at", None) or p.created_at,
                 "stock_quantity": int(getattr(p, "stock_quantity", 0) or 0),
                 "shop": shop,
-                **card_fields(boost_map.get(str(p.id))),
+                "placement": feed.placements.get(str(p.id), "organic"),
+                "status": visible_status(
+                    placement=feed.placements.get(str(p.id), "organic"),
+                    item_type=p.item_type,
+                    listing_meta=meta,
+                    posted_at=p.first_posted_at or p.created_at,
+                    now=now,
+                ),
                 "average_rating": p.average_rating if p.review_count else None,
                 "review_count": int(p.review_count or 0),
                 "is_negotiable": getattr(p, "is_negotiable", True) is not False,
             })
         return out
 
+    next_cursor = None
+    if feed.has_more:
+        next_cursor = f"v:{feed.version}:p:{page + 1}" if feed.version else f"p:{page + 1}"
     payload = {
         "algorithm": _embed(algorithm_paged),
-        "trending": [],
-        "premium": [],
-        "fresh": [],
         "page": page,
         "limit": limit,
-        "total": filtered_total if filtered_total is not None else ((page - 1) * limit) + len(algorithm_paged),
-        "has_more": algo_has_more,
-        "next_cursor": f"p:{page + 1}" if algo_has_more else None,
+        "total": feed.total if feed.total is not None else ((page - 1) * limit) + len(algorithm_paged),
+        "has_more": feed.has_more,
+        "next_cursor": next_cursor,
     }
     if guest_cache_key:
         _guest_home_cache[guest_cache_key] = (time.monotonic(), payload)

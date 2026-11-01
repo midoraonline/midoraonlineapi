@@ -1,606 +1,270 @@
-"""Midora feed orchestrator.
-
-Public API:
-    - `get_algorithm_feed(client, user_id, page, limit)` — personalized feed
-    - `get_latest_feed(client, limit)`                   — anonymous fallback
-
-The heavy lifting is delegated to:
-    - `feed.signals`   → gather user / product signals
-    - `feed.scoring`   → compute per-product score (pure function)
-    - `feed.placement` → post-ranking composition & vendor-diversity rules
-
-Authenticated users are cached for one hour in `user_feed_cache` as an
-ordered ID list (+ optional preference vector). Pagination slices that
-list; fatigue may drop already-seen IDs on later pages. Only the page
-slice is hydrated into card rows.
-
-Cold rebuild path:
-    1. Build user preference vector from interaction product embeddings.
-    2. ANN / cosine match via pgvector RPC when available.
-    3. Merge with lean candidate pools (no embedding blobs).
-    4. Score + place once; persist ranked IDs.
-    5. Hydrate card fields for the requested page only.
-"""
-
 from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone, timedelta
-from collections import deque
-from functools import partial
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
-from db.supabase import Client
-from feed import boost_slots
+from db.supabase import Client, get_supabase_admin, with_supabase_retry
+from feed import boost_slots, frequency, impressions, placement, scoring, snapshots
 from feed import config as C
-from feed import impressions as imp
-from feed import scoring as S
 from feed import signals as sig
-from feed.embeddings import cosine_similarity, parse_embedding
-from feed.catalog import ListingFilters, card_rating, fetch_catalog_page, rating_map
-from feed.placement import rank_and_place
+from feed.catalog import ListingFilters, card_rating, fetch_catalog_page, matching_ids, rating_map
+from feed.quality import listing_quality
+from feed.stages import LANES, StagePlan, lane_of, plan_for
 from shop.schemas import ProductResponse
 
 logger = logging.getLogger(__name__)
-FEED_CACHE_TTL = timedelta(hours=1)
-FEED_CACHE_TTL_SECONDS = int(FEED_CACHE_TTL.total_seconds())
-FEED_CACHE_MAX_IDS = 800
-VECTOR_MATCH_COUNT = 220
 
-# Card payload. Description is clipped in _to_response; embeddings stay off this select.
 _PRODUCT_CARD_SELECT = (
     "id,shop_id,title,description,category,item_type,price_ugx,discount_price,"
     "discount_expires_at,stock_quantity,image_urls,is_published,status,listing_score,"
-    "location_name,created_at,view_count,listing_meta,is_negotiable"
+    "location_name,created_at,first_posted_at,view_count,listing_meta,is_negotiable"
 )
 
-# Scoring candidates: card fields only. Taste comes from pgvector / taste_scores.
-_PRODUCT_SCORE_SELECT = _PRODUCT_CARD_SELECT
 
-
-# ---------------------------------------------------------------------------
-# Query helpers
-# ---------------------------------------------------------------------------
-
-def _active_products_query(client: Client) -> Any:
-    """Candidate / score queries — lean columns, no vector payload."""
-    return (
-        client.table("products")
-        .select(_PRODUCT_SCORE_SELECT)
-        .eq("status", "active")
-        .eq("is_published", True)
-    )
-
-
-def _lean_active_products_query(client: Client) -> Any:
-    """List/feed queries without embedding columns."""
-    return (
-        client.table("products")
-        .select(_PRODUCT_CARD_SELECT)
-        .eq("status", "active")
-        .eq("is_published", True)
-    )
+@dataclass
+class FeedPage:
+    items: list[ProductResponse]
+    has_more: bool
+    total: int | None = None
+    version: str | None = None
+    placements: dict[str, str] = field(default_factory=dict)
 
 
 def _to_response(product: dict[str, Any]) -> ProductResponse:
     from shop.locations import listing_is_online
-
-    stripped = {
-        k: v for k, v in product.items()
-        if k not in ("embedding", "embedding_source_hash", "embedding_vec", "similarity")
-    }
     from shop.serializers import clip_card_description
 
+    stripped = {k: v for k, v in product.items() if k not in ("embedding", "embedding_source_hash")}
     stripped["description"] = clip_card_description(stripped.get("description"))
-    stripped["is_online"] = listing_is_online(
-        stripped.get("location_name"), stripped.get("listing_meta")
-    )
+    stripped["is_online"] = listing_is_online(stripped.get("location_name"), stripped.get("listing_meta"))
     return ProductResponse(**stripped)
 
 
 def _with_ratings(client: Client, cards: list[ProductResponse]) -> list[ProductResponse]:
-    """Fill average_rating and review_count from product_reviews for this page."""
     if not cards:
         return cards
     ratings = rating_map(client, [card.id for card in cards if card.id])
-    updated: list[ProductResponse] = []
+    out: list[ProductResponse] = []
     for card in cards:
         average, count = card_rating(ratings, card.id)
-        updated.append(card.model_copy(update={"average_rating": average, "review_count": count}))
-    return updated
-
-
-def _parse_ts(raw: Any) -> datetime | None:
-    if not raw:
-        return None
-    try:
-        text = str(raw)
-        if text.endswith("Z"):
-            text = text.replace("Z", "+00:00")
-        return datetime.fromisoformat(text)
-    except Exception:
-        return None
-
-
-def _cache_is_fresh(refreshed_at: Any) -> bool:
-    """True while within the 1-hour ranking TTL (no full re-score yet)."""
-    ts = _parse_ts(refreshed_at)
-    if not ts:
-        return False
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    age = datetime.now(timezone.utc) - ts
-    return age <= FEED_CACHE_TTL
-
-
-def _cache_age_seconds(refreshed_at: Any) -> int | None:
-    ts = _parse_ts(refreshed_at)
-    if not ts:
-        return None
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    return max(0, int((datetime.now(timezone.utc) - ts).total_seconds()))
-
-
-def _load_cached_ranked_ids(
-    client: Client,
-    user_id: str,
-) -> tuple[list[str], bool, datetime | None]:
-    """Return (ranked_ids, is_fresh, refreshed_at) for a user's cached feed."""
-    try:
-        row = (
-            client.table("user_feed_cache")
-            .select("ranked_ids, refreshed_at")
-            .eq("user_id", user_id)
-            .limit(1)
-            .execute()
-        )
-        if not row.data:
-            logger.info("feed-cache: miss user=%s (no row)", user_id)
-            return [], False, None
-        item = row.data[0] or {}
-        raw_ids = item.get("ranked_ids") or []
-        ids = [str(x) for x in raw_ids if x][:FEED_CACHE_MAX_IDS]
-        refreshed_at = _parse_ts(item.get("refreshed_at"))
-        fresh = _cache_is_fresh(item.get("refreshed_at"))
-        age = _cache_age_seconds(item.get("refreshed_at"))
-        logger.info(
-            "feed-cache: hit user=%s ids=%s fresh=%s age_s=%s ttl_s=%s",
-            user_id, len(ids), fresh, age, FEED_CACHE_TTL_SECONDS,
-        )
-        return ids, fresh, refreshed_at
-    except Exception as exc:
-        logger.warning(
-            "feed-cache read failed for user=%s (apply 029_user_feed_cache.sql?): %s",
-            user_id, exc,
-        )
-        return [], False, None
-
-
-def _save_cached_ranked_ids(
-    client: Client,
-    user_id: str,
-    ranked_ids: list[str],
-    *,
-    preference_vector: list[float] | None = None,
-    candidate_count: int = 0,
-) -> None:
-    if not ranked_ids:
-        return
-    payload: dict[str, Any] = {
-        "user_id": user_id,
-        "ranked_ids": ranked_ids[:FEED_CACHE_MAX_IDS],
-        "refreshed_at": datetime.now(timezone.utc).isoformat(),
-        "candidate_count": int(candidate_count or len(ranked_ids)),
-    }
-    if preference_vector:
-        payload["preference_vector"] = [round(float(v), 6) for v in preference_vector]
-    try:
-        client.table("user_feed_cache").upsert(
-            payload,
-            on_conflict="user_id",
-        ).execute()
-        logger.info(
-            "feed-cache: saved user=%s ranked=%s vector=%s",
-            user_id, len(ranked_ids), "yes" if preference_vector else "no",
-        )
-    except Exception as exc:
-        try:
-            client.table("user_feed_cache").upsert(
-                {
-                    "user_id": user_id,
-                    "ranked_ids": ranked_ids[:FEED_CACHE_MAX_IDS],
-                    "refreshed_at": datetime.now(timezone.utc).isoformat(),
-                },
-                on_conflict="user_id",
-            ).execute()
-            logger.info(
-                "feed-cache: saved(basic) user=%s ranked=%s",
-                user_id, len(ranked_ids),
-            )
-        except Exception as exc2:
-            logger.warning(
-                "feed-cache write failed for user=%s (apply 029/032?): %s / %s",
-                user_id, exc, exc2,
-            )
+        out.append(card.model_copy(update={"average_rating": average, "review_count": count}))
+    return out
 
 
 def _fetch_products_by_ids(client: Client, product_ids: list[str]) -> list[dict[str, Any]]:
-    """Hydrate card rows for a page of ranked IDs (preserves order)."""
     if not product_ids:
         return []
-    from db.supabase import with_supabase_retry
 
     def _run():
         return (
-            _lean_active_products_query(client)
+            client.table("products")
+            .select(_PRODUCT_CARD_SELECT)
+            .eq("status", "active")
+            .eq("is_published", True)
             .in_("id", product_ids)
             .execute()
         )
 
     try:
-        r = with_supabase_retry(_run, label="hydrate_cards")
-        rows = r.data or []
-        by_id = {str(row.get("id")): row for row in rows if row.get("id")}
-        return [by_id[pid] for pid in product_ids if pid in by_id]
-    except Exception as exc:
-        logger.warning("feed-cache product fetch failed: %s", exc)
+        rows = with_supabase_retry(_run, label="hydrate_cards").data or []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("feed card fetch failed: %s", exc)
         return []
+    by_id = {str(row.get("id")): row for row in rows if row.get("id")}
+    return [by_id[pid] for pid in product_ids if pid in by_id]
 
 
-def _apply_runtime_exclusions(
-    product_ids: list[str],
+def _cards(client: Client, rows: list[dict[str, Any]]) -> list[ProductResponse]:
+    return _with_ratings(client, [_to_response(row) for row in rows])
+
+
+def resolve_category_filter_labels(category: str | None) -> list[str] | None:
+    if not category or not str(category).strip():
+        return None
+    raw = str(category).strip()
+    try:
+        from core.categories import ALL_CATEGORIES, normalize_category, subcategories_for_parent
+    except Exception:  # noqa: BLE001
+        return [raw]
+    try:
+        label = normalize_category(raw)
+    except ValueError:
+        lowered = raw.lower()
+        label = next(
+            (c.label for c in ALL_CATEGORIES if c.label.lower() == lowered or c.slug.lower() == lowered),
+            None,
+        )
+        if label is None:
+            return [raw]
+    if not label:
+        return None
+    children = subcategories_for_parent(label)
+    return [label, *children] if children else [label]
+
+
+def _ranking_rows(db: Client) -> tuple[list[dict[str, Any]], int]:
+    def _run():
+        return (
+            db.table("products")
+            .select(_PRODUCT_CARD_SELECT, count="exact")
+            .eq("status", "active")
+            .eq("is_published", True)
+            .order("created_at", desc=True)
+            .limit(C.RANKING_FETCH_LIMIT)
+            .execute()
+        )
+
+    resp = with_supabase_retry(_run, label="feed_rank_rows")
+    rows = [r for r in (resp.data or []) if r.get("id")]
+    count = getattr(resp, "count", None)
+    return rows, int(count) if count is not None else len(rows)
+
+
+def build_snapshot(db: Client) -> snapshots.Snapshot:
+    rows, total = _ranking_rows(db)
+    by_shop = {str(r["id"]): str(r.get("shop_id") or "") for r in rows}
+    meta = sig.collect_shop_meta(db, list({s for s in by_shop.values() if s}))
+    fraud = sig.collect_fraud_severity(db, list(by_shop), by_shop, meta)
+    seen = impressions.listing_impressions(list(by_shop), hours=C.EXPOSURE_WINDOW_HOURS)
+    shop_seen: dict[str, int] = {}
+    for lid, n in seen.items():
+        shop = by_shop.get(lid, "")
+        shop_seen[shop] = shop_seen.get(shop, 0) + n
+    multipliers = scoring.exposure_multipliers(shop_seen)
+
+    eligible: list[tuple[dict[str, Any], float]] = []
+    for row in rows:
+        pid = str(row["id"])
+        if meta.get(by_shop[pid], {}).get("is_active") is False:
+            continue
+        if fraud.get(pid, "low") in scoring.HIDDEN_FRAUD:
+            continue
+        quality = listing_quality(row)
+        if quality >= C.QUALITY_MIN:
+            eligible.append((row, quality))
+
+    by_lane = {lane: 0 for lane in LANES}
+    for row, _ in eligible:
+        by_lane[lane_of(row.get("item_type"))] += 1
+    plan = plan_for(by_lane, eligible=total if total > len(rows) else len(eligible))
+
+    now = datetime.now(timezone.utc)
+    entries = []
+    for row, quality in eligible:
+        pid = str(row["id"])
+        shop = by_shop[pid]
+        entries.append({
+            "id": pid,
+            "shop": shop,
+            "lane": lane_of(row.get("item_type")),
+            "score": round(
+                scoring.score(
+                    row,
+                    quality=quality,
+                    shop_meta=meta.get(shop),
+                    fraud=fraud.get(pid, "low"),
+                    multiplier=multipliers.get(shop, 1.0),
+                    stage=plan.stage,
+                    now=now,
+                ),
+                3,
+            ),
+            "quality": quality,
+            "fresh": scoring.freshness(row, now),
+            "impressions": seen.get(pid, 0),
+        })
+    items = [
+        {"id": e["id"], "shop": e["shop"], "score": e["score"], "mode": e["mode"]}
+        for e in placement.place(entries, plan)
+    ]
+    return snapshots.Snapshot(version=uuid.uuid4().hex[:12], plan=plan, items=items)
+
+
+def current_snapshot(db: Client) -> snapshots.Snapshot:
+    snap = snapshots.current(db)
+    if snap is not None:
+        return snap
+    started = time.perf_counter()
+    C.refresh_from_db()
+    snap = build_snapshot(db)
+    snapshots.save(db, snap)
+    logger.info(
+        "feed:rebuild stage=%s eligible=%s ranked=%s ms=%.1f",
+        snap.plan.stage, snap.plan.eligible, len(snap.items), (time.perf_counter() - started) * 1000,
+    )
+    return snap
+
+
+def current_plan(db: Client) -> StagePlan:
+    return current_snapshot(db).plan
+
+
+def rebuild_ranking() -> dict[str, int]:
+    db = get_supabase_admin()
+    C.refresh_from_db(force=True)
+    snapshots.clear_memory()
+    snap = build_snapshot(db)
+    snapshots.save(db, snap)
+    return {"ranked": len(snap.items), "stage": snap.plan.stage, "eligible": snap.plan.eligible}
+
+
+def _home_page(
+    db: Client,
     *,
     user_id: str | None,
     session_id: str | None,
+    page: int,
+    limit: int,
+    version: str | None,
     exclude_ids: list[str] | None,
-    apply_fatigue: bool = True,
-) -> list[str]:
-    """Filter a pre-ranked ID list without re-scoring."""
-    exclude_set: set[str] = set(exclude_ids or [])
-    if apply_fatigue and (user_id or session_id):
-        try:
-            exclude_set |= imp.fatigued_listing_ids(
+) -> FeedPage:
+    snap = (snapshots.by_version(db, version) if version else None) or current_snapshot(db)
+    items = placement.lift_followed(snap.items, sig.followed_shop_ids(db, user_id))
+    modes = {i["id"]: i["mode"] for i in items}
+    hidden = set(exclude_ids or [])
+    seq = boost_slots.paid_rotation(db, snap.plan)
+    if user_id or session_id:
+        if exclude_ids or page > 1:
+            hidden |= impressions.fatigued_listing_ids(
                 buyer_id=user_id,
                 session_id=session_id,
                 threshold=C.FATIGUE_THRESHOLD,
                 hours=C.FATIGUE_WINDOW_HOURS,
             )
-        except Exception as exc:
-            logger.warning("feed-cache fatigue lookup failed: %s", exc)
-    if not exclude_set:
-        return product_ids
-    return [pid for pid in product_ids if pid not in exclude_set]
-
-
-def get_supabase_admin():  # indirection so tests can patch one place
-    from db.supabase import get_supabase_admin as _g
-
-    return _g()
-
-
-def _page_ids_from_ranked(
-    ranked_ids: list[str],
-    *,
-    page: int,
-    limit: int,
-    exclude_ids: list[str] | None,
-    user_id: str | None,
-    session_id: str | None,
-    boost_seq: list[str] | None = None,
-) -> tuple[list[str], bool]:
-    """Slice the ranked ID list for this request (boosted slots woven in).
-
-    Returns (page_ids, has_more). `has_more` is based on remaining ranked IDs,
-    not on how many of this page hydrates into cards.
-
-    Contract:
-      - Cursor / page pagination (`exclude_ids` empty): window into the ranked
-        list. `(page-1)*limit … page*limit`.
-      - Legacy `exclude_ids` (no cursor): drop those IDs, then take `limit`
-        from the remaining head. Do not combine with page.
-      - Fatigue only applies when continuing past the first screen.
-    """
-    using_exclude = bool(exclude_ids)
-    apply_fatigue = using_exclude or page > 1
-    filtered = _apply_runtime_exclusions(
-        ranked_ids,
-        user_id=user_id,
-        session_id=session_id,
-        exclude_ids=exclude_ids,
-        apply_fatigue=apply_fatigue,
-    )
-    seq = list(boost_seq or [])
-    # Plan frequency caps apply on every page (fatigue stays page 2+ only).
-    if user_id or session_id:
-        from feed import frequency
-
-        capped = frequency.capped_listing_ids(
-            get_supabase_admin(),
-            buyer_id=user_id,
-            session_id=session_id,
-            boosted_ids={b["id"] for b in boost_slots.active_boosts(get_supabase_admin())},
-        )
-        if capped:
-            filtered = [pid for pid in filtered if pid not in capped]
-            seq = [b for b in seq if b not in capped]
-    if seq and len(filtered) != len(ranked_ids):
-        dropped = set(ranked_ids) - set(filtered)
-        seq = [b for b in seq if b not in dropped]
-    if seq and exclude_ids:
-        ex = set(exclude_ids)
-        seq = [b for b in seq if b not in ex]
-    return boost_slots.compose_page(
-        filtered, seq, page=1 if using_exclude else page, limit=limit
+        hidden |= frequency.capped_listing_ids(db, buyer_id=user_id, session_id=session_id, boosted_ids=set(seq))
+    ids = [i["id"] for i in items if i["id"] not in hidden]
+    seq = [b for b in seq if b not in hidden]
+    page_ids, has_more, paid = boost_slots.compose_page(ids, seq, page=1 if exclude_ids else page, limit=limit)
+    rows = _fetch_products_by_ids(db, page_ids)
+    return FeedPage(
+        items=_cards(db, rows),
+        has_more=has_more,
+        version=snap.version,
+        placements={str(r["id"]): "boosted" if str(r["id"]) in paid else modes.get(str(r["id"]), "organic") for r in rows},
     )
 
-
-def _viewer_boost_seq(
-    client: Client,
-    user_id: str,
-    ranked_ids: list[str],
-    *,
-    user_vector: list[float] | None = None,
-    categories: set[str] | None = None,
-) -> list[str]:
-    """Boosted-slot rotation for a signed-in viewer (relevance-gated)."""
-    if not boost_slots.active_boosts(client):
-        return []
-    if user_vector is None:
-        try:
-            r = (
-                client.table("user_feed_cache")
-                .select("preference_vector")
-                .eq("user_id", user_id)
-                .limit(1)
-                .execute()
-            )
-            raw = (r.data or [{}])[0].get("preference_vector")
-            user_vector = parse_embedding(raw) if raw else None
-        except Exception as exc:  # noqa: BLE001
-            logger.info("boost slots: vector read skipped: %s", exc)
-    if categories is None:
-        categories = set()
-        head = ranked_ids[:60]
-        if head:
-            try:
-                r = client.table("products").select("category").in_("id", head).execute()
-                categories = {str(p["category"]) for p in (r.data or []) if p.get("category")}
-            except Exception as exc:  # noqa: BLE001
-                logger.info("boost slots: category read skipped: %s", exc)
-    return boost_slots.boosts_for_viewer(
-        client, user_vector=user_vector, categories=categories, signed_in=True
-    )
-
-
-def _merge_recent_unseen_ids(
-    client: Client,
-    ranked_ids: list[str],
-    refreshed_at: datetime | None,
-) -> list[str]:
-    """Merge listings created or reposted since the cache was built (spread, not pinned)."""
-    if not ranked_ids:
-        return ranked_ids
-    if refreshed_at and refreshed_at.tzinfo is None:
-        refreshed_at = refreshed_at.replace(tzinfo=timezone.utc)
-    try:
-        q = (
-            client.table("products")
-            .select("id")
-            .eq("status", "active")
-            .eq("is_published", True)
-            .order("created_at", desc=True)
-            .limit(180)
-        )
-        if refreshed_at:
-            q = q.gte("created_at", refreshed_at.isoformat())
-        r = q.execute()
-        recent_ids = [
-            str(row.get("id"))
-            for row in (r.data or [])
-            if row.get("id")
-        ]
-    except Exception as exc:
-        logger.warning("feed-cache recent listings fetch failed: %s", exc)
-        return ranked_ids
-
-    seen = set(ranked_ids)
-    unseen_recent = [pid for pid in recent_ids if pid not in seen]
-    if not unseen_recent:
-        return ranked_ids
-    return interleave_fresh(ranked_ids, unseen_recent)[:FEED_CACHE_MAX_IDS]
-
-
-FRESH_MERGE_PHASE = 4
-FRESH_MERGE_EVERY = 6
-
-
-def interleave_fresh(ranked_ids: list[str], fresh_ids: list[str]) -> list[str]:
-    """Spread listings created/reposted since the cache was built through it.
-
-    They count as fresh (one every FRESH_MERGE_EVERY positions, from
-    FRESH_MERGE_PHASE) instead of being pinned above everything the viewer's
-    scoring put first, so a repost can't take the top of every cached feed.
-    Fresh items left over go after the ranked list.
-    """
-    out: list[str] = []
-    fresh = list(fresh_ids)
-    ranked = list(ranked_ids)
-    pos = 1
-    while ranked or fresh:
-        if fresh and pos >= FRESH_MERGE_PHASE and (pos - FRESH_MERGE_PHASE) % FRESH_MERGE_EVERY == 0:
-            out.append(fresh.pop(0))
-        elif ranked:
-            out.append(ranked.pop(0))
-        else:
-            out.extend(fresh)
-            break
-        pos += 1
-    return out
-
-
-def invalidate_user_feed_cache(client: Any, user_id: str | None) -> None:
-    """No-op for routine engagement.
-
-    Personalized ranking is recalculated on a fixed **1-hour TTL**
-    (`FEED_CACHE_TTL`). Likes / follows / search must not wipe the cache on
-    every action — that forced constant re-scores and looked like “latest”.
-
-    Fresh inventory still surfaces within the TTL via `_merge_recent_unseen_ids`.
-    Pass `force=True` only from rare admin/debug paths.
-    """
-    return
-
-
-def invalidate_user_feed_cache_now(client: Any, user_id: str | None) -> None:
-    """Hard-drop cached ranking (admin / explicit rebuild only)."""
-    if not user_id:
-        return
-    try:
-        from db.supabase import get_supabase_admin
-
-        get_supabase_admin().table("user_feed_cache").delete().eq("user_id", user_id).execute()
-        logger.info("feed-cache: forced invalidate user=%s", user_id)
-    except Exception as exc:
-        logger.warning("feed-cache invalidate failed for user=%s: %s", user_id, exc)
-
-
-# ---------------------------------------------------------------------------
-# Category filter + guest diversity
-# ---------------------------------------------------------------------------
-
-def resolve_category_filter_labels(category: str | None) -> list[str] | None:
-    """Map a category query (label or slug-ish string) to product.category values.
-
-    Parent labels expand to their subcategory labels (what listings usually store).
-    Subcategory / leaf labels stay a single equality match. Returns None when
-    unset or unrecognized so callers skip filtering.
-    """
-    if not category or not str(category).strip():
-        return None
-    raw = str(category).strip()
-    try:
-        from core.categories import (
-            normalize_category,
-            subcategories_for_parent,
-            ALL_CATEGORIES,
-        )
-    except Exception:
-        return [raw]
-
-    label = None
-    try:
-        label = normalize_category(raw)
-    except ValueError:
-        # Accept raw label / slug case-insensitively against the tree.
-        lowered = raw.lower()
-        for c in ALL_CATEGORIES:
-            if c.label.lower() == lowered or c.slug.lower() == lowered:
-                label = c.label
-                break
-        if label is None:
-            return [raw]
-
-    if not label:
-        return None
-    children = subcategories_for_parent(label)
-    if children:
-        # Parent selected: match any child subcategory (and the parent label itself).
-        return [label, *children]
-    return [label]
-
-
-def _apply_category_to_query(q: Any, category: str | None) -> Any:
-    labels = resolve_category_filter_labels(category)
-    if not labels:
-        return q
-    if len(labels) == 1:
-        return q.eq("category", labels[0])
-    return q.in_("category", labels)
-
-
-def _product_matches_category(product: dict[str, Any], category: str | None) -> bool:
-    labels = resolve_category_filter_labels(category)
-    if not labels:
-        return True
-    cat = (product.get("category") or "").strip()
-    if not cat:
-        return False
-    wanted = {x.lower() for x in labels}
-    return cat.lower() in wanted
-
-
-def _diversify_by_shop(
-    rows: list[dict[str, Any]],
-    *,
-    limit: int,
-    window_size: int | None = None,
-    max_per_seller: int | None = None,
-) -> list[dict[str, Any]]:
-    """Light max-N-per-shop over a sliding window; prefers input order (recency).
-
-    Diversity is best-effort: if every remaining row is window-blocked, take the
-    next newest so we still fill up to `limit`.
-    """
-    if not rows or limit <= 0:
-        return []
-    wsize = C.VENDOR_WINDOW_SIZE if window_size is None else window_size
-    cap = C.VENDOR_WINDOW_MAX_PER_SELLER if max_per_seller is None else max_per_seller
-    window: deque[str] = deque(maxlen=max(1, wsize))
-    remaining = list(rows)
-    placed: list[dict[str, Any]] = []
-
-    while len(placed) < limit and remaining:
-        picked_idx = None
-        for i, row in enumerate(remaining):
-            shop_id = str(row.get("shop_id") or "")
-            if not shop_id:
-                picked_idx = i
-                break
-            if sum(1 for s in window if s == shop_id) < cap:
-                picked_idx = i
-                break
-        if picked_idx is None:
-            # Relax: keep filling, but prefer the most underrepresented shop
-            # still in remaining so one seller cannot monopolize after the cap.
-            best_i = 0
-            best_count = 10**9
-            for i, row in enumerate(remaining):
-                shop_id = str(row.get("shop_id") or "")
-                count = sum(1 for s in window if s == shop_id)
-                if count < best_count:
-                    best_count = count
-                    best_i = i
-            picked_idx = best_i
-        row = remaining.pop(picked_idx)
-        window.append(str(row.get("shop_id") or ""))
-        placed.append(row)
-    return placed
-
-
-# ---------------------------------------------------------------------------
-# Anonymous fallback
-# ---------------------------------------------------------------------------
 
 def _catalog_page(
     db: Client, filters: ListingFilters, *, page: int, limit: int
-) -> tuple[list[dict[str, Any]], int]:
-    """Filtered/category page. Relevance sort weaves in boosted slots drawn
-    from active boosts that pass the same filters."""
+) -> tuple[list[dict[str, Any]], int, set[str]]:
     if filters.sort != "relevance":
-        return fetch_catalog_page(db, filters, select=_PRODUCT_CARD_SELECT, page=page, limit=limit)
-    boosts = boost_slots.active_boosts(db)
-    try:
-        from feed.catalog import matching_ids
-
-        ok = matching_ids(db, filters, [b["id"] for b in boosts]) if boosts else set()
-    except Exception as exc:  # noqa: BLE001
-        logger.info("catalog boosts skipped: %s", exc)
-        ok = set()
-    seq = boost_slots.rotation([b for b in boosts if b["id"] in ok])
+        rows, total = fetch_catalog_page(db, filters, select=_PRODUCT_CARD_SELECT, page=page, limit=limit)
+        return rows, total, set()
+    seq = boost_slots.paid_rotation(db, current_plan(db))
+    if seq:
+        try:
+            ok = matching_ids(db, filters, list(dict.fromkeys(seq)))
+        except Exception as exc:  # noqa: BLE001
+            logger.info("catalog boosts skipped: %s", exc)
+            ok = set()
+        seq = [b for b in seq if b in ok]
     if not seq:
-        return fetch_catalog_page(db, filters, select=_PRODUCT_CARD_SELECT, page=page, limit=limit)
+        rows, total = fetch_catalog_page(db, filters, select=_PRODUCT_CARD_SELECT, page=page, limit=limit)
+        return rows, total, set()
     every, phase = boost_slots.slot_every(), boost_slots.slot_phase()
     org_start = boost_slots.organic_offset(page, limit, every, phase, len(set(seq)))
     rows, total = fetch_catalog_page(
@@ -608,700 +272,45 @@ def _catalog_page(
     )
     by_id = {str(r["id"]): r for r in rows if r.get("id")}
     padded = [f"__pad{i}" for i in range(org_start)] + list(by_id)
-    page_ids, _ = boost_slots.compose_page(padded, seq, page=page, limit=limit, every=every, phase=phase)
-    missing = [pid for pid in page_ids if pid not in by_id]
-    for row in _fetch_products_by_ids(db, missing):
+    page_ids, _, paid = boost_slots.compose_page(padded, seq, page=page, limit=limit, every=every, phase=phase)
+    for row in _fetch_products_by_ids(db, [pid for pid in page_ids if pid not in by_id]):
         by_id[str(row["id"])] = row
-    return [by_id[pid] for pid in page_ids if pid in by_id], total
+    return [by_id[pid] for pid in page_ids if pid in by_id], total, paid
 
-
-def get_latest_feed(
-    client: Client,
-    limit: int = 20,
-    *,
-    page: int = 1,
-    category: str | None = None,
-    filters: ListingFilters | None = None,
-) -> list[ProductResponse]:
-    """Recency-sorted feed used when no personalization signals exist.
-
-    Applies light shop diversity (max-2-per-shop / window) so one seller cannot
-    dominate the anonymous homepage, while still preferring newer items.
-    Active catalog filters skip diversity and paginate the filtered query.
-    """
-    if filters is not None and filters.is_active():
-        from db.supabase import get_supabase_admin
-
-        rows, _total = _catalog_page(get_supabase_admin(), filters, page=page, limit=limit)
-        return _with_ratings(get_supabase_admin(), [_to_response(row) for row in rows])
-    items, _ = _get_latest_feed_page(
-        client, page=page, limit=limit, category=category or (filters.category if filters else None)
-    )
-    return items
-
-
-def _get_latest_feed_page(
-    client: Client,
-    *,
-    page: int,
-    limit: int,
-    category: str | None = None,
-    session_id: str | None = None,
-) -> tuple[list[ProductResponse], bool]:
-    """Guest/latest page with diversity lite + optional category filter.
-
-    Pagination stays cursor-compatible (`p:N` / page): we always diversify from
-    the head of the recency stream, then slice `[start, start+limit)`. Over-fetch
-    absorbs skips from the window rule.
-    """
-    from feed import snapshots
-
-    started = time.perf_counter()
-    db = client
-    source = "rebuild"
-    ranked: list[str] | None = None
-    if not category:
-        ranked = snapshots.memory_ids()
-        if ranked is not None:
-            source = "memory"
-        else:
-            ranked = snapshots.load_fresh(db)
-            if ranked is not None:
-                source = "snapshot"
-                snapshots.remember(ranked)
-    if ranked is None:
-        built = _build_recency_order(db, category=category)
-        if built is None:
-            return [], False
-        ranked = built
-        source = "rebuild"
-        if not category:
-            snapshots.remember(ranked)
-            snapshots.save(db, ranked)
-
-    boost_seq = boost_slots.boosts_for_viewer(
-        db, user_vector=None, categories=None, signed_in=False
-    )
-    if category:
-        boost_seq = [b for b in boost_seq if b in set(ranked)]
-    if session_id:
-        from feed import frequency
-
-        capped = frequency.capped_listing_ids(
-            db, buyer_id=None, session_id=session_id,
-            boosted_ids={b["id"] for b in boost_slots.active_boosts(db)},
-        )
-        if capped:
-            ranked = [pid for pid in ranked if pid not in capped]
-            boost_seq = [b for b in boost_seq if b not in capped]
-    page_ids, has_more = boost_slots.compose_page(ranked, boost_seq, page=page, limit=limit)
-    if not has_more and len(ranked) >= 800:
-        has_more = True
-    rows = _fetch_products_by_ids(db, page_ids)
-    logger.info(
-        "feed:guest source=%s page=%s ranked=%s page_n=%s total_ms=%.1f",
-        source,
-        page,
-        len(ranked),
-        len(rows),
-        (time.perf_counter() - started) * 1000,
-    )
-    return _with_ratings(db, [_to_response(item) for item in rows]), has_more
-
-
-def rebuild_guest_ranking() -> dict[str, int]:
-    """Cron entry. Rebuilds the shared guest order and stores it."""
-    from db.supabase import get_supabase_admin
-    from feed import snapshots
-
-    db = get_supabase_admin()
-    snapshots.clear_memory()
-    ids = _build_recency_order(db, category=None) or []
-    snapshots.remember(ids)
-    snapshots.save(db, ids)
-    logger.info("feed:guest cron rebuilt ranked=%s", len(ids))
-    return {"ranked": len(ids)}
-
-
-def _build_recency_order(client: Client, *, category: str | None) -> list[str] | None:
-    """Diversified recency order from id/shop/created_at only."""
-    from db.supabase import with_supabase_retry
-
-    fetch_n = 800
-
-    def _run():
-        q = (
-            client.table("products")
-            .select("id,shop_id,created_at,title,image_urls")
-            .eq("status", "active")
-            .eq("is_published", True)
-            .order("created_at", desc=True)
-            .limit(fetch_n)
-        )
-        return _apply_category_to_query(q, category).execute()
-
-    try:
-        resp = with_supabase_retry(_run, label="guest_rank_ids")
-    except Exception as exc:
-        logger.warning("guest rank build failed: %s", exc)
-        return None
-    raw = guest_quality_filter(client, list(resp.data or []))
-    diversified = _diversify_by_shop(raw, limit=len(raw) or 1)
-    ids = [str(row.get("id")) for row in diversified if row.get("id")]
-    return promote_boosted(ids, sig.collect_boost_map(client, ids))
-
-
-GUEST_HIDDEN_FRAUD = frozenset({"high", "critical"})
-
-
-def _passes_quality_floor(row: dict[str, Any]) -> bool:
-    images = row.get("image_urls")
-    has_image = bool([u for u in images if u]) if isinstance(images, list) else bool(images)
-    return has_image and len((row.get("title") or "").strip()) >= 3
-
-
-def guest_quality_filter(client: Client, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Guest feed floor: a photo and a real title, live shop, no high/critical fraud."""
-    rows = [r for r in rows if r.get("id") and _passes_quality_floor(r)]
-    if not rows:
-        return rows
-    shop_by = {str(r["id"]): str(r.get("shop_id") or "") for r in rows}
-    try:
-        meta = sig.collect_shop_meta(client, list({s for s in shop_by.values() if s}))
-        fraud = sig.collect_fraud_severity(client, list(shop_by), shop_by, meta)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("guest fraud filter skipped: %s", exc)
-        return rows
-    out = []
-    for r in rows:
-        pid = str(r["id"])
-        if fraud.get(pid) in GUEST_HIDDEN_FRAUD:
-            continue
-        shop = meta.get(shop_by[pid])
-        if shop is not None and shop.get("is_active") is False:
-            continue
-        out.append(r)
-    return out
-
-
-BOOST_POINTS_PER_RANK = 5.0
-
-
-def promote_boosted(ids: list[str], boost_map: dict[str, dict[str, Any]]) -> list[str]:
-    """Guest order is recency-based; a boost lifts the ad by score_bonus / 5 places."""
-    if not boost_map:
-        return ids
-    out = list(ids)
-    for pid in [i for i in ids if i in boost_map]:
-        sb = float(boost_map[pid].get("score_bonus") or 0) or 50.0
-        idx = out.index(pid)
-        target = max(0, idx - int(sb / BOOST_POINTS_PER_RANK))
-        out.pop(idx)
-        out.insert(target, pid)
-    return out
-
-
-# ---------------------------------------------------------------------------
-# Vector preference + ANN
-# ---------------------------------------------------------------------------
-
-def _interaction_product_ids(signals: dict[str, Any]) -> list[str]:
-    ids: list[str] = []
-    seen: set[str] = set()
-    for interaction in signals.get("interactions") or []:
-        pid = str(interaction.get("product_id") or "")
-        if pid and pid not in seen and pid != "None":
-            seen.add(pid)
-            ids.append(pid)
-    for key in ("liked_product_ids", "viewed_product_ids", "saved_product_ids"):
-        for pid in signals.get(key) or []:
-            s = str(pid)
-            if s and s not in seen:
-                seen.add(s)
-                ids.append(s)
-    return ids[:80]
-
-
-def _load_embeddings_for_ids(
-    client: Client,
-    product_ids: list[str],
-) -> dict[str, list[float]]:
-    """Fetch JSONB embeddings only for the small interaction set."""
-    if not product_ids:
-        return {}
-    out: dict[str, list[float]] = {}
-    chunk = 80
-    for i in range(0, len(product_ids), chunk):
-        subset = product_ids[i : i + chunk]
-        try:
-            r = (
-                client.table("products")
-                .select("id,embedding")
-                .in_("id", subset)
-                .execute()
-            )
-        except Exception as exc:
-            logger.warning("interaction embedding fetch failed: %s", exc)
-            continue
-        for row in r.data or []:
-            pid = str(row.get("id") or "")
-            emb = parse_embedding(row.get("embedding"))
-            if pid and emb:
-                out[pid] = emb
-    return out
-
-
-def _match_products_by_vector(
-    client: Client,
-    user_vector: list[float],
-    *,
-    match_count: int = VECTOR_MATCH_COUNT,
-    exclude_ids: list[str] | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, float]]:
-    """ANN cosine match via pgvector RPC. Returns (lean rows, taste_scores)."""
-    if not user_vector:
-        return [], {}
-    try:
-        payload = {
-            "query_embedding": "[" + ",".join(str(float(v)) for v in user_vector) + "]",
-            "match_count": int(match_count),
-            "exclude_ids": [pid for pid in (exclude_ids or []) if pid][:400],
-        }
-        r = client.rpc("match_feed_products", payload).execute()
-    except Exception as exc:
-        logger.info("match_feed_products RPC unavailable (apply 032): %s", exc)
-        return [], {}
-
-    rows: list[dict[str, Any]] = []
-    taste: dict[str, float] = {}
-    for row in r.data or []:
-        pid = str(row.get("id") or "")
-        if not pid:
-            continue
-        sim = float(row.get("similarity") or 0.0)
-        taste[pid] = max(0.0, min(sim, 1.0))
-        rows.append({
-            "id": pid,
-            "shop_id": str(row.get("shop_id") or ""),
-            "category": row.get("category"),
-            "listing_score": int(row.get("listing_score") or 0),
-            "created_at": row.get("created_at"),
-            "view_count": int(row.get("view_count") or 0),
-            "title": "",
-            "price_ugx": 0,
-            "image_urls": [],
-            "is_published": True,
-            "status": "active",
-        })
-    return rows, taste
-
-
-def _hydrate_candidate_details(
-    client: Client,
-    candidates: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Fill lean score fields for candidates that only have id/shop from ANN."""
-    need = [
-        str(c.get("id"))
-        for c in candidates
-        if c.get("id") and not c.get("title")
-    ]
-    seen_order: list[str] = []
-    seen: set[str] = set()
-    for c in candidates:
-        pid = str(c.get("id") or "")
-        if pid and pid not in seen:
-            seen.add(pid)
-            seen_order.append(pid)
-
-    by_id: dict[str, dict[str, Any]] = {
-        str(c.get("id")): c for c in candidates if c.get("id") and c.get("title")
-    }
-    if need:
-        chunk = 100
-        for i in range(0, len(need), chunk):
-            subset = need[i : i + chunk]
-            try:
-                r = _active_products_query(client).in_("id", subset).execute()
-            except Exception as exc:
-                logger.warning("candidate hydrate failed: %s", exc)
-                continue
-            for row in r.data or []:
-                pid = str(row.get("id") or "")
-                if pid:
-                    by_id[pid] = row
-
-    return [by_id[pid] for pid in seen_order if pid in by_id]
-
-
-# ---------------------------------------------------------------------------
-# Candidate pool
-# ---------------------------------------------------------------------------
-
-def _fetch_candidates(
-    client: Client,
-    signals: dict[str, Any],
-    pool_limit: int = C.CANDIDATE_POOL_MAX,
-) -> list[dict[str, Any]]:
-    seen: set[str] = set()
-    out: list[dict[str, Any]] = []
-
-    def _add(rows: list[dict[str, Any]] | None) -> None:
-        for row in rows or []:
-            pid = str(row.get("id", ""))
-            if pid and pid not in seen:
-                seen.add(pid)
-                out.append(row)
-
-    jobs: list[tuple[str, Any]] = [
-        (
-            "top-scored",
-            lambda: (
-                _active_products_query(client)
-                .order("listing_score", desc=True)
-                .order("created_at", desc=True)
-                .limit(min(350, pool_limit))
-                .execute()
-            ),
-        )
-    ]
-    if signals["followed_shop_ids"]:
-        followed = list(signals["followed_shop_ids"])
-        jobs.append(
-            (
-                "followed",
-                lambda: (
-                    _active_products_query(client)
-                    .in_("shop_id", followed)
-                    .order("listing_score", desc=True)
-                    .limit(200)
-                    .execute()
-                ),
-            )
-        )
-    if signals["categories"]:
-        categories = list(signals["categories"])
-        jobs.append(
-            (
-                "categories",
-                lambda: (
-                    _active_products_query(client)
-                    .in_("category", categories)
-                    .order("listing_score", desc=True)
-                    .limit(200)
-                    .execute()
-                ),
-            )
-        )
-    jobs.append(
-        (
-            "recent",
-            lambda: (
-                _active_products_query(client)
-                .order("created_at", desc=True)
-                .limit(min(200, pool_limit))
-                .execute()
-            ),
-        )
-    )
-    if signals["categories"]:
-        categories = list(signals["categories"])
-        jobs.append(
-            (
-                "exploration",
-                lambda: (
-                    _active_products_query(client)
-                    .not_.in_("category", categories)
-                    .order("created_at", desc=True)
-                    .limit(100)
-                    .execute()
-                ),
-            )
-        )
-
-    from concurrent.futures import ThreadPoolExecutor
-
-    def _exec(job: tuple[str, Any]) -> list[dict[str, Any]]:
-        label, fn = job
-        try:
-            return list(fn().data or [])
-        except Exception as exc:
-            logger.warning("candidates(%s) failed: %s", label, exc)
-            return []
-
-    with ThreadPoolExecutor(max_workers=min(5, len(jobs))) as pool:
-        batches = list(pool.map(_exec, jobs))
-    for rows in batches:
-        _add(rows)
-
-    return out[:pool_limit]
-
-
-# ---------------------------------------------------------------------------
-# Main entrypoint
-# ---------------------------------------------------------------------------
 
 def get_algorithm_feed(
-    client: Client,
+    *,
     user_id: str | None = None,
     page: int = 1,
     limit: int = 20,
-    *,
     exclude_ids: list[str] | None = None,
     session_id: str | None = None,
     category: str | None = None,
     filters: ListingFilters | None = None,
-) -> tuple[list[ProductResponse], bool, int | None]:
-    """Personalized feed with layered composition and vendor-diversity rules.
-
-    Ranking lifecycle (per authenticated user):
-      * Cold / TTL expired (`refreshed_at` older than 1 hour): full score + place,
-        then upsert `user_feed_cache` with new ranked IDs.
-        * Hot (within 1 hour): serve cached ranked IDs, slice by page/cursor,
-          hydrate card columns only. No re-score.
-      * Within TTL, newly created listings are merged via `_merge_recent_unseen_ids`.
-
-    Authenticated users never short-circuit to pure latest solely because they
-    lack likes/follows yet — we still score organic inventory and cache it.
-    """
-    # Feed ranking + cache must use service role (table grants + RLS).
-    from db.supabase import get_supabase_admin
-
+    version: str | None = None,
+) -> FeedPage:
     db = get_supabase_admin()
-    active_filters = filters if filters is not None and filters.is_active() else None
-    if active_filters is None and category:
-        active_filters = ListingFilters(category=category)
-    if active_filters is not None:
-        logger.info(
-            "feed:path=catalog_filters page=%s limit=%s sort=%s",
-            page, limit, active_filters.sort,
+    active = filters if filters is not None and filters.is_active() else None
+    if active is None and category:
+        active = ListingFilters(category=category)
+    if active is not None:
+        rows, total, paid = _catalog_page(db, active, page=page, limit=limit)
+        return FeedPage(
+            items=_cards(db, rows),
+            has_more=page * limit < total,
+            total=total,
+            placements={str(r["id"]): "boosted" if str(r["id"]) in paid else "organic" for r in rows},
         )
-        rows, total = _catalog_page(db, active_filters, page=page, limit=limit)
-        has_more = page * limit < total
-        return _with_ratings(db, [_to_response(row) for row in rows]), has_more, total
-
-    if not user_id:
-        logger.info(
-            "feed:path=guest_latest page=%s limit=%s category=%s",
-            page, limit, category or "-",
-        )
-        items, has_more = _get_latest_feed_page(
-            db, page=page, limit=limit, category=category, session_id=session_id
-        )
-        return items, has_more, None
-
-    try:
-        C.refresh_from_db()
-    except Exception:
-        pass
-
-    # Category-scoped feeds must not reuse the unfiltered ranked-ID cache.
-    cached_ids, is_fresh, refreshed_at = ([], False, None)
-    if not category:
-        cached_ids, is_fresh, refreshed_at = _load_cached_ranked_ids(db, user_id)
-    if cached_ids and is_fresh:
-        cached_ids = _merge_recent_unseen_ids(db, cached_ids, refreshed_at)
-        page_ids, has_more = _page_ids_from_ranked(
-            cached_ids,
-            page=page,
-            limit=limit,
-            exclude_ids=exclude_ids,
-            user_id=user_id,
-            session_id=session_id,
-            boost_seq=_viewer_boost_seq(db, user_id, cached_ids),
-        )
-        if not page_ids:
-            return [], False, None
-        cached_rows = _fetch_products_by_ids(db, page_ids)
-        if cached_rows:
-            logger.info(
-                "feed:path=cache_hit user=%s page=%s n=%s cached=%s ttl_s=%s",
-                user_id, page, len(cached_rows), len(cached_ids), FEED_CACHE_TTL_SECONDS,
-            )
-            return _with_ratings(db, [_to_response(row) for row in cached_rows]), has_more, None
-        # Every cached id on this page went inactive: fall through and re-score
-        # (any page) instead of returning an empty page that ends scrolling.
-        logger.info(
-            "feed:path=cache_miss_empty_page user=%s page=%s ids=%s -> rescore",
-            user_id, page, len(page_ids),
-        )
-
-    score_started = time.perf_counter()
-    signals = sig.collect_user_signals(db, user_id)
-    signals_ms = (time.perf_counter() - score_started) * 1000
-    # Soft signals from recent impressions so scroll-only users still
-    # personalize by category instead of falling onto pure latest.
-    try:
-        impressed = list(
-            imp.recent_impressions_for_viewer(
-                buyer_id=user_id,
-                session_id=None,
-                hours=72,
-                limit=40,
-            )
-        )
-        if impressed:
-            try:
-                cat_resp = (
-                    db.table("products")
-                    .select("category")
-                    .in_("id", impressed[:40])
-                    .execute()
-                )
-                for p in cat_resp.data or []:
-                    if p.get("category"):
-                        signals["categories"].add(p["category"])
-            except Exception:
-                pass
-    except Exception as exc:
-        logger.info("feed: impression soft-signals skipped: %s", exc)
-
-    has_personal_signals = bool(
-        signals["categories"]
-        or signals["followed_shop_ids"]
-        or signals["search_terms"]
-        or signals["interactions"]
-    )
-
-    interaction_ids = _interaction_product_ids(signals)
-    embedding_map = _load_embeddings_for_ids(db, interaction_ids)
-    user_vector = sig.build_user_preference_vector(signals, embedding_map)
-
-    taste_scores: dict[str, float] = {}
-    vector_rows: list[dict[str, Any]] = []
-    if user_vector:
-        vector_rows, taste_scores = _match_products_by_vector(
-            db,
-            user_vector,
-            match_count=VECTOR_MATCH_COUNT,
-            exclude_ids=None,
-        )
-
-    candidates_started = time.perf_counter()
-    candidates = _fetch_candidates(db, signals)
-    candidates_ms = (time.perf_counter() - candidates_started) * 1000
-    if vector_rows:
-        candidates = _hydrate_candidate_details(db, vector_rows + candidates)
-    if category:
-        candidates = [c for c in candidates if _product_matches_category(c, category)]
-        if taste_scores:
-            keep = {str(c.get("id")) for c in candidates if c.get("id")}
-            taste_scores = {pid: sc for pid, sc in taste_scores.items() if pid in keep}
-
-    if not candidates:
-        logger.warning(
-            "feed:path=fallback_latest user=%s reason=no_candidates category=%s",
-            user_id, category or "-",
-        )
-        items, has_more = _get_latest_feed_page(
-            db, page=page, limit=limit, category=category
-        )
-        return items, has_more, None
-
-    if user_vector and not taste_scores:
-        sample_ids = [str(c["id"]) for c in candidates[:120] if c.get("id")]
-        sample_emb = _load_embeddings_for_ids(db, sample_ids)
-        for pid, emb in sample_emb.items():
-            taste_scores[pid] = max(0.0, cosine_similarity(user_vector, emb))
-
-    product_ids = [str(p["id"]) for p in candidates if p.get("id")]
-    shop_ids = list({str(p["shop_id"]) for p in candidates if p.get("shop_id")})
-
-    enrich_started = time.perf_counter()
-    from concurrent.futures import ThreadPoolExecutor
-
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        shop_future = pool.submit(sig.collect_shop_meta, db, shop_ids)
-        velocity_future = pool.submit(sig.collect_velocity_map, db, product_ids)
-        boost_future = pool.submit(sig.collect_boost_map, db, product_ids)
-        shop_meta = shop_future.result()
-        velocity_map = velocity_future.result()
-        boost_map = boost_future.result()
-    enrich_ms = (time.perf_counter() - enrich_started) * 1000
-    shop_id_by_product = {
-        str(p["id"]): str(p.get("shop_id", "")) for p in candidates if p.get("id")
-    }
-    fraud_map = sig.collect_fraud_severity(db, product_ids, shop_id_by_product, shop_meta)
-
-    shop_impressions = imp.shop_impressions_for_listings(
-        shop_id_by_product, hours=C.EXPOSURE_WINDOW_HOURS
-    )
-    exposure_multiplier = S.build_exposure_multiplier(shop_impressions)
-
-    now = datetime.now(timezone.utc)
-    score_fn = partial(
-        S.score_product,
-        signals=signals,
-        user_vector=user_vector,
-        shop_meta=shop_meta,
-        velocity_map=velocity_map,
-        boost_map=boost_map,
-        fraud_map=fraud_map,
-        exposure_multiplier=exposure_multiplier,
-        taste_scores=taste_scores,
-        now=now,
-    )
-    placement_cap = min(FEED_CACHE_MAX_IDS, max(limit * 8, 240))
-    placed = rank_and_place(
-        candidates,
-        score_fn,
-        boost_map=boost_map,
-        shop_meta=shop_meta,
-        signals=signals,
-        limit=placement_cap,
-    )
-
-    ranked_ids = [
-        str(item["product"].get("id"))
-        for item in placed
-        if item.get("product") and item["product"].get("id")
-    ]
-    if not category:
-        _save_cached_ranked_ids(
-            db,
-            user_id,
-            ranked_ids,
-            preference_vector=user_vector,
-            candidate_count=len(candidates),
-        )
-
-    logger.info(
-        "feed:path=scored_cached user=%s pool=%d ranked=%d taste=%d vector=%s signals=%s ann=%d "
-        "signals_ms=%.1f candidates_ms=%.1f enrich_ms=%.1f total_ms=%.1f ttl_s=%s",
-        user_id,
-        len(candidates),
-        len(ranked_ids),
-        len(taste_scores),
-        "yes" if user_vector else "no",
-        "yes" if has_personal_signals else "organic",
-        len(vector_rows),
-        signals_ms,
-        candidates_ms,
-        enrich_ms,
-        (time.perf_counter() - score_started) * 1000,
-        FEED_CACHE_TTL_SECONDS,
-    )
-
-    page_ids, has_more = _page_ids_from_ranked(
-        ranked_ids,
-        page=page,
-        limit=limit,
-        exclude_ids=exclude_ids,
+    return _home_page(
+        db,
         user_id=user_id,
         session_id=session_id,
-        boost_seq=_viewer_boost_seq(
-            db, user_id, ranked_ids,
-            user_vector=user_vector or None,
-            categories=set(signals.get("categories") or set()),
-        ),
+        page=page,
+        limit=limit,
+        version=version,
+        exclude_ids=exclude_ids,
     )
-    page_rows = _fetch_products_by_ids(db, page_ids)
-    if page_rows:
-        return _with_ratings(db, [_to_response(row) for row in page_rows]), has_more, None
 
-    by_id = {
-        str(item["product"].get("id")): item["product"]
-        for item in placed
-        if item.get("product") and item["product"].get("id")
-    }
-    return _with_ratings(db, [_to_response(by_id[pid]) for pid in page_ids if pid in by_id]), has_more, None
+
+def get_latest_feed(*, limit: int = 20, page: int = 1, filters: ListingFilters | None = None) -> list[ProductResponse]:
+    return get_algorithm_feed(page=page, limit=limit, filters=filters).items

@@ -1,11 +1,9 @@
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Cookie, Depends, Header, Query, Response
-from supabase import Client
 
 from core.schemas import PaginationParams
 from core.security import get_optional_user_id
-from db.supabase import get_supabase_client
 from shop.schemas import ProductResponse
 from feed import service as feed_service
 from feed.catalog import ListingFilters, listing_filters
@@ -13,18 +11,10 @@ from feed.composite import get_home_feed
 
 router = APIRouter(prefix="/feed", tags=["feed"])
 
-# Shared Cache-Control policy for public list endpoints. Vercel's edge caches
-# public responses with `s-maxage`, so we get shared caching without any
-# in-process store (which would be per-invocation on serverless anyway).
 _PUBLIC_CACHE_HEADER = "public, s-maxage=300, stale-while-revalidate=60"
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _split_ids(raw: str | None) -> list[str]:
-    """Comma-separated UUID list -> deduped list. Silently ignores garbage."""
     if not raw:
         return []
     seen: set[str] = set()
@@ -34,63 +24,40 @@ def _split_ids(raw: str | None) -> list[str]:
         if pid and pid not in seen and len(pid) <= 64:
             seen.add(pid)
             out.append(pid)
-    return out[:500]  # hard cap — protects URL / header size
+    return out[:500]
 
 
-def _decode_page_cursor(raw: str | None) -> int | None:
-    if not raw:
-        return None
-    v = raw.strip()
-    if not v.startswith("p:"):
-        return None
+def _decode_cursor(raw: str | None) -> tuple[int | None, str | None]:
+    parts = (raw or "").strip().split(":")
+    version = None
+    if len(parts) == 4 and parts[0] == "v" and 0 < len(parts[1]) <= 32:
+        version, parts = parts[1], parts[2:]
+    if len(parts) != 2 or parts[0] != "p":
+        return None, None
     try:
-        page = int(v[2:])
+        page = int(parts[1])
     except ValueError:
-        return None
-    return page if page >= 1 else None
+        return None, None
+    return (page, version) if page >= 1 else (None, None)
 
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
 
 @router.get("/home")
 async def home_feed(
     response: Response,
     filters: Annotated[ListingFilters, Depends(listing_filters)],
-    limit: int = Query(72, ge=1, le=200),
+    limit: int = Query(40, ge=1, le=200),
     page: int = Query(1, ge=1),
-    cursor: str | None = Query(
-        None,
-        description="Continuation cursor (format: p:<page>). When present it overrides page.",
-    ),
-    exclude_ids: str | None = Query(
-        None,
-        description="Legacy. Prefer cursor. Ignored when cursor is present.",
-    ),
+    cursor: str | None = Query(None, description="Continuation cursor: v:<version>:p:<page> or p:<page>."),
+    exclude_ids: str | None = Query(None, description="Legacy. Ignored when cursor is present."),
     user_id: str | None = Depends(get_optional_user_id),
     session_id: str | None = Cookie(default=None, alias="midora_session_id"),
     session_id_header: str | None = Header(default=None, alias="X-Midora-Session"),
 ) -> dict[str, Any]:
-    """Composite endpoint: all 4 feeds with shop + boost data embedded.
-
-    Personalized users (authenticated):
-      * Rank once, store IDs in `user_feed_cache` for **1 hour TTL**.
-      * Within TTL: hydrate cards from cached order (no re-score).
-      * After TTL: full algorithm runs again and refreshes the cache.
-
-    Pagination:
-      * First paint: `GET /feed/home?limit=36` (no cursor, no exclude_ids).
-      * Load-more: `GET /feed/home?limit=36&cursor=p:2` using `next_cursor`.
-      * `exclude_ids` is legacy; ignored when `cursor` is present so clients
-        cannot double-skip a page.
-    """
     session = session_id_header or session_id
-    cursor_page = _decode_page_cursor(cursor)
+    cursor_page, version = _decode_cursor(cursor)
     effective_page = cursor_page or page
     excluded = [] if cursor_page is not None else _split_ids(exclude_ids)
     if not user_id:
-        # Anonymous home feed is safe to edge-cache briefly.
         response.headers["Cache-Control"] = "public, s-maxage=60, stale-while-revalidate=120"
     return get_home_feed(
         limit=limit,
@@ -99,35 +66,26 @@ async def home_feed(
         exclude_ids=excluded,
         session_id=session,
         filters=filters,
+        version=version,
     )
 
 
 @router.get("/cron/refresh")
 @router.post("/cron/refresh")
-async def refresh_guest_ranking(
+async def refresh_ranking(
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
-    """Rebuild the shared guest ranking. Vercel cron calls this daily; listing writes also invalidate it."""
     from media.routes import authorize_cron
 
-    from feed.service import rebuild_guest_ranking
-
     authorize_cron(authorization)
-    return rebuild_guest_ranking()
+    return feed_service.rebuild_ranking()
 
 
 @router.get("/latest", response_model=list[ProductResponse])
 async def get_latest_feed(
     response: Response,
-    client: Annotated[Client, Depends(get_supabase_client)],
     params: Annotated[PaginationParams, Depends()],
     filters: Annotated[ListingFilters, Depends(listing_filters)],
 ):
-    """Latest products, services, and opportunities; public and edge-cache friendly."""
     response.headers["Cache-Control"] = _PUBLIC_CACHE_HEADER
-    return feed_service.get_latest_feed(
-        client,
-        limit=params.limit,
-        page=params.page,
-        filters=filters,
-    )
+    return feed_service.get_latest_feed(limit=params.limit, page=params.page, filters=filters)

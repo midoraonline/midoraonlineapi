@@ -2,7 +2,6 @@ from typing import Any
 
 from core.postgrest_compat import is_undefined_column_error
 from postgrest.exceptions import APIError
-from feed.service import invalidate_user_feed_cache
 
 
 def _parse_rpc_int(data: Any) -> int | None:
@@ -291,7 +290,7 @@ def record_shop_view(client: Any, shop_id: str) -> int:
 
 
 def _record_buyer_listing_event(product_id: str, buyer_id: str, event_type: str) -> None:
-    """Persist a per-user listing event for feed personalization (best-effort)."""
+    """Persist a per-user listing event for analytics and ranking (best-effort)."""
     from db.supabase import get_supabase_admin
 
     admin = get_supabase_admin()
@@ -338,13 +337,11 @@ def follow_shop(client: Any, user_id: str, shop_id: str) -> dict[str, Any]:
     if not shop_exists(client, shop_id):
         raise ValueError("Shop not found")
     client.table("shop_follows").upsert({"user_id": user_id, "shop_id": shop_id}).execute()
-    invalidate_user_feed_cache(client, user_id)
     return get_shop_engagement(client, shop_id, user_id)
 
 
 def unfollow_shop(client: Any, user_id: str, shop_id: str) -> dict[str, Any]:
     client.table("shop_follows").delete().eq("user_id", user_id).eq("shop_id", shop_id).execute()
-    invalidate_user_feed_cache(client, user_id)
     return get_shop_engagement(client, shop_id, user_id)
 
 
@@ -352,13 +349,11 @@ def like_shop(client: Any, user_id: str, shop_id: str) -> dict[str, Any]:
     if not shop_exists(client, shop_id):
         raise ValueError("Shop not found")
     client.table("shop_likes").upsert({"user_id": user_id, "shop_id": shop_id}).execute()
-    invalidate_user_feed_cache(client, user_id)
     return get_shop_engagement(client, shop_id, user_id)
 
 
 def unlike_shop(client: Any, user_id: str, shop_id: str) -> dict[str, Any]:
     client.table("shop_likes").delete().eq("user_id", user_id).eq("shop_id", shop_id).execute()
-    invalidate_user_feed_cache(client, user_id)
     return get_shop_engagement(client, shop_id, user_id)
 
 
@@ -366,11 +361,9 @@ def like_product(client: Any, user_id: str, product_id: str) -> dict[str, Any]:
     if not product_exists(client, product_id):
         raise ValueError("Product not found")
     client.table("product_likes").upsert({"user_id": user_id, "product_id": product_id}).execute()
-    invalidate_user_feed_cache(client, user_id)
     return get_product_engagement(client, product_id, user_id)
 
 
 def unlike_product(client: Any, user_id: str, product_id: str) -> dict[str, Any]:
     client.table("product_likes").delete().eq("user_id", user_id).eq("product_id", product_id).execute()
-    invalidate_user_feed_cache(client, user_id)
     return get_product_engagement(client, product_id, user_id)

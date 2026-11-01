@@ -10,7 +10,7 @@ from db.supabase import get_supabase_admin, get_supabase_client
 from core.security import TokenPayload, get_current_claims, get_current_user_id, get_optional_user_id
 from payments import plan_service
 from ranking.service import calculate_listing_score
-from shop import engagement_service, service as shop_service
+from shop import engagement_service, listing_actions, service as shop_service
 from platform_settings.flags import analytics_enabled, assert_posting_open
 from shop.events import (
     product_update_requires_moderation,
@@ -234,7 +234,7 @@ async def create_listing(
 
     assert_posting_open()
     try:
-        shop_id, created_personal = resolve_shop_for_direct_post(client, user_id)
+        shop_id, _created_personal = resolve_shop_for_direct_post(client, user_id)
     except ShopChoiceRequired:
         raise HTTPException(
             status_code=400,
@@ -257,22 +257,22 @@ async def create_listing(
     product = await _insert_owned_product(client, user_id, shop_id, body)
     await publish_product_created(product, seller_id=user_id, background=background_tasks)
 
-    if created_personal:
-        new_role, changed = auth_service.promote_to_merchant(user_id)
-        if changed and new_role:
-            access, refresh = auth_service.create_access_and_refresh_tokens(
-                user_id,
-                new_role,
-                user_agent=request.headers.get("user-agent"),
-                ip=request.client.host if request.client else None,
-            )
-            set_auth_cookies(
-                response,
-                access_token=access,
-                refresh_token=refresh,
-                access_ttl_seconds=auth_service.access_ttl_seconds(),
-                refresh_ttl_seconds=auth_service.refresh_ttl_seconds(),
-            )
+    # Any first post turns a customer into a merchant; no-op for merchants/admins.
+    new_role, changed = auth_service.promote_to_merchant(user_id)
+    if changed and new_role:
+        access, refresh = auth_service.create_access_and_refresh_tokens(
+            user_id,
+            new_role,
+            user_agent=request.headers.get("user-agent"),
+            ip=request.client.host if request.client else None,
+        )
+        set_auth_cookies(
+            response,
+            access_token=access,
+            refresh_token=refresh,
+            access_ttl_seconds=auth_service.access_ttl_seconds(),
+            refresh_ttl_seconds=auth_service.refresh_ttl_seconds(),
+        )
 
     return product
 
@@ -606,24 +606,16 @@ async def delete_product(
 
 @router_products.post("/{product_id}/repost", response_model=ProductResponse)
 async def repost_product(
-  product_id: str,
-  client: Annotated[Client, Depends(get_supabase_client)],
-  user_id: str = Depends(get_current_user_id),
+    product_id: str,
+    client: Annotated[Client, Depends(get_supabase_client)],
+    user_id: str = Depends(get_current_user_id),
 ):
-    try:
-        ensure_product_owner(client, product_id, user_id)
-    except LookupError:
+    """Legacy route: same plan-based repost limits as /listings/{id}/repost."""
+    listing_actions.repost_listing(get_supabase_admin(), product_id, user_id)
+    updated = shop_service.get_product(client, product_id, user_id)
+    if not updated:
         raise HTTPException(status_code=404, detail="Product not found")
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
-    try:
-        updated = shop_service.repost_product(client, product_id)
-        if not updated:
-            raise HTTPException(status_code=404, detail="Product not found")
-        return updated
-    except ValueError as e:
-        raise HTTPException(status_code=429, detail=str(e))
+    return updated
 
 
 @router_products.post("/{product_id}/discount", response_model=ProductResponse)

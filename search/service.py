@@ -44,7 +44,7 @@ def log_search(
     result_count: int = 0,
     search_mode: str = "vector",
 ) -> None:
-    """Persist a search query to search_history for personalization and analytics."""
+    """Persist a search query to search_history for analytics."""
     q = _normalize_query(query)
     if len(q) < MIN_QUERY_LEN:
         return
@@ -59,10 +59,6 @@ def log_search(
 
     try:
         client.table("search_history").insert(payload).execute()
-        if user_id:
-            # Search intent is a strong personalization signal.
-            from feed.service import invalidate_user_feed_cache
-            invalidate_user_feed_cache(client, user_id)
     except Exception as exc:
         logger.warning("log_search failed: %s", exc)
 

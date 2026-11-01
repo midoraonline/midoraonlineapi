@@ -9,7 +9,8 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from auth.account_deletion import DeletionError, delete_account
+from admin.audit import actor_id, record_admin_action
+from auth.account_deletion import DeletionError, delete_account, is_last_admin
 from core.security import TokenPayload, require_admin_role
 from db.supabase import get_supabase_admin
 
@@ -21,10 +22,6 @@ _USER_COLS = (
     "user_role, status, created_at, last_seen_at"
 )
 _ROLES = ("customer", "merchant", "admin", "staff")
-
-
-def _actor(payload: TokenPayload | None) -> str | None:
-    return str(payload.sub) if payload and payload.sub else None
 
 
 def _clean_search(q: str) -> str:
@@ -129,18 +126,31 @@ async def admin_change_role(
     body: RoleBody,
     payload: TokenPayload | None = Depends(require_admin_role),
 ) -> dict[str, Any]:
-    if user_id == _actor(payload):
+    if user_id == actor_id(payload):
         raise HTTPException(status_code=400, detail={"detail": "You can't change your own role.", "code": "self_action"})
     client = get_supabase_admin()
     user = _get_user(client, user_id)
     if user.get("status") == "deleted":
         raise HTTPException(status_code=409, detail="User is deleted")
+    if user.get("user_role") == "admin" and body.role != "admin" and is_last_admin(client, user_id):
+        raise HTTPException(
+            status_code=409,
+            detail={"detail": "You can't demote the last admin account.", "code": "last_admin"},
+        )
     client.table("users").update({"user_role": body.role}).eq("id", user_id).execute()
     try:
         client.table("profiles").update({"user_role": body.role}).eq("id", user_id).execute()
     except Exception:  # noqa: BLE001
         pass
-    logger.info("admin %s set role of %s to %s", _actor(payload), user_id, body.role)
+    record_admin_action(
+        client,
+        actor=actor_id(payload),
+        action="user.role_changed",
+        target_type="user",
+        target_id=user_id,
+        before={"role": user.get("user_role")},
+        after={"role": body.role},
+    )
     return _get_user(client, user_id)
 
 
@@ -154,7 +164,7 @@ async def admin_set_status(
     body: StatusBody,
     payload: TokenPayload | None = Depends(require_admin_role),
 ) -> dict[str, Any]:
-    if user_id == _actor(payload):
+    if user_id == actor_id(payload):
         raise HTTPException(status_code=400, detail={"detail": "You can't suspend yourself.", "code": "self_action"})
     client = get_supabase_admin()
     user = _get_user(client, user_id)
@@ -172,7 +182,7 @@ async def admin_set_status(
         client.table("refresh_tokens").update({"revoked_at": now}).eq("user_id", user_id).is_(
             "revoked_at", "null"
         ).execute()
-    logger.info("admin %s set status of %s to %s", _actor(payload), user_id, body.status)
+    logger.info("admin %s set status of %s to %s", actor_id(payload), user_id, body.status)
     return _get_user(client, user_id)
 
 
@@ -181,13 +191,13 @@ async def admin_delete_user(
     user_id: str,
     payload: TokenPayload | None = Depends(require_admin_role),
 ) -> dict[str, Any]:
-    if user_id == _actor(payload):
+    if user_id == actor_id(payload):
         raise HTTPException(
             status_code=400,
             detail={"detail": "Delete your own account from Settings.", "code": "self_action"},
         )
     try:
-        summary = await delete_account(user_id, actor_id=_actor(payload))
+        summary = await delete_account(user_id, actor_id=actor_id(payload))
     except DeletionError as exc:
         raise HTTPException(
             status_code=404 if exc.code == "not_found" else 409,

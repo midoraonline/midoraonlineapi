@@ -154,7 +154,7 @@ def assert_price_for_publish(price_ugx: float | None, item_type: str | None) -> 
 
 
 def assert_contact_verified(user_id: str) -> None:
-    """Phone or email must be verified before a listing is created or published."""
+    """Phone and email must both be verified before a listing is created or published."""
     from auth.contact import contact_verification_status
     from db.supabase import get_supabase_admin
 
@@ -171,7 +171,7 @@ def assert_contact_verified(user_id: str) -> None:
     raise HTTPException(
         status_code=403,
         detail={
-            "detail": "Verify your phone or email before posting a listing.",
+            "detail": "Verify your phone and email before posting a listing.",
             "code": "verification_required",
         },
     )

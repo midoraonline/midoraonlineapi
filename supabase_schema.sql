@@ -520,7 +520,6 @@ DECLARE
   v_reports INT := 0;
   v_hours_since_created NUMERIC;
   v_recency_score NUMERIC;
-  v_boost_bonus INTEGER := 0;
   v_shop_trust NUMERIC(3,2);
   v_shop_fraud NUMERIC(3,2);
   v_score NUMERIC;
@@ -561,12 +560,6 @@ BEGIN
   FROM public.products WHERE id = p_product_id;
   v_recency_score := LEAST(GREATEST(50.0 - (v_hours_since_created * 50.0 / 168.0), 0), 50.0);
 
-  SELECT COALESCE(SUM(lb.score_bonus), 0) INTO v_boost_bonus
-  FROM public.listing_boosts lb
-  WHERE lb.listing_id = p_product_id
-    AND lb.active = true
-    AND lb.ends_at > now();
-
   SELECT COALESCE(s.trust_score, 0), COALESCE(s.fraud_score, 0)
   INTO v_shop_trust, v_shop_fraud
   FROM public.shops s
@@ -581,7 +574,6 @@ BEGIN
     + LEAST(v_saves::NUMERIC, 30.0) * 3.0
     + LEAST(v_shares::NUMERIC, 20.0) * 2.0
     + LEAST(v_messages::NUMERIC, 20.0) * 3.0
-    + COALESCE(v_boost_bonus, 0)
     + COALESCE(v_shop_trust, 0) * 10.0
     - LEAST(v_reports::NUMERIC, 20.0) * 15.0
     - COALESCE(v_shop_fraud, 0) * 20.0

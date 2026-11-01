@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -10,12 +11,23 @@ from core.authz import ensure_shop_owner
 from db.supabase import get_supabase_admin, get_supabase_client
 from core.security import get_current_user_id, get_optional_user_id
 from payments import plan_service
-from shop import engagement_service
+from shop import engagement_service, listing_stats
 from shop.schemas import ShopEngagementState, ViewCountResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _require_analytics(admin: Client, user_id: str) -> None:
+    if not plan_service.has_analytics_access(admin, user_id):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "detail": plan_service.ANALYTICS_UPGRADE_DETAIL,
+                "code": plan_service.ANALYTICS_UPGRADE_CODE,
+            },
+        )
 
 
 @router.get("/{shop_id}/engagement", response_model=ShopEngagementState)
@@ -235,14 +247,7 @@ async def shop_dashboard(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
-    if not plan_service.has_analytics_access(admin, user_id):
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "detail": plan_service.ANALYTICS_UPGRADE_DETAIL,
-                "code": plan_service.ANALYTICS_UPGRADE_CODE,
-            },
-        )
+    _require_analytics(admin, user_id)
 
     shop_data: dict[str, Any] | None = None
     try:
@@ -485,269 +490,93 @@ async def my_shops_stats(user_id: str = Depends(get_current_user_id)) -> dict:
 @router.get("/me/analytics")
 async def my_shops_analytics(
     user_id: str = Depends(get_current_user_id),
-    days: int = Query(30, ge=1, le=180),
+    days: int = Query(30, ge=1, le=365),
 ) -> dict:
-    """Rich merchant analytics: impressions, daily series, per-shop breakdown,
-    conversion funnels, and top listings. Powers the expanded merchant dashboard."""
-    from datetime import datetime, timedelta, timezone
-    from collections import defaultdict
-
     from platform_settings.flags import analytics_enabled
 
     if not analytics_enabled():
-        return {
-            "enabled": False,
-            "code": "analytics_disabled",
-            "window_days": days,
-        }
+        return {"enabled": False, "code": "analytics_disabled", "window_days": days}
 
     admin = get_supabase_admin()
-
-    if not plan_service.has_analytics_access(admin, user_id):
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "detail": plan_service.ANALYTICS_UPGRADE_DETAIL,
-                "code": plan_service.ANALYTICS_UPGRADE_CODE,
-            },
-        )
-
+    _require_analytics(admin, user_id)
     now = datetime.now(timezone.utc)
-    since_iso = (now - timedelta(days=days)).isoformat()
+    since = listing_stats.since_for(days, now)
 
-    # Shops owned
-    shops_r = (
-        admin.table("shops")
-        .select("id,name,slug,is_active,view_count,created_at,shop_type")
-        .eq("owner_id", user_id)
-        .execute()
+    shops = (
+        admin.table("shops").select("id,is_active").eq("owner_id", user_id).execute().data or []
     )
-    shops = shops_r.data or []
     shop_ids = [str(s["id"]) for s in shops if s.get("id")]
-
-    # follower_count/like_count aren't columns on shops — they're derived from
-    # the join tables (see tenants._row_to_shop_response / engagement_service).
-    follower_counts: dict[str, int] = defaultdict(int)
-    shop_like_counts: dict[str, int] = defaultdict(int)
-    if shop_ids:
-        try:
-            fr = admin.table("shop_follows").select("shop_id").in_("shop_id", shop_ids).execute()
-            for row in (fr.data or []):
-                follower_counts[str(row.get("shop_id") or "")] += 1
-        except Exception as exc:
-            logger.warning("me/analytics shop_follows lookup failed: %s", exc)
-        try:
-            lr = admin.table("shop_likes").select("shop_id").in_("shop_id", shop_ids).execute()
-            for row in (lr.data or []):
-                shop_like_counts[str(row.get("shop_id") or "")] += 1
-        except Exception as exc:
-            logger.warning("me/analytics shop_likes lookup failed: %s", exc)
-
-    if not shop_ids:
-        return {
-            "generated_at": now.isoformat(),
-            "window_days": days,
-            "summary": {},
-            "per_shop": [],
-            "top_products": [],
-            "trends": {"impressions": [], "views": [], "whatsapp": [], "messages": []},
-            "funnel": {},
-            "pool_mix": [],
-        }
-
-    # Products
-    prods_r = (
+    products = (
         admin.table("products")
-        .select("id,shop_id,title,view_count,category,price_ugx,is_published,created_at")
+        .select("id,shop_id,title,category,price_ugx,image_urls,is_published,status")
         .in_("shop_id", shop_ids)
         .execute()
-    )
-    products = prods_r.data or []
+        .data
+        or []
+    ) if shop_ids else []
     product_ids = [str(p["id"]) for p in products if p.get("id")]
-    prod_shop = {str(p["id"]): str(p.get("shop_id") or "") for p in products}
+    stats = listing_stats.by_listing(admin, product_ids, since)
 
-    # like_count isn't a column on products either — derive from product_likes.
-    product_like_counts: dict[str, int] = defaultdict(int)
-    for i in range(0, len(product_ids), 400):
-        subset = product_ids[i : i + 400]
-        try:
-            plr = admin.table("product_likes").select("product_id").in_("product_id", subset).execute()
-            for row in (plr.data or []):
-                product_like_counts[str(row.get("product_id") or "")] += 1
-        except Exception as exc:
-            logger.warning("me/analytics product_likes lookup failed: %s", exc)
-
-    # ── Impressions (chunked IN) ───────────────────────────────────────────
-    impressions_rows: list[dict[str, Any]] = []
-    chunk = 400
-    for i in range(0, len(product_ids), chunk):
-        subset = product_ids[i : i + chunk]
-        try:
-            r = (
-                admin.table("listing_impressions")
-                .select("listing_id,pool,created_at")
-                .in_("listing_id", subset)
-                .gte("created_at", since_iso)
-                .limit(50000)
-                .execute()
-            )
-            impressions_rows.extend(r.data or [])
-        except Exception as exc:
-            logger.warning("me/analytics impressions chunk failed: %s", exc)
-
-    total_impressions = len(impressions_rows)
-    impressions_by_product: dict[str, int] = defaultdict(int)
-    pool_counts: dict[str, int] = defaultdict(int)
-    impr_series: dict[str, int] = defaultdict(int)
-    for r in impressions_rows:
-        pid = str(r.get("listing_id") or "")
-        pool_counts[str(r.get("pool") or "organic")] += 1
-        impressions_by_product[pid] += 1
-        day = str(r.get("created_at") or "")[:10]
-        if day:
-            impr_series[day] += 1
-
-    # ── Listing events (views, whatsapp, messages) ─────────────────────────
-    events_rows: list[dict[str, Any]] = []
-    for i in range(0, len(product_ids), chunk):
-        subset = product_ids[i : i + chunk]
-        try:
-            r = (
-                admin.table("listing_events")
-                .select("listing_id,event_type,created_at")
-                .in_("listing_id", subset)
-                .gte("created_at", since_iso)
-                .limit(50000)
-                .execute()
-            )
-            events_rows.extend(r.data or [])
-        except Exception as exc:
-            logger.warning("me/analytics events chunk failed: %s", exc)
-
-    events_by_type: dict[str, int] = defaultdict(int)
-    views_by_product: dict[str, int] = defaultdict(int)
-    wa_by_product: dict[str, int] = defaultdict(int)
-    msg_by_product: dict[str, int] = defaultdict(int)
-    view_series: dict[str, int] = defaultdict(int)
-    wa_series: dict[str, int] = defaultdict(int)
-    msg_series: dict[str, int] = defaultdict(int)
-    for e in events_rows:
-        et = str(e.get("event_type") or "")
-        events_by_type[et] += 1
-        pid = str(e.get("listing_id") or "")
-        day = str(e.get("created_at") or "")[:10]
-        if et == "viewed":
-            views_by_product[pid] += 1
-            if day:
-                view_series[day] += 1
-        elif et == "whatsapp_clicked":
-            wa_by_product[pid] += 1
-            if day:
-                wa_series[day] += 1
-        elif et == "messaged":
-            msg_by_product[pid] += 1
-            if day:
-                msg_series[day] += 1
-
-    # ── Per-shop rollup ────────────────────────────────────────────────────
-    impressions_by_shop: dict[str, int] = defaultdict(int)
-    for pid, n in impressions_by_product.items():
-        sid = prod_shop.get(pid, "")
-        if sid:
-            impressions_by_shop[sid] += n
-
-    per_shop = []
-    for s in shops:
-        sid = str(s["id"])
-        per_shop.append({
-            "id": sid,
-            "name": s.get("name"),
-            "slug": s.get("slug"),
-            "is_active": bool(s.get("is_active", False)),
-            "shop_type": s.get("shop_type"),
-            "view_count": int(s.get("view_count") or 0),
-            "follower_count": follower_counts.get(sid, 0),
-            "like_count": shop_like_counts.get(sid, 0),
-            "impressions": impressions_by_shop.get(sid, 0),
-        })
-    per_shop.sort(key=lambda r: r["impressions"], reverse=True)
-
-    # ── Top products (by impressions) ──────────────────────────────────────
-    top_products = []
+    listings = []
     for p in products:
         pid = str(p["id"])
-        impr = impressions_by_product.get(pid, 0)
-        vw = int(p.get("view_count") or 0) + views_by_product.get(pid, 0)
-        top_products.append({
+        images = p.get("image_urls") if isinstance(p.get("image_urls"), list) else []
+        listings.append({
             "id": pid,
-            "title": p.get("title"),
+            "title": p.get("title") or "",
             "category": p.get("category"),
-            "shop_id": prod_shop.get(pid, ""),
-            "impressions": impr,
-            "views": vw,
-            "whatsapp_clicks": wa_by_product.get(pid, 0),
-            "messages": msg_by_product.get(pid, 0),
-            "likes": product_like_counts.get(pid, 0),
-            "ctr": (vw / impr) if impr > 0 else 0.0,
+            "shop_id": str(p.get("shop_id") or ""),
             "price_ugx": float(p.get("price_ugx") or 0),
+            "image_url": images[0] if images else None,
+            "live": p.get("status") == "active" and bool(p.get("is_published")),
+            **listing_stats.with_rates(stats[pid]),
         })
-    top_products.sort(key=lambda r: r["impressions"], reverse=True)
-    top_products = top_products[:15]
-
-    # ── Daily series (zero-filled) ────────────────────────────────────────
-    def _series(bucket: dict[str, int]) -> list[dict[str, Any]]:
-        out = []
-        for i in range(days):
-            d = (now - timedelta(days=days - 1 - i)).date().isoformat()
-            out.append({"day": d, "count": bucket.get(d, 0)})
-        return out
-
-    trends = {
-        "impressions": _series(impr_series),
-        "views": _series(view_series),
-        "whatsapp": _series(wa_series),
-        "messages": _series(msg_series),
-    }
-
-    total_views = sum(views_by_product.values()) + sum(int(p.get("view_count") or 0) for p in products)
-    total_wa = sum(wa_by_product.values())
-    total_msg = sum(msg_by_product.values())
-
-    funnel = {
-        "impressions": total_impressions,
-        "views": total_views,
-        "whatsapp_clicks": total_wa,
-        "messages": total_msg,
-        "view_rate": (total_views / total_impressions) if total_impressions else 0.0,
-        "wa_rate": (total_wa / total_views) if total_views else 0.0,
-        "msg_rate": (total_msg / total_views) if total_views else 0.0,
-    }
-
-    pool_mix = [{"label": k, "value": v} for k, v in sorted(pool_counts.items(), key=lambda x: -x[1])]
-
-    summary = {
-        "total_shops": len(shops),
-        "active_shops": sum(1 for s in shops if s.get("is_active")),
-        "total_products": len(products),
-        "published_products": sum(1 for p in products if p.get("is_published")),
-        "total_impressions": total_impressions,
-        "total_product_views": total_views,
-        "total_whatsapp_clicks": total_wa,
-        "total_messages": total_msg,
-        "total_shop_views": sum(int(s.get("view_count") or 0) for s in shops),
-        "total_followers": sum(follower_counts.values()),
-        "total_shop_likes": sum(shop_like_counts.values()),
-    }
+    listings.sort(key=lambda r: (r["impressions"], r["views"]), reverse=True)
 
     return {
         "generated_at": now.isoformat(),
         "window_days": days,
-        "summary": summary,
-        "per_shop": per_shop,
-        "top_products": top_products,
-        "trends": trends,
-        "funnel": funnel,
-        "pool_mix": pool_mix,
+        "summary": {
+            "total_shops": len(shops),
+            "active_shops": sum(1 for s in shops if s.get("is_active")),
+            "total_products": len(products),
+            "live_products": sum(1 for row in listings if row["live"]),
+            **listing_stats.with_rates(listing_stats.totals(stats)),
+        },
+        "listings": listings[:50],
+        "daily": listing_stats.daily(admin, product_ids, since, days),
     }
 
+
+@router.get("/me/listings/{listing_id}/stats")
+async def my_listing_stats(
+    listing_id: str,
+    user_id: str = Depends(get_current_user_id),
+    days: int = Query(30, ge=1, le=365),
+) -> dict:
+    from platform_settings.flags import analytics_enabled
+    from shop.listing_actions import owned_listing
+
+    if not analytics_enabled():
+        return {"enabled": False, "code": "analytics_disabled", "window_days": days}
+
+    admin = get_supabase_admin()
+    listing = owned_listing(admin, listing_id, user_id)
+    _require_analytics(admin, user_id)
+    now = datetime.now(timezone.utc)
+    since = listing_stats.since_for(days, now)
+    row = listing_stats.by_listing(admin, [listing_id], since)[listing_id]
+    return {
+        "generated_at": now.isoformat(),
+        "window_days": days,
+        "listing": {
+            "id": listing_id,
+            "title": listing.get("title") or "",
+            "category": listing.get("category"),
+            "live": listing.get("status") == "active" and bool(listing.get("is_published")),
+            "posted_at": listing.get("first_posted_at") or listing.get("created_at"),
+        },
+        "stats": listing_stats.with_rates(row),
+        "daily": listing_stats.daily(admin, [listing_id], since, days),
+    }
 
