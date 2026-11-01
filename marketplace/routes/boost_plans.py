@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from ranking.boost_service import list_active_boost_plans, purchase_boost, get_active_boost_for_listing
+from ranking.boost_service import list_active_boost_plans, get_active_boost_for_listing
 
 router = APIRouter()
 

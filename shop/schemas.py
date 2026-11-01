@@ -135,6 +135,7 @@ class ProductResponse(BaseModel):
     review_notes: str | None = None
     reviewed_at: str | None = None
     created_at: str | None
+    first_posted_at: str | None = None
     updated_at: str | None = None
     like_count: int = 0
     view_count: int = 0

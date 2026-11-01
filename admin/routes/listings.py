@@ -231,7 +231,7 @@ async def admin_review_listing(
 async def admin_reindex_embeddings(
     limit: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
-    """Backfill or refresh product embeddings for the personalized feed."""
+    """Backfill or refresh product embeddings for semantic search."""
     from feed.embeddings import backfill_missing_embeddings
 
     admin = get_supabase_admin()

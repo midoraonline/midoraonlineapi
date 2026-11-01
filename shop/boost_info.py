@@ -52,13 +52,3 @@ def active_boost_map(client: Any, listing_ids: list[str]) -> dict[str, dict[str,
         if lid and lid not in out:
             out[lid] = describe(r)
     return out
-
-
-def card_fields(info: dict[str, Any] | None) -> dict[str, Any]:
-    """Fields added to feed cards / product detail."""
-    return {
-        "boosted": info is not None,
-        "is_boosted": info is not None,
-        "boost_ends_at": info.get("ends_at") if info else None,
-        "boost": info,
-    }

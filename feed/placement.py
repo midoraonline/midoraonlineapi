@@ -1,279 +1,102 @@
-"""Post-ranking placement engine.
-
-Given the pre-scored candidate pool, produce the final ordered feed by:
-  1. Bucketing candidates into pools (organic / premium_store / fresh / exploration).
-  2. Placing reserved slots at deterministic cadences (every N positions).
-  3. Filling residual positions from the organic pool.
-  4. Applying a progressive vendor-diversity penalty during placement.
-  5. Applying the 12-position sliding-window rule
-     (max 2 listings per seller) as best-effort — relaxes when
-     needed so the feed still fills to `limit`.
-
-Placement is intentionally separate from scoring — the same score can end
-up in a different position depending on marketplace composition targets.
-"""
-
 from __future__ import annotations
 
-from collections import deque
-from datetime import datetime, timezone
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 from feed import config as C
-from feed.signals import parse_timestamp
+from feed.stages import LANES, StagePlan, lane_targets
 
-# How many window-eligible entries to compare when applying the vendor penalty.
-PENALTY_LOOKAHEAD = 12
-
-
-# ---------------------------------------------------------------------------
-# Pool bucketing
-# ---------------------------------------------------------------------------
-
-def bucketize(
-    scored: list[dict[str, Any]],
-    *,
-    boost_map: dict[str, dict[str, Any]],
-    shop_meta: dict[str, dict[str, Any]],
-    signals: dict[str, Any],
-    now: datetime,
-) -> dict[str, list[dict[str, Any]]]:
-    """Split scored candidates into named pools.
-
-    Each candidate can only live in ONE pool (highest-priority wins).
-    Priority order: premium_store >
-    fresh > exploration > organic.
-    """
-    pools: dict[str, list[dict[str, Any]]] = {
-        "premium_store": [],
-        "fresh": [],
-        "exploration": [],
-        "organic": [],
-    }
-
-    fresh_cutoff_hours = 24 * 3  # <= 3 days = fresh pool eligible
-
-    for entry in scored:
-        product = entry["product"]
-        pid = str(product.get("id", ""))
-        shop_id = str(product.get("shop_id", ""))
-        meta = shop_meta.get(shop_id, {})
-
-        # Boosts do NOT pull a listing out of its natural pool: the score
-        # bonus already lifts it, and guaranteed boosted slots are added at
-        # read time (feed/boost_slots.py).
-        placed = False
-        # Premium store — active subscription
-        end = parse_timestamp(meta.get("subscription_end_date"))
-        if end and end > now:
-            pools["premium_store"].append(entry); placed = True
-        if placed:
-            continue
-
-        # Fresh — brand-new listing OR new seller with low exposure
-        created = parse_timestamp(product.get("created_at"))
-        seller_created = parse_timestamp(meta.get("created_at"))
-        is_fresh_listing = (
-            created is not None
-            and (now - created).total_seconds() / 3600.0 <= fresh_cutoff_hours
-        )
-        seller_age_days = (
-            (now - seller_created).total_seconds() / 86400.0
-            if seller_created else None
-        )
-        is_new_seller = (
-            seller_age_days is not None
-            and seller_age_days < C.NEW_SELLER_MAX_AGE_DAYS
-            and int(product.get("view_count") or 0) < C.NEW_SELLER_MAX_IMPRESSIONS
-        )
-        if is_fresh_listing or is_new_seller:
-            pools["fresh"].append(entry); placed = True
-        if placed:
-            continue
-
-        # Exploration — off-profile category (buyer never engaged with it)
-        cat = (product.get("category") or "").strip()
-        if cat and signals["categories"] and cat not in signals["categories"]:
-            pools["exploration"].append(entry); placed = True
-        if placed:
-            continue
-
-        pools["organic"].append(entry)
-
-    # Each pool remains sorted by score (input `scored` is already sorted)
-    return pools
+Entry = dict[str, Any]
+Keep = Callable[[Entry], bool]
 
 
-# ---------------------------------------------------------------------------
-# Vendor-diversity helpers
-# ---------------------------------------------------------------------------
-
-def _progressive_vendor_penalty(rank_in_feed: int) -> float:
-    """penalty = min(CAP, K * (rank-1)^2). rank=1 -> 0, rank=2 -> K, ..."""
-    if rank_in_feed <= 1:
-        return 0.0
-    raw = C.VENDOR_DIVERSITY_K * (rank_in_feed - 1) ** 2
-    return min(C.VENDOR_DIVERSITY_CAP, raw)
+def exploration_positions(per_block: int) -> frozenset[int]:
+    positions: set[int] = set()
+    for k in range(max(per_block, 0)):
+        pos = round(C.BLOCK_SIZE * (k + 1) / (per_block + 1)) + 1
+        if pos == C.PAID_SLOT_POSITION:
+            pos += 1
+        positions.add(pos)
+    return frozenset(positions)
 
 
-def _seller_at_window_capacity(
-    window: deque[str], shop_id: str, cap: int
-) -> bool:
-    """True if this seller already occupies `cap` slots in the current window."""
-    if not shop_id:
-        return False
-    return sum(1 for s in window if s == shop_id) >= cap
+def _explorable(entry: Entry) -> bool:
+    return entry["quality"] >= C.EXPLORATION_MIN_QUALITY and entry["impressions"] < C.EXPLORATION_MAX_IMPRESSIONS
 
 
-# ---------------------------------------------------------------------------
-# Placement
-# ---------------------------------------------------------------------------
-
-def place(
-    pools: dict[str, list[dict[str, Any]]],
-    *,
-    limit: int,
-    now: datetime | None = None,
-) -> list[dict[str, Any]]:
-    """Produce the final `limit`-length feed.
-
-    Slots reserved by cadence are pulled first; residual slots are filled
-    from the organic pool. Selection *within* a pool applies the progressive
-    vendor-diversity penalty and enforces the 12-window rule.
-    """
-    if now is None:
-        now = datetime.now(timezone.utc)
-
-    # deque of shop_ids for the last VENDOR_WINDOW_SIZE placed items
-    window: deque[str] = deque(maxlen=C.VENDOR_WINDOW_SIZE)
-    seller_rank_so_far: dict[str, int] = {}
-    used_product_ids: set[str] = set()
-
-    # Precompute per-position kind, based on cadence. When two cadences
-    # collide on the same position, higher priority wins.
-    position_kind: list[str] = []
-    cadences = sorted(
-        C.COMPOSITION_CADENCE, key=lambda s: s.priority, reverse=True
-    )
-    for pos in range(1, limit + 1):
-        kind = "organic"
-        for slot in cadences:
-            if slot.one_per_n <= 0:
-                continue
-            # Hit position when (pos - phase) is a non-negative multiple of one_per_n
-            offset = pos - slot.phase
-            if offset >= 0 and offset % slot.one_per_n == 0:
-                kind = slot.kind
-                break
-        position_kind.append(kind)
-
-    def _pick_from(
-        pool_name: str,
-        allow_fallback: bool = True,
-        *,
-        max_per_seller: int | None = None,
-    ) -> dict[str, Any] | None:
-        pool = pools.get(pool_name, [])
-        cap = (
-            C.VENDOR_WINDOW_MAX_PER_SELLER
-            if max_per_seller is None
-            else max_per_seller
-        )
-        # Try primary pool; if empty and allow_fallback, drop to organic.
-        # Among the first PENALTY_LOOKAHEAD window-eligible entries pick the
-        # best score after the progressive per-shop penalty, so a shop that
-        # already has many items placed loses ties to fresher sellers.
-        for pool_ref in ([pool] if not allow_fallback else [pool, pools.get("organic", [])]):
-            best_i, best_eff, seen_ok = -1, float("-inf"), 0
-            for i, entry in enumerate(pool_ref):
-                pid = str(entry["product"].get("id", ""))
-                if pid in used_product_ids:
+def _first(pool: list[Entry], keeps: list[Keep], counts: dict[str, int], last_shop: str) -> Entry | None:
+    for tier in range(3):
+        for keep in keeps:
+            for entry in pool:
+                if not keep(entry):
                     continue
-                shop_id = str(entry["product"].get("shop_id", ""))
-                if cap > 0 and _seller_at_window_capacity(window, shop_id, cap):
+                shop = entry["shop"]
+                if shop and tier == 0 and shop == last_shop:
                     continue
-                penalty = _progressive_vendor_penalty(seller_rank_so_far.get(shop_id, 0) + 1)
-                effective = float(entry["score"]) - penalty
-                if effective > best_eff:
-                    best_i, best_eff = i, effective
-                seen_ok += 1
-                if seen_ok >= PENALTY_LOOKAHEAD:
-                    break
-            if best_i >= 0:
-                entry = pool_ref.pop(best_i)
-                return {**entry, "adjusted_score": best_eff, "pool": pool_name}
-        return None
+                if shop and tier < 2 and counts.get(shop, 0) >= C.SELLER_CAP_PER_BLOCK:
+                    continue
+                return entry
+    return None
 
-    def _pick_any(kind: str, *, max_per_seller: int | None = None) -> dict[str, Any] | None:
-        pick = _pick_from(kind, allow_fallback=True, max_per_seller=max_per_seller)
-        if pick is not None:
-            return pick
-        # No candidate found (all pools drained or window-blocked). Try
-        # scanning any pool to fill this slot rather than leaving a gap.
-        for name in ("organic", "premium_store", "fresh", "exploration"):
-            if name == kind:
-                continue
-            pick = _pick_from(name, allow_fallback=False, max_per_seller=max_per_seller)
-            if pick:
-                return pick
-        return None
 
-    placed: list[dict[str, Any]] = []
-    # Diversity is best-effort: strict window first, then progressively allow
-    # more listings per shop so we fill until `limit` or inventory is exhausted.
-    relax_caps = (
-        C.VENDOR_WINDOW_MAX_PER_SELLER,
-        max(C.VENDOR_WINDOW_MAX_PER_SELLER + 1, 3),
-        max(C.VENDOR_WINDOW_SIZE // 2, 4),
-        0,  # 0 => skip window capacity entirely
+def _lane_keeps(block: list[Entry], targets: dict[str, int], remaining: list[Entry]) -> list[Keep]:
+    if not targets:
+        return [lambda _e: True]
+    placed = {lane: sum(1 for e in block if e["lane"] == lane) for lane in LANES}
+    supplied = {e["lane"] for e in remaining}
+    order = sorted(
+        (lane for lane in LANES if lane in supplied),
+        key=lambda lane: (placed[lane] - targets[lane], LANES.index(lane)),
     )
-    for kind in position_kind:
-        pick = None
-        for cap in relax_caps:
-            pick = _pick_any(kind, max_per_seller=cap)
-            if pick is not None:
-                break
+    return [(lambda e, lane=lane: e["lane"] == lane) for lane in order]
+
+
+def place(entries: list[Entry], plan: StagePlan) -> list[Entry]:
+    remaining = sorted(entries, key=lambda e: e["score"], reverse=True)
+    explore_at = exploration_positions(plan.exploration_per_block)
+    targets = lane_targets() if plan.type_mix else {}
+    out: list[Entry] = []
+    while remaining and len(out) < C.RANKED_MAX:
+        slot = len(out) % C.BLOCK_SIZE + 1
+        block = out[len(out) - slot + 1 :]
+        counts: dict[str, int] = {}
+        for e in block:
+            counts[e["shop"]] = counts.get(e["shop"], 0) + 1
+        last_shop = out[-1]["shop"] if out else ""
+        pick, mode = None, "organic"
+        if slot in explore_at:
+            trial = sorted(
+                (e for e in remaining if _explorable(e)),
+                key=lambda e: e["quality"] + e["fresh"],
+                reverse=True,
+            )
+            pick = _first(trial, [lambda _e: True], counts, last_shop)
+            mode = "exploration" if pick else mode
         if pick is None:
-            break  # inventory exhausted
-
-        pid = str(pick["product"].get("id", ""))
-        shop_id = str(pick["product"].get("shop_id", ""))
-        used_product_ids.add(pid)
-        window.append(shop_id)
-        seller_rank_so_far[shop_id] = seller_rank_so_far.get(shop_id, 0) + 1
-        placed.append(pick)
-
-    return placed
+            pick = _first(remaining, _lane_keeps(block, targets, remaining), counts, last_shop)
+        if pick is None:
+            break
+        remaining.remove(pick)
+        out.append({**pick, "mode": mode})
+    return out
 
 
-# ---------------------------------------------------------------------------
-# Top-level orchestrator — used by service.py
-# ---------------------------------------------------------------------------
-
-def rank_and_place(
-    candidates: Iterable[dict[str, Any]],
-    score_fn: Callable[[dict[str, Any]], float | None],
-    *,
-    boost_map: dict[str, dict[str, Any]],
-    shop_meta: dict[str, dict[str, Any]],
-    signals: dict[str, Any],
-    limit: int,
-) -> list[dict[str, Any]]:
-    """Score, bucketize, place. Returns list of `{product, score, pool}`."""
-    now = datetime.now(timezone.utc)
-    scored: list[dict[str, Any]] = []
-    for product in candidates:
-        score = score_fn(product)
-        if score is None:
-            continue  # hidden (critical fraud)
-        scored.append({"product": product, "score": score})
-    scored.sort(key=lambda x: x["score"], reverse=True)
-
-    pools = bucketize(
-        scored,
-        boost_map=boost_map,
-        shop_meta=shop_meta,
-        signals=signals,
-        now=now,
-    )
-    return place(pools, limit=limit, now=now)
+def lift_followed(items: list[Entry], followed: set[str]) -> list[Entry]:
+    if not followed or not any(i["shop"] in followed for i in items):
+        return items
+    out = list(items)
+    for start in range(0, len(out), C.BLOCK_SIZE):
+        slots = [i for i in range(start, min(start + C.BLOCK_SIZE, len(out))) if out[i]["mode"] == "organic"]
+        ranked = sorted(
+            (out[i] for i in slots),
+            key=lambda e: e["score"] + (C.FOLLOWED_SHOP_BOOST if e["shop"] in followed else 0.0),
+            reverse=True,
+        )
+        for i, entry in zip(slots, ranked):
+            out[i] = entry
+        for a, b in zip(slots, slots[1:]):
+            if b != a + 1 or not out[a]["shop"] or out[a]["shop"] != out[b]["shop"]:
+                continue
+            swap = next((c for c in slots if c > b and out[c]["shop"] != out[a]["shop"]), None)
+            if swap is not None:
+                out[b], out[swap] = out[swap], out[b]
+    return out

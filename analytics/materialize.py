@@ -11,12 +11,9 @@ from typing import Any
 
 from db.supabase import get_supabase_admin
 from feed.impressions import record_impressions
-from feed.service import invalidate_user_feed_cache
 from shop.engagement_service import record_product_view, record_shop_view
 
 logger = logging.getLogger(__name__)
-
-_STRONG_INTENT = frozenset({"whatsapp_clicked", "messaged", "saved"})
 
 
 def materialize_ingested_events(
@@ -145,8 +142,6 @@ def _write_listing_event(
     admin.table("listing_events").insert(payload).execute()
     if listing_id:
         _score_listing(listing_id)
-    if buyer_id and event_type in _STRONG_INTENT:
-        invalidate_user_feed_cache(admin, buyer_id)
 
 
 def _seller_id(

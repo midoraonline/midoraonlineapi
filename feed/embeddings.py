@@ -1,4 +1,4 @@
-"""Product text vectorization for semantic feed ranking."""
+"""Product text vectorization for semantic search."""
 
 from __future__ import annotations
 
@@ -132,23 +132,6 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     if norm_a == 0.0 or norm_b == 0.0:
         return 0.0
     return dot / (norm_a * norm_b)
-
-
-def weighted_average(vectors: list[tuple[list[float], float]]) -> list[float] | None:
-    if not vectors:
-        return None
-    dim = len(vectors[0][0])
-    acc = [0.0] * dim
-    total_w = 0.0
-    for vec, weight in vectors:
-        if len(vec) != dim or weight <= 0:
-            continue
-        total_w += weight
-        for i, value in enumerate(vec):
-            acc[i] += value * weight
-    if total_w <= 0:
-        return None
-    return [value / total_w for value in acc]
 
 
 def vectorize_product(client: Any, product_id: str) -> bool:

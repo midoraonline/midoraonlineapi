@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from feed.catalog import card_rating, rating_map
 from feed.composite import get_home_feed
-from feed.service import _PRODUCT_CARD_SELECT, _to_response, _with_ratings
+from feed.service import _PRODUCT_CARD_SELECT, FeedPage, _to_response, _with_ratings
 from search.service import _PRODUCT_FIELDS, _attach_shops
 from shop.schemas import ProductResponse
 from shop.service import get_similar_products
@@ -95,13 +95,15 @@ def test_home_feed_cards_include_clipped_description_and_listing_meta(monkeypatc
     )
     monkeypatch.setattr(
         "feed.service.get_algorithm_feed",
-        lambda *_args, **_kwargs: ([product], False, 1),
+        lambda *_args, **_kwargs: FeedPage(items=[product], has_more=False, total=1),
     )
     monkeypatch.setattr("feed.composite.get_supabase_admin", lambda: _Client({}))
     payload = get_home_feed(limit=10, page=2)
     card = payload["algorithm"][0]
     assert len(card["description"]) == 300
     assert card["listing_meta"]["opportunity_kind"] == "maids"
+    assert card["placement"] == "organic"
+    assert card["first_posted_at"] == "2026-01-01T00:00:00+00:00"
 
 
 def test_search_cards_include_description_and_listing_meta():
@@ -211,7 +213,7 @@ def test_home_feed_includes_ratings_when_filters_are_off(monkeypatch):
     )
     monkeypatch.setattr(
         "feed.service.get_algorithm_feed",
-        lambda *_args, **_kwargs: ([product], False, 1),
+        lambda *_args, **_kwargs: FeedPage(items=[product], has_more=False, total=1),
     )
     monkeypatch.setattr("feed.composite.get_supabase_admin", lambda: _Client({}))
     card = get_home_feed(limit=10, page=1)["algorithm"][0]

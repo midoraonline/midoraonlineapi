@@ -24,7 +24,10 @@ from fastapi import APIRouter, Body, HTTPException
 from db.supabase import get_supabase_admin
 from feed import config as feed_config
 from feed import scoring as feed_scoring
+from feed import service as feed_service
 from feed import signals as feed_signals
+from feed.invalidate import invalidate_feed_caches
+from feed.quality import listing_quality
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +107,7 @@ def put_feed_config(
         raise HTTPException(status_code=500, detail="Failed to save overrides")
     feed_config.invalidate_cache()
     feed_config.refresh_from_db(force=True)
+    invalidate_feed_caches(admin, notify_next=False)
     return {
         "ok": True,
         "overrides": overrides,
@@ -125,6 +129,7 @@ def reset_feed_config() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Failed to reset overrides")
     feed_config.invalidate_cache()
     feed_config.refresh_from_db(force=True)
+    invalidate_feed_caches(admin, notify_next=False)
     return {"ok": True, "applied": feed_config.get_current_overrides()}
 
 
@@ -138,20 +143,19 @@ def test_feed_config(body: dict[str, Any] = Body(default_factory=dict)) -> dict[
     sample_size = max(1, min(sample_size, 100))
     overrides = _sanitize(body.get("overrides") or {})
 
-    # Snapshot the currently-applied overrides so we can restore.
     previous_overrides = feed_config.get_current_overrides()
 
     admin = get_supabase_admin()
-    # Pull a small sample of published products with all fields scoring needs.
     try:
         r = (
             admin.table("products")
             .select(
-                "id, shop_id, title, description, category, view_count, "
-                "like_count, price_ugx, embedding, created_at"
+                "id,shop_id,title,description,category,item_type,price_ugx,image_urls,"
+                "listing_meta,location_name,listing_score,created_at"
             )
             .eq("is_published", True)
-            .order("view_count", desc=True)
+            .eq("status", "active")
+            .order("created_at", desc=True)
             .limit(sample_size)
             .execute()
         )
@@ -164,33 +168,21 @@ def test_feed_config(body: dict[str, Any] = Body(default_factory=dict)) -> dict[
         return {"sample_size": 0, "results": [], "summary": {}}
 
     shop_ids = list({str(p.get("shop_id", "")) for p in products if p.get("shop_id")})
-    try:
-        shop_meta = feed_signals.collect_shop_meta(admin, shop_ids)
-    except Exception:
-        shop_meta = {}
-
-    # Empty per-user signals — this is a global "how would this rank" test.
-    signals = feed_signals.empty_signals()
+    shop_meta = feed_signals.collect_shop_meta(admin, shop_ids)
+    stage = feed_service.current_plan(admin).stage
 
     def _score_all() -> list[dict[str, Any]]:
         now = datetime.now(timezone.utc)
         out = []
         for p in products:
-            components = {
-                "taste": 0.0,
-                "category": feed_scoring.category_match_fallback(p, signals, False),
-                "search": feed_scoring.search_match(p, signals),
-                "followed": feed_scoring.followed_shop(p, signals),
-                "freshness": feed_scoring.freshness_bonus(p, now),
-                "velocity": feed_scoring.velocity_bonus(p, {}),
-                "new_seller": feed_scoring.new_seller_bonus(p, shop_meta, now),
-                "seller_quality": feed_scoring.seller_quality_bonus(p, shop_meta),
-                "global_popularity": feed_scoring.global_popularity(p),
-                "premium_store": feed_scoring.premium_store_bonus(p, shop_meta, now),
-                "boost": feed_scoring.boost_bonus(p, {}),
-                "seen": feed_scoring.seen_penalty(p, signals),
-                "fraud": feed_scoring.fraud_penalty(p, {}) or 0.0,
-            }
+            components = feed_scoring.components(
+                p,
+                quality=listing_quality(p),
+                shop_meta=shop_meta.get(str(p.get("shop_id") or "")),
+                multiplier=1.0,
+                stage=stage,
+                now=now,
+            )
             total = sum(v for v in components.values())
             out.append({
                 "id": str(p.get("id")),

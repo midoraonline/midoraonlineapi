@@ -50,11 +50,23 @@ def test_capped_listing_ids_uses_impressions_and_owner_plan(monkeypatch):
     assert capped == {"a", "b"}
 
 
-def test_page_build_drops_capped(monkeypatch):
-    monkeypatch.setattr(service, "get_supabase_admin", lambda: object())
-    monkeypatch.setattr(service.boost_slots, "active_boosts", lambda c: [])
-    monkeypatch.setattr(F, "capped_listing_ids", lambda *a, **k: {"p1"})
-    ids, _ = service._page_ids_from_ranked(
-        ["p0", "p1", "p2"], page=1, limit=3, exclude_ids=None, user_id="u", session_id=None
+def test_home_page_drops_capped(monkeypatch):
+    from feed import snapshots
+    from feed.stages import StagePlan
+
+    snap = snapshots.Snapshot(
+        version="v1",
+        plan=StagePlan(stage=1, eligible=3),
+        items=[{"id": f"p{i}", "shop": f"s{i}", "score": 1.0, "mode": "organic"} for i in range(3)],
     )
-    assert ids == ["p0", "p2"]
+    monkeypatch.setattr(service, "current_snapshot", lambda db: snap)
+    monkeypatch.setattr(F, "capped_listing_ids", lambda *a, **k: {"p1"})
+    monkeypatch.setattr(service.sig, "followed_shop_ids", lambda db, uid: set())
+    monkeypatch.setattr(service, "_fetch_products_by_ids", lambda db, ids: [{"id": i} for i in ids])
+    monkeypatch.setattr(service, "_cards", lambda db, rows: [r["id"] for r in rows])
+    page = service._home_page(
+        object(), user_id="u", session_id=None, page=1, limit=3, version=None, exclude_ids=None
+    )
+    assert page.items == ["p0", "p2"]
+    assert page.version == "v1"
+    assert page.placements == {"p0": "organic", "p2": "organic"}
