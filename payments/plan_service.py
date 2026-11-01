@@ -5,10 +5,7 @@ from typing import Any
 
 from payments.plans import BASIC, DEFAULT_PLAN, PREMIUM, STANDARD, get_plan, is_valid_tier
 
-ANALYTICS_UPGRADE_DETAIL = (
-    "Shop analytics are available on the Standard plan and above. "
-    "Upgrade your plan to view them."
-)
+ANALYTICS_UPGRADE_DETAIL = "Shop analytics aren't included in your plan. Upgrade your plan to view them."
 ANALYTICS_UPGRADE_CODE = "plan_upgrade_required"
 
 # Phase 3 — verify when needed: more listings unlock identity requirement.

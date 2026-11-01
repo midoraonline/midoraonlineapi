@@ -20,7 +20,7 @@ FLAGS: dict[str, dict[str, Any]] = {
     "analytics": {
         "default": False,
         "public": True,
-        "description": "Record shop and listing analytics. When off, events are not stored and analytics responses say disabled.",
+        "description": "Show shop and listing analytics to merchants. Events are always recorded; when off, analytics pages say disabled.",
     },
     "analytics_all_plans": {
         "default": False,
