@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
 from typing import Any
 
 from db.supabase import get_supabase_admin
 from feed.catalog import ListingFilters
-from feed.status import visible_status
 
 logger = logging.getLogger(__name__)
 
@@ -150,9 +148,20 @@ def get_home_feed(
 
     def _embed(products: list) -> list[dict[str, Any]]:
         out = []
-        now = datetime.now(timezone.utc)
+        from feed.badges import card_statuses
         from shop.locations import listing_is_online
         from shop.serializers import clip_card_description
+
+        statuses = card_statuses(
+            admin,
+            [
+                {"id": str(p.id), "item_type": p.item_type, "listing_meta": getattr(p, "listing_meta", None),
+                 "first_posted_at": p.first_posted_at, "created_at": p.created_at}
+                for p in products
+            ],
+            placements=feed.placements,
+            trending=feed.trending,
+        )
 
         for p in products:
             shop = dict(shops_map.get(str(p.shop_id)) or {})
@@ -194,14 +203,7 @@ def get_home_feed(
                 "stock_quantity": int(getattr(p, "stock_quantity", 0) or 0),
                 "shop": shop,
                 "placement": feed.placements.get(str(p.id), "organic"),
-                "status": visible_status(
-                    placement=feed.placements.get(str(p.id), "organic"),
-                    item_type=p.item_type,
-                    listing_meta=meta,
-                    posted_at=p.first_posted_at or p.created_at,
-                    now=now,
-                    trending=str(p.id) in feed.trending,
-                ),
+                "status": statuses.get(str(p.id)),
                 "average_rating": p.average_rating if p.review_count else None,
                 "review_count": int(p.review_count or 0),
                 "is_negotiable": getattr(p, "is_negotiable", True) is not False,

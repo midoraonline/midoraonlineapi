@@ -169,6 +169,7 @@ class ProductListItem(BaseModel):
     view_count: int = 0
     average_rating: float | None = None
     review_count: int = 0
+    card_status: str | None = None
 
 
 class ShopEngagementState(BaseModel):

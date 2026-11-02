@@ -224,3 +224,18 @@ def test_snapshot_versions_survive_invalidation(monkeypatch):
     assert snapshots.current(DB()).version == "v2"
     assert snapshots.by_version(DB(), "v1").items == [{"id": "a"}]
     snapshots._memory.clear()
+
+
+def test_card_badges_disclose_paid_outside_paid_slots(monkeypatch):
+    from feed import badges
+
+    monkeypatch.setattr(badges, "paid_placements", lambda c, ids: {"b": "boosted", "s": "sponsored"})
+    old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    rows = [
+        {"id": "b", "item_type": "product", "created_at": old},
+        {"id": "s", "item_type": "service", "created_at": old},
+        {"id": "t", "item_type": "product", "created_at": old},
+        {"id": "o", "item_type": "product", "created_at": old},
+    ]
+    out = badges.card_statuses(None, rows, placements={"o": "organic"}, trending={"t", "b"})
+    assert out == {"b": "boosted", "s": "sponsored", "t": "trending", "o": None}

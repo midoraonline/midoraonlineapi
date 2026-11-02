@@ -20,7 +20,7 @@ SEARCH_BATCH = 500
 
 _PRODUCT_FIELDS = (
     "id,shop_id,title,description,category,item_type,price_ugx,discount_price,discount_expires_at,image_urls,"
-    "listing_score,location_name,view_count,created_at,embedding,listing_meta,is_negotiable,stock_quantity"
+    "listing_score,location_name,view_count,created_at,first_posted_at,embedding,listing_meta,is_negotiable,stock_quantity"
 )
 
 
@@ -420,6 +420,7 @@ def search_products(
             opportunity_kind=filters.opportunity_kind,
             compensation=filters.compensation,
             pricing_model=filters.pricing_model,
+            badge=filters.badge,
             sort=filters.sort,
         )
 
@@ -439,8 +440,12 @@ def search_products(
 
     products = [row for row, _ in scored]
     items = _attach_shops(client, products)
+    from feed.badges import card_statuses
+
+    statuses = card_statuses(client, products)
     for item, (_, score) in zip(items, scored):
         item["similarity_score"] = round(score, 4)
+        item["card_status"] = statuses.get(str(item.get("id")))
 
     total_pages = math.ceil(total / limit) if limit else 0
 

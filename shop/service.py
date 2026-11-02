@@ -25,12 +25,12 @@ logger = logging.getLogger(__name__)
 _PRODUCT_LIST_PUBLIC = (
     "id,shop_id,title,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,status,"
     "listing_score,location_name,is_published,is_negotiable,stock_quantity,listing_meta,"
-    "created_at,view_count"
+    "created_at,first_posted_at,view_count"
 )
 _PRODUCT_LIST_OWNER = (
     "id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,status,"
     "listing_score,location_name,is_published,is_negotiable,stock_quantity,listing_meta,"
-    "created_at,view_count,review_notes,reviewed_at"
+    "created_at,first_posted_at,view_count,review_notes,reviewed_at"
 )
 
 
@@ -78,6 +78,9 @@ def list_products(
             raise
     total = r.count if hasattr(r, "count") and r.count is not None else len(r.data or [])
     total_pages = (total + limit - 1) // limit if limit else 0
+    from feed.badges import card_statuses
+
+    statuses = card_statuses(client, r.data or [])
     items = []
     for row in (r.data or []):
         image_urls = row.get("image_urls")
@@ -107,6 +110,7 @@ def list_products(
                 reviewed_at=str(row["reviewed_at"]) if row.get("reviewed_at") else None,
                 created_at=str(row["created_at"]) if row.get("created_at") else None,
                 view_count=int(row.get("view_count") or 0),
+                card_status=statuses.get(str(row["id"])),
             )
         )
     return {
@@ -230,7 +234,7 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             client.table("products")
             .select("id,shop_id,title,description,price_ugx,discount_price,discount_expires_at,image_urls,category,item_type,"
                     "listing_score,location_name,is_published,is_negotiable,stock_quantity,"
-                    "listing_meta,created_at,view_count")
+                    "listing_meta,created_at,first_posted_at,view_count")
             .eq("category", category)
             .eq("is_published", True)
             .eq("status", "active")
@@ -260,6 +264,9 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
     from feed.catalog import card_rating, rating_map
 
     ratings = rating_map(client, [str(row["id"]) for row in rows if row.get("id")])
+    from feed.badges import card_statuses
+
+    statuses = card_statuses(client, rows)
     for row in rows:
         imgs = row.get("image_urls")
         if isinstance(imgs, str):
@@ -299,6 +306,7 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             "seller_name": s.get("seller_name") or s.get("name"),
             "seller_joined_at": s.get("joined_at"),
             "seller_last_active_at": s.get("last_active_at"),
+            "card_status": statuses.get(pid),
         })
     return out
 
@@ -674,6 +682,9 @@ def list_owner_products(client: Any, owner_id: str, page: int = 1, limit: int = 
     )
     total = r.count if hasattr(r, "count") and r.count is not None else len(r.data or [])
     total_pages = (total + limit - 1) // limit if limit else 0
+    from feed.badges import card_statuses
+
+    statuses = card_statuses(client, r.data or [])
     items = []
     for row in r.data or []:
         image_urls = row.get("image_urls")
@@ -703,6 +714,7 @@ def list_owner_products(client: Any, owner_id: str, page: int = 1, limit: int = 
                 reviewed_at=str(row["reviewed_at"]) if row.get("reviewed_at") else None,
                 created_at=str(row["created_at"]) if row.get("created_at") else None,
                 view_count=int(row.get("view_count") or 0),
+                card_status=statuses.get(str(row["id"])),
             )
         )
     return {
