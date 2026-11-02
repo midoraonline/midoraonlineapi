@@ -9,7 +9,7 @@ from feed.signals import chunks
 
 logger = logging.getLogger(__name__)
 
-POOLS = frozenset({"organic", "boosted", "exploration"})
+POOLS = frozenset({"organic", "boosted", "sponsored", "exploration"})
 COOLDOWN_MINUTES = 10
 
 

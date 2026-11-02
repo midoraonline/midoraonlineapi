@@ -16,6 +16,11 @@ logger = logging.getLogger(__name__)
 
 _TTL_SECONDS = 30.0
 
+# Must exist before the first load_settings() in a fresh worker, or every flag read raises NameError.
+_cache_rows: dict[str, dict[str, Any]] | None = None
+_cache_at: float = 0.0
+_cache_persisted: bool = False
+
 FLAGS: dict[str, dict[str, Any]] = {
     "analytics": {
         "default": False,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -21,10 +21,15 @@ def _guard(fn):
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
-        if "granted_by" in str(exc) or "shop_id" in str(exc) or "ended_at" in str(exc) or "boost_plan_id" in str(exc):
+        if any(col in str(exc) for col in ("granted_by", "shop_id", "ended_at", "boost_plan_id")):
             raise HTTPException(
                 status_code=503,
                 detail={"detail": "Admin boosts need migration 059.", "code": "migration_required"},
+            ) from exc
+        if "kind" in str(exc):
+            raise HTTPException(
+                status_code=503,
+                detail={"detail": "Sponsored placements need migration 064.", "code": "migration_required"},
             ) from exc
         raise
 
@@ -33,6 +38,7 @@ class GrantBody(BaseModel):
     package_id: str | None = None
     hours: int | None = Field(None, ge=1, le=svc.MAX_HOURS)
     score_bonus: int | None = Field(None, ge=0, le=svc.MAX_SCORE)
+    kind: Literal["boost", "sponsored"] | None = None
 
 
 def _admin_id(p: TokenPayload | None) -> str | None:
@@ -50,7 +56,7 @@ def active_boosts() -> dict[str, Any]:
 @router.post("/listings/{listing_id}/boost")
 def grant_listing(listing_id: str, body: GrantBody, who: AdminDep) -> dict[str, Any]:
     admin = get_supabase_admin()
-    terms = svc.resolve_terms(admin, body.package_id, body.hours, body.score_bonus)
+    terms = svc.resolve_terms(admin, body.package_id, body.hours, body.score_bonus, body.kind)
     return _guard(lambda: svc.boost_listing(admin, listing_id, terms, _admin_id(who)))
 
 
@@ -62,7 +68,7 @@ def end_listing(listing_id: str) -> dict[str, Any]:
 @router.post("/shops/{shop_id}/boost")
 def grant_shop(shop_id: str, body: GrantBody, who: AdminDep) -> dict[str, Any]:
     admin = get_supabase_admin()
-    terms = svc.resolve_terms(admin, body.package_id, body.hours, body.score_bonus)
+    terms = svc.resolve_terms(admin, body.package_id, body.hours, body.score_bonus, body.kind)
     return _guard(lambda: svc.boost_shop(admin, shop_id, terms, _admin_id(who)))
 
 

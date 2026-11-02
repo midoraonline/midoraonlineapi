@@ -26,6 +26,9 @@ class Snapshot:
     def ids(self) -> list[str]:
         return [i["id"] for i in self.items]
 
+    def trending(self) -> set[str]:
+        return {i["id"] for i in self.items if i.get("trending")}
+
     def payload(self) -> dict[str, Any]:
         return {"plan": self.plan.as_dict(), "items": self.items}
 

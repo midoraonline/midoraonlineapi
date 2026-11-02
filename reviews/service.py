@@ -43,6 +43,16 @@ def create_seller_review(
     from ranking.service import recalculate_seller_score_from_reviews
     recalculate_seller_score_from_reviews(seller_id)
 
+    from analytics.server_events import record_event
+
+    record_event(
+        "trust:rating_submitted",
+        actor_id=buyer_id,
+        target_type="seller",
+        target_id=seller_id,
+        properties={"sellerId": seller_id, "rating": rating},
+        client=admin,
+    )
     return r.data[0]
 
 

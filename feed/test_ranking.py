@@ -138,6 +138,44 @@ def test_rotation_weights_by_score_bonus():
     assert seq.count("big") == 3 and seq.count("small") == 1
 
 
+def test_sponsored_and_boosted_get_separate_slots(monkeypatch):
+    monkeypatch.setattr(B, "active_boosts", lambda c: [
+        {"id": "b1", "score_bonus": 25, "kind": "boost"},
+        {"id": "s1", "score_bonus": 25, "kind": "sponsored"},
+    ])
+    lanes = B.paid_lanes(None, StagePlan(stage=3, eligible=250, paid=True))
+    assert [(lane.placement, lane.seq) for lane in lanes] == [("sponsored", ["s1"]), ("boosted", ["b1"])]
+    assert B.paid_lanes(None, StagePlan(stage=2, eligible=150)) == []
+    organic = [f"o{i}" for i in range(80)]
+    p1, _, paid = B.compose_paid(organic, lanes, page=1, limit=20)
+    assert p1[C.PAID_SLOT_POSITION - 1] == "b1" and p1[C.SPONSORED_SLOT_POSITION - 1] == "s1"
+    assert paid == {"b1": "boosted", "s1": "sponsored"} and len(p1) == 20
+    p2, _, _ = B.compose_paid(organic, lanes, page=2, limit=20)
+    flat = [i for i in p1 + p2 if i.startswith("o")]
+    assert flat == organic[: len(flat)]
+
+
+def test_sponsored_phase_never_collides_with_boost(monkeypatch):
+    monkeypatch.setattr(C, "SPONSORED_SLOT_POSITION", C.PAID_SLOT_POSITION)
+    assert B.slot_phase("sponsored") != B.slot_phase("boost")
+
+
+def test_trending_picks_top_engaged_per_lane():
+    from feed import trending
+
+    now = datetime(2026, 11, 1, 12, tzinfo=timezone.utc)
+    posted = (now - timedelta(hours=12)).isoformat()
+    rows = [{"id": f"p{i}", "lane": "product", "posted_at": posted} for i in range(10)]
+    rows.append({"id": "svc", "lane": "service", "posted_at": posted})
+    hot = {"unique_viewers": 40, "likes": 5, "whatsapp_clicks": 3}
+    warm = {"unique_viewers": 10, "likes": 1}
+    cold = {"unique_viewers": 2, "whatsapp_clicks": 1}
+    stats = {"p0": warm, "p1": hot, "p2": cold, "svc": warm}
+    assert trending.pick(rows, stats, now) == {"p1", "svc"}
+    assert not trending.qualifies({"unique_viewers": 50})
+    assert trending.decayed(100, 0) > trending.decayed(100, 48)
+
+
 def test_visible_status_priority():
     now = datetime(2026, 11, 1, 12, tzinfo=timezone.utc)
     fresh = (now - timedelta(hours=2)).isoformat()
@@ -147,6 +185,21 @@ def test_visible_status_priority():
     assert visible_status(placement="organic", item_type="product", listing_meta=soon, posted_at=fresh, now=now) == "new"
     old = (now - timedelta(days=10)).isoformat()
     assert visible_status(placement="exploration", item_type="product", listing_meta={}, posted_at=old, now=now) is None
+    assert visible_status(placement="sponsored", item_type="opportunity", listing_meta=soon, posted_at=fresh, now=now, trending=True) == "sponsored"
+    assert visible_status(placement="organic", item_type="product", listing_meta={}, posted_at=fresh, now=now, trending=True) == "trending"
+    assert visible_status(placement="organic", item_type="job", listing_meta=soon, posted_at=old, now=now, trending=True) == "closing_soon"
+
+
+def test_popular_locations_skip_online_and_use_shop_place():
+    from feed.locations import count_locations
+
+    rows = [
+        {"location_name": "Kampala", "shop_id": "a"},
+        {"location_name": "Kampala", "shop_id": "b"},
+        {"location_name": None, "shop_id": "c"},
+        {"location_name": "Online", "shop_id": "d"},
+    ]
+    assert count_locations(rows, {"c": "Ntinda"}) == [{"name": "Kampala", "count": 2}, {"name": "Ntinda", "count": 1}]
 
 
 def test_cursor_carries_snapshot_version():

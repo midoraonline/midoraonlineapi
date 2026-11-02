@@ -16,6 +16,7 @@ def describe(row: dict[str, Any]) -> dict[str, Any]:
         "id": row.get("id"),
         "listing_id": str(row.get("listing_id")) if row.get("listing_id") else None,
         "package_name": pkg or "Custom",
+        "kind": "sponsored" if row.get("kind") == "sponsored" else "boost",
         "source": source,
         "source_label": SOURCE_LABEL.get(source, source.title()),
         "scope": "shop" if row.get("shop_id") else "listing",
@@ -37,7 +38,7 @@ def active_boost_map(client: Any, listing_ids: list[str]) -> dict[str, dict[str,
         return {}
     now = datetime.now(timezone.utc).isoformat()
     rows: list[dict[str, Any]] = []
-    for cols in (_COLS, _COLS.replace("shop_id,", "")):
+    for cols in (_COLS.replace("source,", "source,kind,"), _COLS, _COLS.replace("shop_id,", "")):
         try:
             rows = (
                 _select(client, cols).in_("listing_id", ids).eq("active", True).gte("ends_at", now)

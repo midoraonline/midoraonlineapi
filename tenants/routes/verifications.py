@@ -21,6 +21,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from analytics.server_events import record_event
 from core.authz import ensure_shop_owner
 from core.security import get_current_user_id, get_optional_claims
 from db.supabase import get_supabase_admin
@@ -286,6 +287,15 @@ async def submit_for_verification(
     if body.request_review:
         _assert_required_docs(stage, docs_dict)
 
+    if meta.get(f"stage{stage}_status", "unverified") == "unverified":
+        record_event(
+            "merchant:verification_started",
+            actor_id=user_id,
+            target_type="shop",
+            target_id=shop_id,
+            properties={"stage": stage},
+        )
+
     now_iso = datetime.now(timezone.utc).isoformat()
     stage_status = "pending" if body.request_review else "submitted"
     meta[f"stage{stage}_status"] = stage_status
@@ -326,6 +336,13 @@ async def submit_for_verification(
     saved = _persist_verification(client, shop_id, payload)
 
     if body.request_review:
+        record_event(
+            "merchant:verification_submitted",
+            actor_id=user_id,
+            target_type="shop",
+            target_id=shop_id,
+            properties={"stage": stage, "documentTypes": [str(d.get("type") or "") for d in docs_dict]},
+        )
         await _send_stage_submission_emails(shop_id, stage, notes=body.notes)
 
     return _row_to_response(saved)
@@ -377,6 +394,13 @@ async def request_verification_review(
             "requested_at": now_iso,
             "notes": body.notes or row.get("notes"),
         },
+    )
+    record_event(
+        "merchant:verification_submitted",
+        actor_id=user_id,
+        target_type="shop",
+        target_id=shop_id,
+        properties={"stage": stage},
     )
     await _send_stage_submission_emails(shop_id, stage, notes=body.notes)
     return _row_to_response(saved)
@@ -711,6 +735,14 @@ async def admin_approve_verification(
     except Exception as exc:
         logger.warning("publish verification approval event failed for shop %s: %s", shop_id, exc)
 
+    record_event(
+        "merchant:verification_completed",
+        actor_id=reviewer_id,
+        target_type="shop",
+        target_id=shop_id,
+        properties={"stage": stage, "status": "approved"},
+    )
+
     try:
         await _send_stage_decision_email(shop_id, stage, "approved", notes)
     except Exception:
@@ -779,6 +811,14 @@ async def admin_reject_verification(
         )
     except Exception as exc:
         logger.warning("publish verification rejection event failed for shop %s: %s", shop_id, exc)
+
+    record_event(
+        "merchant:verification_completed",
+        actor_id=reviewer_id,
+        target_type="shop",
+        target_id=shop_id,
+        properties={"stage": stage, "status": "rejected", "rejectionReason": notes},
+    )
 
     try:
         await _send_stage_decision_email(shop_id, stage, "rejected", notes)

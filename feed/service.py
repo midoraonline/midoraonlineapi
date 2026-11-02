@@ -8,10 +8,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from db.supabase import Client, get_supabase_admin, with_supabase_retry
-from feed import boost_slots, frequency, impressions, placement, scoring, snapshots
+from feed import boost_slots, frequency, impressions, placement, scoring, snapshots, trending
 from feed import config as C
 from feed import signals as sig
-from feed.catalog import ListingFilters, card_rating, fetch_catalog_page, matching_ids, rating_map
+from feed.catalog import PAID_BADGES, ListingFilters, card_rating, fetch_catalog_page, matching_ids, rating_map
 from feed.quality import listing_quality
 from feed.stages import LANES, StagePlan, lane_of, plan_for
 from shop.schemas import ProductResponse
@@ -32,6 +32,7 @@ class FeedPage:
     total: int | None = None
     version: str | None = None
     placements: dict[str, str] = field(default_factory=dict)
+    trending: set[str] = field(default_factory=set)
 
 
 def _to_response(product: dict[str, Any]) -> ProductResponse:
@@ -181,6 +182,18 @@ def build_snapshot(db: Client) -> snapshots.Snapshot:
         {"id": e["id"], "shop": e["shop"], "score": e["score"], "mode": e["mode"]}
         for e in placement.place(entries, plan)
     ]
+    hot = trending.trending_ids(
+        db,
+        [
+            {"id": str(row["id"]), "lane": lane_of(row.get("item_type")),
+             "posted_at": row.get("first_posted_at") or row.get("created_at")}
+            for row, _ in eligible
+        ],
+        now,
+    )
+    for item in items:
+        if item["id"] in hot:
+            item["trending"] = True
     return snapshots.Snapshot(version=uuid.uuid4().hex[:12], plan=plan, items=items)
 
 
@@ -226,7 +239,7 @@ def _home_page(
     items = placement.lift_followed(snap.items, sig.followed_shop_ids(db, user_id))
     modes = {i["id"]: i["mode"] for i in items}
     hidden = set(exclude_ids or [])
-    seq = boost_slots.paid_rotation(db, snap.plan)
+    lanes = boost_slots.paid_lanes(db, snap.plan)
     if user_id or session_id:
         if exclude_ids or page > 1:
             hidden |= impressions.fatigued_listing_ids(
@@ -235,44 +248,48 @@ def _home_page(
                 threshold=C.FATIGUE_THRESHOLD,
                 hours=C.FATIGUE_WINDOW_HOURS,
             )
-        hidden |= frequency.capped_listing_ids(db, buyer_id=user_id, session_id=session_id, boosted_ids=set(seq))
+        paid_ids = {pid for lane in lanes for pid in lane.seq}
+        hidden |= frequency.capped_listing_ids(db, buyer_id=user_id, session_id=session_id, boosted_ids=paid_ids)
     ids = [i["id"] for i in items if i["id"] not in hidden]
-    seq = [b for b in seq if b not in hidden]
-    page_ids, has_more, paid = boost_slots.compose_page(ids, seq, page=1 if exclude_ids else page, limit=limit)
+    lanes = [boost_slots.PaidLane(lane.placement, [b for b in lane.seq if b not in hidden], lane.phase) for lane in lanes]
+    page_ids, has_more, paid = boost_slots.compose_paid(ids, lanes, page=1 if exclude_ids else page, limit=limit)
     rows = _fetch_products_by_ids(db, page_ids)
     return FeedPage(
         items=_cards(db, rows),
         has_more=has_more,
         version=snap.version,
-        placements={str(r["id"]): "boosted" if str(r["id"]) in paid else modes.get(str(r["id"]), "organic") for r in rows},
+        placements={str(r["id"]): paid.get(str(r["id"])) or modes.get(str(r["id"]), "organic") for r in rows},
+        trending=snap.trending(),
     )
 
 
 def _catalog_page(
     db: Client, filters: ListingFilters, *, page: int, limit: int
-) -> tuple[list[dict[str, Any]], int, set[str]]:
-    if filters.sort != "relevance":
+) -> tuple[list[dict[str, Any]], int, dict[str, str]]:
+    if filters.sort != "relevance" or filters.badge in PAID_BADGES:
         rows, total = fetch_catalog_page(db, filters, select=_PRODUCT_CARD_SELECT, page=page, limit=limit)
-        return rows, total, set()
-    seq = boost_slots.paid_rotation(db, current_plan(db))
-    if seq:
+        return rows, total, {}
+    lanes = boost_slots.paid_lanes(db, current_plan(db))
+    candidates = list(dict.fromkeys(pid for lane in lanes for pid in lane.seq))
+    if candidates:
         try:
-            ok = matching_ids(db, filters, list(dict.fromkeys(seq)))
+            ok = matching_ids(db, filters, candidates)
         except Exception as exc:  # noqa: BLE001
             logger.info("catalog boosts skipped: %s", exc)
             ok = set()
-        seq = [b for b in seq if b in ok]
-    if not seq:
+        lanes = [boost_slots.PaidLane(lane.placement, [b for b in lane.seq if b in ok], lane.phase) for lane in lanes]
+    lanes = [lane for lane in lanes if lane.seq]
+    if not lanes:
         rows, total = fetch_catalog_page(db, filters, select=_PRODUCT_CARD_SELECT, page=page, limit=limit)
-        return rows, total, set()
-    every, phase = boost_slots.slot_every(), boost_slots.slot_phase()
-    org_start = boost_slots.organic_offset(page, limit, every, phase, len(set(seq)))
+        return rows, total, {}
+    every = boost_slots.slot_every()
+    org_start = boost_slots.organic_offset_for(page, limit, every, lanes)
     rows, total = fetch_catalog_page(
         db, filters, select=_PRODUCT_CARD_SELECT, page=page, limit=limit, offset=org_start
     )
     by_id = {str(r["id"]): r for r in rows if r.get("id")}
     padded = [f"__pad{i}" for i in range(org_start)] + list(by_id)
-    page_ids, _, paid = boost_slots.compose_page(padded, seq, page=page, limit=limit, every=every, phase=phase)
+    page_ids, _, paid = boost_slots.compose_paid(padded, lanes, page=page, limit=limit, every=every)
     for row in _fetch_products_by_ids(db, [pid for pid in page_ids if pid not in by_id]):
         by_id[str(row["id"])] = row
     return [by_id[pid] for pid in page_ids if pid in by_id], total, paid
@@ -295,11 +312,18 @@ def get_algorithm_feed(
         active = ListingFilters(category=category)
     if active is not None:
         rows, total, paid = _catalog_page(db, active, page=page, limit=limit)
+        forced = boost_slots.PLACEMENT[PAID_BADGES[active.badge]] if active.badge in PAID_BADGES else None
+        try:
+            hot = current_snapshot(db).trending()
+        except Exception as exc:  # noqa: BLE001
+            logger.info("trending set unavailable: %s", exc)
+            hot = set()
         return FeedPage(
             items=_cards(db, rows),
             has_more=page * limit < total,
             total=total,
-            placements={str(r["id"]): "boosted" if str(r["id"]) in paid else "organic" for r in rows},
+            placements={str(r["id"]): paid.get(str(r["id"])) or forced or "organic" for r in rows},
+            trending=hot,
         )
     return _home_page(
         db,

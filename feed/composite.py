@@ -200,6 +200,7 @@ def get_home_feed(
                     listing_meta=meta,
                     posted_at=p.first_posted_at or p.created_at,
                     now=now,
+                    trending=str(p.id) in feed.trending,
                 ),
                 "average_rating": p.average_rating if p.review_count else None,
                 "review_count": int(p.review_count or 0),

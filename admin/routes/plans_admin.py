@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -123,6 +123,7 @@ class BoostPlanBody(BaseModel):
     price_amount: float | None = Field(None, ge=0, le=100_000_000)
     score_bonus: int | None = Field(None, ge=0, le=500)
     is_active: bool | None = None
+    kind: Literal["boost", "sponsored"] | None = None
 
 
 @router.get("/boost-plans")

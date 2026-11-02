@@ -42,18 +42,25 @@ def _window_bounds(days: int) -> tuple[str, str]:
     return start.isoformat(), end.isoformat()
 
 
-def _rows(admin: Any, event_type: str, since_iso: str) -> list[dict[str, Any]]:
-    """Cheap generic fetch for an event type in a window (paginated once)."""
-    return (
-        admin.table("analytics_events")
-        .select("actor_id, session_id, target_type, target_id, properties, ts")
-        .eq("event_type", event_type)
-        .gte("ts", since_iso)
-        .limit(10000)
-        .execute()
-        .data
-        or []
-    )
+def _rows(admin: Any, event_type: str, since_iso: str, cap: int = 10000) -> list[dict[str, Any]]:
+    """Events of one type in a window. PostgREST returns at most 1000 rows per call, so page."""
+    out: list[dict[str, Any]] = []
+    while len(out) < cap:
+        batch = (
+            admin.table("analytics_events")
+            .select("actor_id, session_id, target_type, target_id, properties, ts")
+            .eq("event_type", event_type)
+            .gte("ts", since_iso)
+            .order("ts")
+            .range(len(out), len(out) + 999)
+            .execute()
+            .data
+            or []
+        )
+        out.extend(batch)
+        if len(batch) < 1000:
+            break
+    return out[:cap]
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -442,9 +449,10 @@ async def report_rate(
     reports = _rows(admin, "trust:report_submitted", since)
 
     by_bucket: dict[str, int] = {}
+    prop_key = "category" if dimension == "category" else "shopId"
     for r in reports:
         props = r.get("properties") or {}
-        key = str(props.get(dimension) or "(none)")
+        key = str(props.get(prop_key) or props.get(dimension) or "(none)")
         by_bucket[key] = by_bucket.get(key, 0) + 1
 
     # Denominator: active published products, bucketed by the same dimension.

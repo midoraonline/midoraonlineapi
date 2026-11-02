@@ -24,13 +24,16 @@ def visible_status(
     listing_meta: Any,
     posted_at: Any,
     now: datetime,
+    trending: bool = False,
 ) -> str | None:
-    if placement == "boosted":
-        return "boosted"
+    if placement in ("sponsored", "boosted"):
+        return placement
     if lane_of(item_type) == "opportunity":
         hours = _hours_to_close(listing_meta, now)
         if hours is not None and 0 < hours <= C.CLOSING_SOON_HOURS:
             return "closing_soon"
+    if trending:
+        return "trending"
     posted = parse_timestamp(posted_at)
     if posted and (now - posted).total_seconds() <= C.NEW_BADGE_HOURS * 3600:
         return "new"

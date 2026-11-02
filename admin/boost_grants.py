@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 MAX_HOURS = 24 * 90
 MAX_SCORE = 500
+KINDS = ("boost", "sponsored")
 
 
 def _now() -> datetime:
@@ -23,8 +24,10 @@ def _err(status: int, msg: str, code: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"detail": msg, "code": code})
 
 
-def resolve_terms(admin: Any, package_id: str | None, hours: int | None, score: int | None) -> dict[str, Any]:
-    """Package values, overridden by custom hours/score. Custom-only needs both."""
+def resolve_terms(
+    admin: Any, package_id: str | None, hours: int | None, score: int | None, kind: str | None = None
+) -> dict[str, Any]:
+    """Package values, overridden by custom hours/score/kind. Custom-only needs hours and score."""
     pkg: dict[str, Any] | None = None
     if package_id:
         rows = admin.table("boost_plans").select("*").eq("id", package_id).limit(1).execute().data or []
@@ -39,12 +42,15 @@ def resolve_terms(admin: Any, package_id: str | None, hours: int | None, score: 
         raise _err(422, f"Hours must be 1-{MAX_HOURS}.", "invalid_boost")
     if not 0 <= int(s) <= MAX_SCORE:
         raise _err(422, f"Score must be 0-{MAX_SCORE}.", "invalid_boost")
-    return {"boost_plan_id": pkg["id"] if pkg else None, "hours": int(h), "score_bonus": int(s)}
+    k = kind or (pkg.get("kind") if pkg else None) or "boost"
+    if k not in KINDS:
+        raise _err(422, "Kind must be boost or sponsored.", "invalid_boost")
+    return {"boost_plan_id": pkg["id"] if pkg else None, "hours": int(h), "score_bonus": int(s), "kind": k}
 
 
 def _row(listing_id: str, seller_id: str, terms: dict[str, Any], admin_id: str | None, shop_id: str | None) -> dict:
     now = _now()
-    return {
+    row = {
         "listing_id": listing_id,
         "seller_id": seller_id,
         "boost_plan_id": terms["boost_plan_id"],
@@ -58,6 +64,9 @@ def _row(listing_id: str, seller_id: str, terms: dict[str, Any], admin_id: str |
         "granted_by": admin_id,
         "shop_id": shop_id,
     }
+    if terms.get("kind") == "sponsored":
+        row["kind"] = "sponsored"
+    return row
 
 
 def _end_active(admin: Any, listing_ids: list[str]) -> None:
@@ -132,18 +141,25 @@ def end_shop_boosts(admin: Any, shop_id: str) -> dict[str, Any]:
 
 
 def list_active(admin: Any, limit: int = 1000) -> list[dict[str, Any]]:
-    rows = (
-        admin.table("listing_boosts")
-        .select("id,listing_id,seller_id,shop_id,score_bonus,starts_at,ends_at,source,granted_by,boost_plan_id,"
-                "products(title,shop_id),boost_plans(name)")
-        .eq("active", True)
-        .gte("ends_at", _now().isoformat())
-        .order("ends_at")
-        .limit(limit)
-        .execute()
-        .data
-        or []
-    )
+    cols = ("id,listing_id,seller_id,shop_id,score_bonus,starts_at,ends_at,source,granted_by,boost_plan_id,"
+            "products(title,shop_id),boost_plans(name)")
+    query = None
+    for select in (cols.replace("boost_plan_id,", "boost_plan_id,kind,"), cols):
+        try:
+            query = (
+                admin.table("listing_boosts")
+                .select(select)
+                .eq("active", True)
+                .gte("ends_at", _now().isoformat())
+                .order("ends_at")
+                .limit(limit)
+                .execute()
+            )
+            break
+        except Exception:  # noqa: BLE001
+            if select == cols:
+                raise
+    rows = (query.data if query else None) or []
     shop_ids = {str((r.get("products") or {}).get("shop_id") or "") for r in rows} - {""}
     names: dict[str, str] = {}
     if shop_ids:
@@ -160,6 +176,7 @@ def list_active(admin: Any, limit: int = 1000) -> list[dict[str, Any]]:
         out.append({**r, "listing_title": p.get("title"), "listing_shop_id": sid or None,
                     "shop_name": names.get(sid), "package_name": pk.get("name") or "Custom",
                     "source_label": SOURCE_LABEL.get(src, src.title()),
+                    "kind": r.get("kind") or "boost",
                     "scope": "shop" if r.get("shop_id") else "listing",
                     "business_wide": bool(r.get("shop_id"))})
     return out

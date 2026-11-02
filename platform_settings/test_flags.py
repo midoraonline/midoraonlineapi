@@ -2,6 +2,16 @@ from platform_settings import flags
 from platform_settings.flags import SignupsClosed, assert_signups_open
 
 
+def test_first_read_in_fresh_process_works():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("flags_fresh", flags.__file__)
+    fresh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh)
+    fresh._load_rows = lambda: [{"key": "analytics", "enabled": True}]
+    assert fresh.analytics_enabled() is True
+
+
 def test_defaults_when_table_is_empty(monkeypatch):
     flags.invalidate_cache()
     monkeypatch.setattr(flags, "_load_rows", lambda: [])

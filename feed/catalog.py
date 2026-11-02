@@ -10,6 +10,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from fastapi import Query
@@ -35,6 +36,9 @@ SORTS: frozenset[str] = frozenset(
         "trust_score",
     }
 )
+BADGES: frozenset[str] = frozenset({"new_today", "trending", "boosted", "sponsored"})
+PAID_BADGES: dict[str, str] = {"boosted": "boost", "sponsored": "sponsored"}
+NEW_TODAY_HOURS = 24
 # Inventory types use stock_quantity. Services, jobs, and opportunities stay
 # available while status=active even when stock is 0.
 _NON_STOCK_TYPES = "service,opportunity,job,property"
@@ -67,6 +71,7 @@ class ListingFilters:
     opportunity_kind: str | None = None
     compensation: str | None = None
     pricing_model: str | None = None
+    badge: str | None = None
     sort: str = "relevance"
 
     def is_active(self) -> bool:
@@ -88,6 +93,7 @@ class ListingFilters:
                 self.opportunity_kind,
                 self.compensation,
                 self.pricing_model,
+                self.badge,
             )
         )
 
@@ -108,6 +114,7 @@ class ListingFilters:
                 self.opportunity_kind or "",
                 self.compensation or "",
                 self.pricing_model or "",
+                self.badge or "",
                 self.sort,
             ]
         )
@@ -167,6 +174,10 @@ def listing_filters(
         None,
         description="listing_meta.pricing_model (fixed, hourly, starting_at, quote).",
     ),
+    badge: str | None = Query(
+        None,
+        description="new_today, trending, boosted or sponsored.",
+    ),
     sort: str = Query(
         "relevance",
         description="relevance, newest, price_asc, price_desc, most_viewed, best_rated, trust_score.",
@@ -187,6 +198,7 @@ def listing_filters(
         opportunity_kind=opportunity_kind,
         compensation=compensation,
         pricing_model=pricing_model,
+        badge=badge,
         sort=sort,
     )
 
@@ -197,6 +209,11 @@ def build_listing_filters(**raw: Any) -> ListingFilters:
         raise ValueError(
             "sort must be one of: " + ", ".join(sorted(SORTS))
         )
+    badge = _blank(raw.get("badge"))
+    if badge is not None:
+        badge = badge.lower()
+        if badge not in BADGES:
+            raise ValueError("badge must be one of: " + ", ".join(sorted(BADGES)))
     listing_type = _blank(raw.get("listing_type"))
     if listing_type is not None:
         listing_type = listing_type.lower()
@@ -228,6 +245,7 @@ def build_listing_filters(**raw: Any) -> ListingFilters:
         opportunity_kind=_meta_token(raw.get("opportunity_kind"), "opportunity_kind"),
         compensation=_meta_token(raw.get("compensation"), "compensation"),
         pricing_model=_meta_token(raw.get("pricing_model"), "pricing_model"),
+        badge=badge,
         sort=sort,
     )
 
@@ -314,7 +332,31 @@ def resolve_constraints(client: Any, filters: ListingFilters) -> ResolvedConstra
             resolved.impossible = True
             return resolved
         resolved.product_ids = ranked[:_RATING_ID_CAP]
+    if filters.badge in PAID_BADGES or filters.badge == "trending":
+        allowed = badge_listing_ids(client, filters.badge)
+        if resolved.product_ids is not None:
+            allowed = [pid for pid in resolved.product_ids if pid in set(allowed)]
+        if not allowed:
+            resolved.impossible = True
+            return resolved
+        resolved.product_ids = allowed
     return resolved
+
+
+def badge_listing_ids(client: Any, badge: str) -> list[str]:
+    """Listings that currently carry a paid or Trending badge."""
+    if badge == "trending":
+        from feed.service import current_snapshot
+
+        try:
+            return sorted(current_snapshot(client).trending())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("trending lookup failed: %s", exc)
+            return []
+    from feed.boost_slots import active_boosts, kind_of
+
+    kind = PAID_BADGES[badge]
+    return [b["id"] for b in active_boosts(client) if kind_of(b) == kind]
 
 
 def apply_listing_filters(query: Any, filters: ListingFilters, resolved: ResolvedConstraints) -> Any:
@@ -340,6 +382,11 @@ def apply_listing_filters(query: Any, filters: ListingFilters, resolved: Resolve
         query = query.eq("listing_meta->>compensation", filters.compensation)
     if filters.pricing_model:
         query = query.eq("listing_meta->>pricing_model", filters.pricing_model)
+    if filters.badge == "new_today":
+        since = (datetime.now(timezone.utc) - timedelta(hours=NEW_TODAY_HOURS)).isoformat()
+        query = query.or_(
+            f"first_posted_at.gte.{since},and(first_posted_at.is.null,created_at.gte.{since})"
+        )
     if resolved.shop_ids is not None:
         query = query.in_("shop_id", resolved.shop_ids)
     if resolved.use_badge_overlap:

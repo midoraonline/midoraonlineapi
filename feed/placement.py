@@ -11,9 +11,10 @@ Keep = Callable[[Entry], bool]
 
 def exploration_positions(per_block: int) -> frozenset[int]:
     positions: set[int] = set()
+    paid = {C.PAID_SLOT_POSITION, C.SPONSORED_SLOT_POSITION}
     for k in range(max(per_block, 0)):
         pos = round(C.BLOCK_SIZE * (k + 1) / (per_block + 1)) + 1
-        if pos == C.PAID_SLOT_POSITION:
+        while pos in paid:
             pos += 1
         positions.add(pos)
     return frozenset(positions)

@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from analytics.server_events import record_event
 from core.config import get_settings
 from core.security import get_current_user_id, get_optional_user_id
 from db.supabase import get_supabase_admin
@@ -87,9 +88,12 @@ async def report_product(
             # Also record a listing_event so stats/reports_count works
             try:
                 seller_id = None
-                sr = admin.table("products").select("shop_id").eq("id", product_id).limit(1).execute()
+                shop_id = None
+                category = None
+                sr = admin.table("products").select("shop_id,category").eq("id", product_id).limit(1).execute()
                 if sr.data:
                     shop_id = sr.data[0].get("shop_id")
+                    category = sr.data[0].get("category")
                     if shop_id:
                         srr = admin.table("shops").select("owner_id").eq("id", shop_id).limit(1).execute()
                         if srr.data:
@@ -102,6 +106,14 @@ async def report_product(
                     "event_type": "reported",
                     "metadata": {"reason": reason, "description": description},
                 }).execute()
+                record_event(
+                    "trust:report_submitted",
+                    actor_id=current_user_id,
+                    target_type="product",
+                    target_id=product_id,
+                    properties={"category": category, "shopId": shop_id, "reason": reason},
+                    client=admin,
+                )
             except Exception as exc:
                 logger.warning("Failed to record listing_event for report: %s", exc)
 
@@ -230,6 +242,15 @@ async def report_seller(
         if shop_id:
             payload["shop_id"] = shop_id
         r = admin.table("seller_reports").insert(payload).execute()
+        if r.data:
+            record_event(
+                "trust:report_submitted",
+                actor_id=current_user_id,
+                target_type="seller",
+                target_id=seller_id,
+                properties={"shopId": shop_id, "reason": reason},
+                client=admin,
+            )
         return r.data[0] if r.data else {"status": "reported"}
     except HTTPException:
         raise

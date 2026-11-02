@@ -78,6 +78,13 @@ Medium fraud flags subtract 20. `listing_score` no longer contains boost points
   boosts that match every filter can fill the slot.
 - The card shows "Boosted" only when it sits in a paid slot.
 
+### Sponsored
+
+- Sponsored rows live in `listing_boosts` with `kind='sponsored'` (packages: `boost_plans.kind`, migration 064).
+- Sponsored and Boosted rank in separate queues. Each gets at most one slot per 20: Boosted at
+  `PAID_SLOT_POSITION` (6), Sponsored at `SPONSORED_SLOT_POSITION` (14). An empty queue leaves its slot organic.
+- Same gates as boosts: stage 3+, quality ≥ 60, no high/critical fraud, never twice on a page.
+
 ## 7. What changes per viewer
 
 - **Followed shops:** inside each block, organic cards from shops the viewer follows get +15 and move up.
@@ -96,10 +103,21 @@ Medium fraud flags subtract 20. `listing_score` no longer contains boost points
 
 ## 9. Card badge
 
-One status per card, in this order: Boosted (paid slot) → Closing soon (opportunity, deadline within 7 days)
-→ New (first posted within 72 h; reposts do not renew it) → none. Type is shown by the cover, not as a badge.
+One status per card, in this order: Sponsored → Boosted (paid slot) → Closing soon (opportunity, deadline within 7 days)
+→ Trending → New (first posted within 72 h; reposts do not renew it) → none. Type is shown by the cover, not as a badge.
 
-## 10. Not built yet
+Trending is computed at snapshot build (`feed/trending.py`) from the last `TRENDING_WINDOW_HOURS`:
+`unique viewers + 2×likes + 3×(WhatsApp + call clicks) + 4×messages − 5×reports`, divided by
+`(1 + age_hours/24)^1.5`. A listing needs `TRENDING_MIN_UNIQUE_VIEWERS` and `TRENDING_MIN_ACTIONS`; the top
+`TRENDING_TOP_SHARE` of each type lane qualifies.
 
-Sponsored campaigns, Trending badge, Featured Shops module, stage-0 demand capture
+## 10. Badge filters and locations
+
+- `badge=new_today|trending|boosted|sponsored` on `/feed/home`, `/feed/latest` and search. On Boosted/Sponsored
+  pages every card carries that disclosure.
+- `GET /feed/locations?limit=` returns the most common listing places (10 min cache) for the location picker.
+
+## 11. Not built yet
+
+Sponsored viewer-relevance score and pacing, Featured Shops module, stage-0 demand capture
 (requests, notify-me), adaptive exploration at 1,000+, and the dedicated Search/Category ranking rules.

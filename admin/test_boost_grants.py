@@ -79,9 +79,18 @@ def make_db():
 
 def test_resolve_terms_package_and_override():
     db = make_db()
-    assert svc.resolve_terms(db, "p1", None, None) == {"boost_plan_id": "p1", "hours": 168, "score_bonus": 50}
+    assert svc.resolve_terms(db, "p1", None, None) == {"boost_plan_id": "p1", "hours": 168, "score_bonus": 50, "kind": "boost"}
     assert svc.resolve_terms(db, "p1", 2, 300)["hours"] == 2
     assert svc.resolve_terms(db, None, 5, 10)["boost_plan_id"] is None
+    assert svc.resolve_terms(db, "p1", None, None, "sponsored")["kind"] == "sponsored"
+
+
+def test_sponsored_grant_tags_row_kind():
+    db = make_db()
+    out = svc.boost_listing(db, "l2", {"boost_plan_id": None, "hours": 3, "score_bonus": 50, "kind": "sponsored"}, None)
+    assert out["boost"]["kind"] == "sponsored"
+    plain = svc.boost_listing(db, "l1", {"boost_plan_id": None, "hours": 3, "score_bonus": 50, "kind": "boost"}, None)
+    assert "kind" not in plain["boost"]
 
 
 @pytest.mark.parametrize("args", [(None, 5, None), (None, None, None), ("nope", None, None), (None, 0, 10), (None, 5, 999)])

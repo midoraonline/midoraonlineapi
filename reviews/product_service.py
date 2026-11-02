@@ -131,6 +131,16 @@ def create_product_review(
         _raise_db(exc)
     if not created.data:
         return None
+    from analytics.server_events import record_event
+
+    record_event(
+        "trust:rating_submitted",
+        actor_id=user_id,
+        target_type="product",
+        target_id=product_id,
+        properties={"productId": product_id, "rating": rating},
+        client=admin,
+    )
     return created.data[0]
 
 

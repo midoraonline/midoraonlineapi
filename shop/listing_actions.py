@@ -146,7 +146,7 @@ def promote_options(admin: Any, listing_id: str, user_id: str) -> dict[str, Any]
     plan = _plan(admin, user_id)
     try:
         packages = (
-            admin.table("boost_plans").select("id,name,duration_hours,price_amount,score_bonus")
+            admin.table("boost_plans").select("*")
             .eq("is_active", True).order("price_amount").execute().data or []
         )
     except Exception:  # noqa: BLE001
@@ -181,6 +181,8 @@ def boost_listing(admin: Any, listing_id: str, user_id: str, package_id: str, us
         "starts_at": now.isoformat(),
         "ends_at": (now + timedelta(hours=int(pkg["duration_hours"]))).isoformat(),
     }
+    if pkg.get("kind") == "sponsored":
+        row["kind"] = "sponsored"
     if use_allowance:
         if boost_allowance(admin, user_id, plan)["remaining"] <= 0:
             raise _err(402, "No free boosts left this month on your plan.", "no_allowance")

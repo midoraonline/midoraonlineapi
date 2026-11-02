@@ -314,3 +314,40 @@ def test_invalid_sort_and_listing_type():
         build_listing_filters(listing_type="vehicle")
     with pytest.raises(ValueError):
         build_listing_filters(min_price=20, max_price=10)
+    with pytest.raises(ValueError):
+        build_listing_filters(badge="featured")
+
+
+def test_paid_badge_limits_to_active_kind(monkeypatch):
+    from feed import boost_slots
+
+    monkeypatch.setattr(boost_slots, "active_boosts", lambda c: [
+        {"id": "b1", "kind": "boost"}, {"id": "s1", "kind": "sponsored"}, {"id": "b2"},
+    ])
+    filters = build_listing_filters(badge="Sponsored")
+    assert filters.badge == "sponsored" and filters.is_active()
+    client = FakeClient({"products": _Resp([], count=0)})
+    fetch_catalog_page(client, filters, select=CARD_SELECT, page=1, limit=5)
+    ids = next(op for op in _product_query(client).ops if op[0] == "in_" and op[1][0] == "id")
+    assert ids[1][1] == ["s1"]
+
+    client = FakeClient({"products": _Resp([], count=0)})
+    fetch_catalog_page(client, build_listing_filters(badge="boosted"), select=CARD_SELECT, page=1, limit=5)
+    ids = next(op for op in _product_query(client).ops if op[0] == "in_" and op[1][0] == "id")
+    assert ids[1][1] == ["b1", "b2"]
+
+
+def test_paid_badge_without_inventory_skips_fetch(monkeypatch):
+    from feed import boost_slots
+
+    monkeypatch.setattr(boost_slots, "active_boosts", lambda c: [])
+    client = FakeClient({"products": _Resp([{"id": "x"}], count=1)})
+    rows, total = fetch_catalog_page(client, build_listing_filters(badge="boosted"), select=CARD_SELECT, page=1, limit=5)
+    assert rows == [] and total == 0
+
+
+def test_new_today_filters_on_first_post_time():
+    client = FakeClient({"products": _Resp([], count=0)})
+    fetch_catalog_page(client, build_listing_filters(badge="new_today"), select=CARD_SELECT, page=1, limit=5)
+    cond = next(op for op in _product_query(client).ops if op[0] == "or_" and "first_posted_at" in op[1][0])
+    assert "first_posted_at.is.null" in cond[1][0] and "created_at.gte." in cond[1][0]

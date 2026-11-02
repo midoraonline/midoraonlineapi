@@ -269,13 +269,21 @@ async def shop_dashboard(
             .select(
                 "id,title,description,price_ugx,image_urls,category,item_type,"
                 "status,listing_score,location_name,is_published,view_count,"
-                "like_count,created_at,updated_at"
+                "created_at"
             )
             .eq("shop_id", shop_id)
             .order("created_at", desc=True)
             .execute()
         )
         product_ids = [str(row["id"]) for row in (pr.data or []) if row.get("id")]
+        like_counts: dict[str, int] = {}
+        if product_ids:
+            try:
+                for lk in admin.table("product_likes").select("product_id").in_("product_id", product_ids).execute().data or []:
+                    key = str(lk.get("product_id"))
+                    like_counts[key] = like_counts.get(key, 0) + 1
+            except Exception as exc:
+                logger.warning("shop_dashboard: product_likes lookup failed: %s", exc)
         if product_ids and analytics_on:
             try:
                 ev_r = (
@@ -317,11 +325,11 @@ async def shop_dashboard(
                 "location_name": row.get("location_name"),
                 "is_published": bool(row.get("is_published", True)),
                 "view_count": int(row.get("view_count") or 0),
-                "like_count": int(row.get("like_count") or 0),
+                "like_count": like_counts.get(pid, 0),
                 "whatsapp_clicks": ec.get("whatsapp_clicks", 0),
                 "messages": ec.get("messages", 0),
                 "created_at": str(row["created_at"]) if row.get("created_at") else None,
-                "updated_at": str(row["updated_at"]) if row.get("updated_at") else None,
+                "updated_at": str(row["created_at"]) if row.get("created_at") else None,
             })
     except Exception as exc:
         logger.warning("shop_dashboard products failed: %s", exc)

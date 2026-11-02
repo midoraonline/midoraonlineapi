@@ -70,6 +70,18 @@ async def home_feed(
     )
 
 
+@router.get("/locations")
+async def popular_locations(
+    response: Response,
+    limit: int = Query(12, ge=1, le=50),
+) -> dict[str, Any]:
+    from db.supabase import get_supabase_admin
+    from feed.locations import popular_locations as load
+
+    response.headers["Cache-Control"] = _PUBLIC_CACHE_HEADER
+    return {"items": load(get_supabase_admin(), limit)}
+
+
 @router.get("/cron/refresh")
 @router.post("/cron/refresh")
 async def refresh_ranking(
