@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from core import cache
 from feed import config as C
 from feed.stages import StagePlan
 
@@ -15,6 +16,13 @@ logger = logging.getLogger(__name__)
 CURRENT_KEY = "home"
 PREVIOUS_KEY = "home:prev"
 _STALE_AT = "1970-01-01T00:00:00+00:00"
+_R_CURRENT = cache.key("feed", "snap", "current")
+_R_LATEST = cache.key("feed", "snap", "latest")
+_VERSION_TTL_S = 3600
+
+
+def _r_version(version: str) -> str:
+    return cache.key("feed", "snap", "v", version)
 
 
 @dataclass(frozen=True)
@@ -89,7 +97,25 @@ def _rows(client: Any) -> dict[str, dict[str, Any]]:
     return {str(row.get("snapshot_key")): row for row in (r.data or [])}
 
 
+def _from_redis(version: str) -> Snapshot | None:
+    payload = cache.get_json(_r_version(version))
+    return Snapshot.from_row({"version": version, "payload": payload}) if isinstance(payload, dict) else None
+
+
 def current(client: Any) -> Snapshot | None:
+    if cache.get_redis() is not None:
+        version = cache.get_json(_R_CURRENT)
+        if cache.get_redis() is not None:
+            if not isinstance(version, str) or not version:
+                return None
+            with _lock:
+                hit = _memory.get(CURRENT_KEY)
+            if hit and hit[1].version == version:
+                return hit[1]
+            snap = by_version(client, version)
+            if snap:
+                _remember(CURRENT_KEY, snap, time.monotonic())
+            return snap
     with _lock:
         hit = _memory.get(CURRENT_KEY)
     if hit and _fresh(hit[0]):
@@ -104,11 +130,27 @@ def current(client: Any) -> Snapshot | None:
     return snap
 
 
+def latest(client: Any) -> Snapshot | None:
+    """Newest known order even if past its TTL; served while another worker rebuilds."""
+    version = cache.get_json(_R_LATEST)
+    if isinstance(version, str) and version:
+        snap = by_version(client, version)
+        if snap:
+            return snap
+    with _lock:
+        hit = _memory.get(CURRENT_KEY)
+    return hit[1] if hit else None
+
+
 def by_version(client: Any, version: str) -> Snapshot | None:
     with _lock:
         cached = [snap for _, snap in _memory.values() if snap.version == version]
     if cached:
         return cached[0]
+    snap = _from_redis(version)
+    if snap:
+        _remember(PREVIOUS_KEY, snap, time.monotonic())
+        return snap
     for row in _rows(client).values():
         snap = Snapshot.from_row(row)
         if snap and snap.version == version:
@@ -123,6 +165,9 @@ def save(client: Any, snap: Snapshot) -> None:
     if previous and previous[1].version != snap.version:
         _remember(PREVIOUS_KEY, previous[1], previous[0])
     _remember(CURRENT_KEY, snap, time.monotonic())
+    if cache.set_json(_r_version(snap.version), snap.payload(), ttl_seconds=_VERSION_TTL_S):
+        cache.set_json(_R_LATEST, snap.version, ttl_seconds=_VERSION_TTL_S)
+        cache.set_json(_R_CURRENT, snap.version, ttl_seconds=C.SNAPSHOT_TTL_SECONDS)
     try:
         old = Snapshot.from_row(_rows(client).get(CURRENT_KEY))
         rows = [{
@@ -145,6 +190,7 @@ def save(client: Any, snap: Snapshot) -> None:
 
 def invalidate(client: Any) -> None:
     clear_memory()
+    cache.delete(_R_CURRENT)
     try:
         client.table("feed_rank_snapshots").update({"refreshed_at": _STALE_AT}).eq(
             "snapshot_key", CURRENT_KEY

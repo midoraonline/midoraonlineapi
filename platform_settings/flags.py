@@ -15,6 +15,9 @@ from fastapi import HTTPException
 logger = logging.getLogger(__name__)
 
 _TTL_SECONDS = 30.0
+_LOCAL_TTL_WITH_REDIS = 5.0
+_SHARED_TTL_SECONDS = 60
+_SHARED_KEY = "midora:settings:app"
 
 # Must exist before the first load_settings() in a fresh worker, or every flag read raises NameError.
 _cache_rows: dict[str, dict[str, Any]] | None = None
@@ -164,6 +167,9 @@ def invalidate_cache() -> None:
     _cache_rows = None
     _cache_at = 0.0
     _cache_persisted = False
+    from core import cache
+
+    cache.delete(_SHARED_KEY)
 
 
 def _defaults() -> dict[str, dict[str, Any]]:
@@ -180,16 +186,31 @@ def _load_rows() -> list[dict[str, Any]]:
     return admin.table("app_settings").select("key,enabled,value,updated_by,updated_at").execute().data or []
 
 
+def _shared_rows(force: bool) -> list[dict[str, Any]]:
+    from core import cache
+
+    if not force:
+        shared = cache.get_json(_SHARED_KEY)
+        if isinstance(shared, list):
+            return shared
+    rows = _load_rows()
+    cache.set_json(_SHARED_KEY, rows, ttl_seconds=_SHARED_TTL_SECONDS)
+    return rows
+
+
 def load_settings(*, force: bool = False) -> dict[str, dict[str, Any]]:
     global _cache_rows, _cache_at, _cache_persisted
+    from core import cache
+
     now = time.monotonic()
-    if not force and _cache_rows is not None and (now - _cache_at) < _TTL_SECONDS:
+    ttl = _LOCAL_TTL_WITH_REDIS if cache.get_redis() is not None else _TTL_SECONDS
+    if not force and _cache_rows is not None and (now - _cache_at) < ttl:
         return _cache_rows
 
     merged = _defaults()
     persisted = False
     try:
-        for row in _load_rows():
+        for row in _shared_rows(force):
             key = str(row.get("key") or "")
             if key not in FLAGS:
                 continue

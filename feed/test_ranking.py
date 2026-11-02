@@ -21,10 +21,10 @@ def test_stage_thresholds_follow_growth_stages():
     ]
 
 
-def test_mvp_stage_has_no_paid_exploration_or_type_mix():
+def test_mvp_stage_has_paid_slots_but_no_exploration_or_type_mix():
     plan = plan_for({"product": 120, "service": 40, "opportunity": 30})
     assert plan.stage == 2
-    assert not plan.paid and not plan.type_mix and plan.exploration_per_block == 0
+    assert plan.paid and not plan.type_mix and plan.exploration_per_block == 0
 
 
 def test_type_mix_needs_depth_in_every_lane():

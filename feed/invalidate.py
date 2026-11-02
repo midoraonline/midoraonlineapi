@@ -18,6 +18,7 @@ def rescore(listing_ids: Iterable[str], limit: int = 50) -> None:
 
 
 def invalidate_feed_caches(client: Any | None = None, *, notify_next: bool = True) -> None:
+    from core import cache
     from feed import boost_slots, composite, snapshots
 
     if client is None:
@@ -26,6 +27,7 @@ def invalidate_feed_caches(client: Any | None = None, *, notify_next: bool = Tru
         client = get_supabase_admin()
     snapshots.invalidate(client)
     composite._guest_home_cache.clear()
+    cache.bump(composite.FEED_GENERATION)
     boost_slots.clear_cache()
     if notify_next:
         def _bust() -> None:

@@ -154,6 +154,9 @@ class Settings(BaseSettings):
         alias="VAPID_CONTACT_EMAIL",
     )
 
+    # Blank = in-process + Postgres caching only (core/cache.py degrades gracefully).
+    redis_url: str = Field(default="", alias="REDIS_URL")
+
     @property
     def frontend_url(self) -> str:
         """Public site origin for links in emails (reset, verification...)."""

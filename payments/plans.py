@@ -60,6 +60,7 @@ import time
 
 _log = logging.getLogger(__name__)
 _TTL = 30.0
+_SHARED_KEY = "midora:plans"
 _cache: dict[str, dict] | None = None
 _cache_at = 0.0
 
@@ -87,14 +88,25 @@ def invalidate_plans_cache() -> None:
     global _cache, _cache_at
     _cache = None
     _cache_at = 0.0
+    from core import cache
+
+    cache.delete(_SHARED_KEY)
 
 
 def _merged() -> dict[str, dict]:
     global _cache, _cache_at
+    from core import cache
+
     now = time.monotonic()
-    if _cache is not None and now - _cache_at < _TTL:
+    ttl = 5.0 if cache.get_redis() is not None else _TTL
+    if _cache is not None and now - _cache_at < ttl:
         return _cache
+    shared = cache.get_json(_SHARED_KEY)
+    if isinstance(shared, dict) and all(k in shared for k in PLANS):
+        _cache, _cache_at = shared, now
+        return shared
     merged = {k: dict(v) for k, v in PLANS.items()}
+    loaded = False
     try:
         from db.supabase import get_supabase_admin
 
@@ -108,8 +120,11 @@ def _merged() -> dict[str, dict]:
                     merged[key][field] = row[field]
             if row.get("updated_at"):
                 merged[key]["updated_at"] = row["updated_at"]
+        loaded = True
     except Exception as exc:  # noqa: BLE001 - table missing -> code defaults
         _log.debug("plans table unreadable, using code defaults: %s", exc)
+    if loaded:
+        cache.set_json(_SHARED_KEY, merged, ttl_seconds=60)
     _cache, _cache_at = merged, now
     return merged
 

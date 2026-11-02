@@ -83,11 +83,14 @@ def start_module_workers(modules: list[AppModule]) -> list[AppModule]:
 
 def register_routers(app: FastAPI) -> None:
     async def health() -> dict:
+        from core.cache import get_redis
+
         return {
             "status": "ok",
             "service": app.title,
             "version": app.version,
             "time": datetime.now(timezone.utc).isoformat(),
+            "cache": "redis" if get_redis() is not None else "memory",
         }
 
     app.add_api_route("/api/v1/health", health, methods=["GET"], tags=["health"])

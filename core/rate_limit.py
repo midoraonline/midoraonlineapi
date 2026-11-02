@@ -49,6 +49,14 @@ def _persistent_retry_after(bucket: str, limit: int, window_seconds: int) -> int
 
 def check_rate_limit(bucket: str, *, limit: int, window_seconds: int) -> None:
     """Raise 429 when `bucket` has exceeded `limit` hits in `window_seconds`."""
+    from core import cache
+
+    counted = cache.hit_window(cache.key("rl", bucket[:200]), window_seconds=window_seconds)
+    if counted is not None:
+        hits, retry = counted
+        if hits > limit:
+            _raise_limited(bucket, retry)
+        return
     retry_after = _persistent_retry_after(bucket, limit, window_seconds)
     if retry_after:
         _raise_limited(bucket, retry_after)

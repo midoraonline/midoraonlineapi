@@ -24,8 +24,8 @@ Code: `feed/service.py` (build + serve), `quality.py`, `stages.py`, `scoring.py`
 | Stage | Eligible listings | Type mix | Exploration per 20 | Paid per 20 |
 |---|---|---|---|---|
 | 0 | 0 | – | – | – |
-| 1 | 1–49 | no | 0 | 0 |
-| 2 | 50–199 | no | 0 | 0 |
+| 1 | 1–49 | no | 0 | 1 |
+| 2 | 50–199 | no | 0 | 1 |
 | 3 | 200–499 | 60/25/15 if every type is deep | 1 | 1 |
 | 4 | 500–999 | same | 2 | 1 |
 | 5 | 1,000–4,999 | same, engagement starts counting | 2 | 1 |
@@ -71,24 +71,24 @@ Medium fraud flags subtract 20. `listing_score` no longer contains boost points
 
 ## 6. Paid boosts
 
-- Boosts only place from stage 3 (200+ eligible listings). Below that they are stored but have no effect.
+- Boosts place from stage 1 (`PAID_MIN_STAGE`), so even a small marketplace shows them near the top.
 - One boosted card per 20, at position 6 of each block. The ad must have quality ≥ 60 and no high/critical fraud.
 - Bigger packages get more turns in the rotation (one turn per 25 points of `score_bonus`).
 - A boosted ad already on the page organically is not repeated. Filters are hard: on filtered pages only
   boosts that match every filter can fill the slot.
-- The card shows "Boosted" only when it sits in a paid slot.
+- Every card of a listing with an active boost shows "Boosted", in or out of the paid slot (`feed/badges.py`).
 
 ### Sponsored
 
 - Sponsored rows live in `listing_boosts` with `kind='sponsored'` (packages: `boost_plans.kind`, migration 064).
 - Sponsored and Boosted rank in separate queues. Each gets at most one slot per 20: Boosted at
   `PAID_SLOT_POSITION` (6), Sponsored at `SPONSORED_SLOT_POSITION` (14). An empty queue leaves its slot organic.
-- Same gates as boosts: stage 3+, quality ≥ 60, no high/critical fraud, never twice on a page.
+- Same gates as boosts: `PAID_MIN_STAGE`, quality ≥ 60, no high/critical fraud, never twice on a page.
 
 ## 7. What changes per viewer
 
-- **Followed shops (toggle `FOLLOWED_SHOP_LIFT`):** inside each block, organic cards from shops the viewer
-  follows get +`FOLLOWED_SHOP_BOOST` and move up. They never leave their block, so variety and type mix hold.
+- **Followed shops (toggle `FOLLOWED_SHOP_LIFT`, off by default):** inside each block, organic cards from shops the viewer
+  follows move ahead of cards scoring less than theirs + `FOLLOWED_SHOP_BOOST`; every other card keeps the shared order.
 - Nothing is hidden per viewer: no seen-listing fatigue and no daily repeat caps, so a reload shows the same
   order. The order only moves when the shared snapshot is rebuilt (freshness, including reposts, and quality).
 - Likes, views, saves and searches are recorded for analytics and engagement, but they do not reorder the feed.

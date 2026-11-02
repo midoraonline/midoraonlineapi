@@ -87,11 +87,16 @@ def lift_followed(items: list[Entry], followed: set[str]) -> list[Entry]:
     out = list(items)
     for start in range(0, len(out), C.BLOCK_SIZE):
         slots = [i for i in range(start, min(start + C.BLOCK_SIZE, len(out))) if out[i]["mode"] == "organic"]
-        ranked = sorted(
-            (out[i] for i in slots),
-            key=lambda e: e["score"] + (C.FOLLOWED_SHOP_BOOST if e["shop"] in followed else 0.0),
-            reverse=True,
-        )
+        block = [out[i] for i in slots]
+        lifted = [e for e in block if e["shop"] in followed]
+        others = [e for e in block if e["shop"] not in followed]
+        # Followed cards move ahead of cheaper-scored cards; everyone else keeps the shared order.
+        ranked: list[Entry] = []
+        for entry in others:
+            while lifted and lifted[0]["score"] + C.FOLLOWED_SHOP_BOOST >= entry["score"]:
+                ranked.append(lifted.pop(0))
+            ranked.append(entry)
+        ranked.extend(lifted)
         for i, entry in zip(slots, ranked):
             out[i] = entry
         for a, b in zip(slots, slots[1:]):

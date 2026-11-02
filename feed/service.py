@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from core import cache
 from db.supabase import Client, get_supabase_admin, with_supabase_retry
 from feed import boost_slots, impressions, placement, scoring, snapshots, trending
 from feed import config as C
@@ -197,10 +199,32 @@ def build_snapshot(db: Client) -> snapshots.Snapshot:
     return snapshots.Snapshot(version=uuid.uuid4().hex[:12], plan=plan, items=items)
 
 
+_REBUILD_LOCK = cache.key("feed", "snap", "rebuilding")
+_rebuild_guard = threading.Lock()
+
+
 def current_snapshot(db: Client) -> snapshots.Snapshot:
     snap = snapshots.current(db)
     if snap is not None:
         return snap
+    # One rebuild at a time across threads and workers; everyone else keeps serving the last order.
+    if _rebuild_guard.acquire(blocking=False):
+        try:
+            if cache.acquire_lock(_REBUILD_LOCK, ttl_seconds=60):
+                try:
+                    return snapshots.current(db) or _rebuild(db)
+                finally:
+                    cache.release_lock(_REBUILD_LOCK)
+        finally:
+            _rebuild_guard.release()
+    stale = snapshots.latest(db)
+    if stale is not None:
+        return stale
+    with _rebuild_guard:
+        return snapshots.current(db) or _rebuild(db)
+
+
+def _rebuild(db: Client) -> snapshots.Snapshot:
     started = time.perf_counter()
     C.refresh_from_db()
     snap = build_snapshot(db)

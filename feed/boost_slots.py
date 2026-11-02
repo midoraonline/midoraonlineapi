@@ -133,14 +133,22 @@ def _load_rows(client: Any) -> list[dict[str, Any]]:
 
 
 def active_boosts(client: Any) -> list[dict[str, Any]]:
-    if _cache["rows"] is not None and time.monotonic() - _cache["at"] < _TTL_S:
+    from core import cache
+    from feed.composite import FEED_GENERATION
+
+    gen = cache.generation(FEED_GENERATION)
+    if _cache["rows"] is not None and _cache.get("gen") == gen and time.monotonic() - _cache["at"] < _TTL_S:
         return _cache["rows"]
-    try:
-        rows = _load_rows(client)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("boost slots: load failed: %s", exc)
-        rows = []
-    _cache.update({"at": time.monotonic(), "rows": rows})
+    shared_key = cache.key("feed", "boosts", gen)
+    rows = cache.get_json(shared_key)
+    if not isinstance(rows, list):
+        try:
+            rows = _load_rows(client)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("boost slots: load failed: %s", exc)
+            rows = []
+        cache.set_json(shared_key, rows, ttl_seconds=_TTL_S)
+    _cache.update({"at": time.monotonic(), "rows": rows, "gen": gen})
     return rows
 
 

@@ -9,6 +9,7 @@ from feed.catalog import _scan
 logger = logging.getLogger(__name__)
 
 _TTL_S = 600.0
+_SHARED_KEY = "midora:feed:locations"
 _cache: dict[str, Any] = {"at": 0.0, "rows": None}
 
 
@@ -51,12 +52,19 @@ def _load(client: Any) -> list[dict[str, Any]]:
 
 
 def popular_locations(client: Any, limit: int) -> list[dict[str, Any]]:
+    from core import cache
+
     rows = _cache["rows"]
     if rows is None or time.monotonic() - _cache["at"] > _TTL_S:
-        try:
-            rows = _load(client)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("popular locations failed: %s", exc)
-            rows = rows or []
+        shared = cache.get_json(_SHARED_KEY)
+        if isinstance(shared, list):
+            rows = shared
+        else:
+            try:
+                rows = _load(client)
+                cache.set_json(_SHARED_KEY, rows, ttl_seconds=_TTL_S)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("popular locations failed: %s", exc)
+                rows = rows or []
         _cache.update({"at": time.monotonic(), "rows": rows})
     return rows[:limit]

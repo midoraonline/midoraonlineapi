@@ -14,7 +14,7 @@ EXPOSURE_WEIGHT = 5.0
 FRESHNESS_HALF_LIFE_HOURS = 72.0
 FRAUD_MEDIUM_PENALTY = 20.0
 FOLLOWED_SHOP_BOOST = 15.0
-FOLLOWED_SHOP_LIFT = 1
+FOLLOWED_SHOP_LIFT = 0
 
 QUALITY_MIN = 40.0
 EXPLORATION_MIN_QUALITY = 60.0
@@ -25,7 +25,7 @@ BLOCK_SIZE = 20
 SELLER_CAP_PER_BLOCK = 2
 PAID_SLOT_POSITION = 6
 SPONSORED_SLOT_POSITION = 14
-PAID_MIN_STAGE = 3
+PAID_MIN_STAGE = 1
 TYPE_MIX_MIN_STAGE = 3
 ENGAGEMENT_MIN_STAGE = 5
 TYPE_DEPTH_BLOCKS = 3
@@ -110,6 +110,7 @@ OVERRIDABLE_KEYS: tuple[str, ...] = (
 
 _DEFAULTS: dict[str, Any] = {k: globals()[k] for k in OVERRIDABLE_KEYS}
 _CACHE_TTL_SECONDS = 60.0
+_SHARED_KEY = "midora:feed:config"
 _last_load_ts = 0.0
 _current_overrides: dict[str, Any] = {}
 
@@ -154,6 +155,11 @@ def apply_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
 
 
 def _load_from_db() -> dict[str, Any]:
+    from core import cache
+
+    shared = cache.get_json(_SHARED_KEY)
+    if isinstance(shared, dict):
+        return shared
     try:
         from db.supabase import get_supabase_admin
 
@@ -166,7 +172,9 @@ def _load_from_db() -> dict[str, Any]:
             .execute()
         )
         raw = (getattr(r, "data", None) or {}).get("overrides") or {}
-        return raw if isinstance(raw, dict) else {}
+        raw = raw if isinstance(raw, dict) else {}
+        cache.set_json(_SHARED_KEY, raw, ttl_seconds=60)
+        return raw
     except Exception as exc:  # noqa: BLE001
         _log.debug("feed_config load failed: %s", exc)
         return {}
@@ -174,8 +182,13 @@ def _load_from_db() -> dict[str, Any]:
 
 def refresh_from_db(force: bool = False) -> dict[str, Any]:
     global _last_load_ts
+    from core import cache
+
     now = time.time()
-    if not force and now - _last_load_ts < _CACHE_TTL_SECONDS:
+    ttl = 5.0 if cache.get_redis() is not None else _CACHE_TTL_SECONDS
+    if force:
+        cache.delete(_SHARED_KEY)
+    if not force and now - _last_load_ts < ttl:
         return dict(_current_overrides)
     _last_load_ts = now
     return apply_overrides(_load_from_db())
@@ -184,3 +197,6 @@ def refresh_from_db(force: bool = False) -> dict[str, Any]:
 def invalidate_cache() -> None:
     global _last_load_ts
     _last_load_ts = 0.0
+    from core import cache
+
+    cache.delete(_SHARED_KEY)

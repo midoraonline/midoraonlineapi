@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from typing import Any
 
+from core import cache
 from db.supabase import get_supabase_admin
 from feed.catalog import ListingFilters
 
@@ -11,7 +13,13 @@ logger = logging.getLogger(__name__)
 
 MAX_CARDS = 40
 _GUEST_HOME_TTL_S = 60.0
-_guest_home_cache: dict[tuple[int, int, str], tuple[float, dict[str, Any]]] = {}
+_guest_home_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+FEED_GENERATION = cache.key("feed", "gen")
+
+
+def _guest_key(page: int, limit: int, token: str, version: str | None) -> str:
+    digest = hashlib.sha1(token.encode()).hexdigest()[:16]
+    return cache.key("feed", "guest", cache.generation(FEED_GENERATION), version or "cur", page, limit, digest)
 
 
 def _safe_int(x: Any) -> int:
@@ -51,15 +59,23 @@ def get_home_feed(
     admin = get_supabase_admin()
     is_guest = not user_id
     active = filters or ListingFilters(category=(category or "").strip() or None)
+    if is_guest and not exclude_ids and not version and not active.is_active():
+        from feed.service import current_snapshot
+
+        version = current_snapshot(admin).version
     guest_cache_key = (
-        (page, limit, active.cache_token())
-        if is_guest and page == 1 and not exclude_ids
+        _guest_key(page, limit, active.cache_token(), version)
+        if is_guest and not exclude_ids
         else None
     )
     if guest_cache_key:
         hit = _guest_home_cache.get(guest_cache_key)
         if hit and (time.monotonic() - hit[0]) < _GUEST_HOME_TTL_S:
             return hit[1]
+        shared = cache.get_json(guest_cache_key)
+        if isinstance(shared, dict):
+            _guest_home_cache[guest_cache_key] = (time.monotonic(), shared)
+            return shared
 
     feed = get_algorithm_feed(
         user_id=user_id,
@@ -222,5 +238,8 @@ def get_home_feed(
         "next_cursor": next_cursor,
     }
     if guest_cache_key:
+        if len(_guest_home_cache) > 500:
+            _guest_home_cache.clear()
         _guest_home_cache[guest_cache_key] = (time.monotonic(), payload)
+        cache.set_json(guest_cache_key, payload, ttl_seconds=_GUEST_HOME_TTL_S)
     return payload
