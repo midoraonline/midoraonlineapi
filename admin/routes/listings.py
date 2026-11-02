@@ -278,4 +278,12 @@ async def admin_get_listing(listing_id: str) -> dict:
         )
     except Exception:  # noqa: BLE001
         pass
-    return {"listing": product, "shop": shop or None, "owner": owner or None, "reports": reports}
+    stats: dict | None = None
+    try:
+        from shop import listing_stats
+
+        row = listing_stats.by_listing(admin, [listing_id], listing_stats.since_for(30))[listing_id]
+        stats = {"window_days": 30, **listing_stats.with_rates(row)}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("admin listing stats failed: %s", exc)
+    return {"listing": product, "shop": shop or None, "owner": owner or None, "reports": reports, "stats": stats}

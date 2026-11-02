@@ -50,7 +50,7 @@ def test_capped_listing_ids_uses_impressions_and_owner_plan(monkeypatch):
     assert capped == {"a", "b"}
 
 
-def test_home_page_drops_capped(monkeypatch):
+def test_home_page_is_the_same_on_every_reload(monkeypatch):
     from feed import snapshots
     from feed.stages import StagePlan
 
@@ -67,6 +67,6 @@ def test_home_page_drops_capped(monkeypatch):
     page = service._home_page(
         object(), user_id="u", session_id=None, page=1, limit=3, version=None, exclude_ids=None
     )
-    assert page.items == ["p0", "p2"]
+    assert page.items == ["p0", "p1", "p2"]
     assert page.version == "v1"
-    assert page.placements == {"p0": "organic", "p2": "organic"}
+    assert page.placements == {"p0": "organic", "p1": "organic", "p2": "organic"}

@@ -351,25 +351,63 @@ def admin_stats_overview() -> dict[str, Any]:
     impressions_last_24h = 0
     total_impressions_window = 0
     cutoff_24h = (now - timedelta(hours=24)).isoformat()
+    viewers_by_listing: dict[str, set[str]] = defaultdict(set)
+    all_viewers: set[str] = set()
     try:
-        imp_rows = (
-            admin.table("listing_impressions")
-            .select("listing_id, pool, created_at")
-            .gte("created_at", impressions_cutoff)
-            .limit(100000)
-            .execute()
-        ).data or []
+        imp_rows: list[dict[str, Any]] = []
+        while len(imp_rows) < 200_000:
+            batch = (
+                admin.table("listing_impressions")
+                .select("listing_id, pool, created_at, buyer_id, session_id, device_hash")
+                .gte("created_at", impressions_cutoff)
+                .order("created_at")
+                .range(len(imp_rows), len(imp_rows) + 999)
+                .execute()
+            ).data or []
+            imp_rows.extend(batch)
+            if len(batch) < 1000:
+                break
         total_impressions_window = len(imp_rows)
         for row in imp_rows:
             day = str(row.get("created_at") or "")[:10]
             if day:
                 impressions_series_map[day] += 1
             pool_counts[str(row.get("pool") or "organic")] += 1
-            impressions_by_listing[str(row.get("listing_id") or "")] += 1
+            lid = str(row.get("listing_id") or "")
+            impressions_by_listing[lid] += 1
+            viewer = str(row.get("buyer_id") or row.get("session_id") or row.get("device_hash") or "")
+            if viewer:
+                viewers_by_listing[lid].add(viewer)
+                all_viewers.add(viewer)
             if str(row.get("created_at") or "") >= cutoff_24h:
                 impressions_last_24h += 1
     except Exception as exc:
         logger.warning("admin stats impressions failed: %s", exc)
+
+    most_seen: list[dict[str, Any]] = []
+    top_seen_ids = [lid for lid, _ in sorted(impressions_by_listing.items(), key=lambda kv: -kv[1]) if lid][:10]
+    if top_seen_ids:
+        try:
+            seen_rows = admin.table("products").select("id,title,shop_id").in_("id", top_seen_ids).execute().data or []
+            seen_by_id = {str(r["id"]): r for r in seen_rows}
+            seen_shop_ids = list({str(r.get("shop_id")) for r in seen_rows if r.get("shop_id")})
+            seen_shops = {
+                str(s["id"]): s.get("name")
+                for s in (admin.table("shops").select("id,name").in_("id", seen_shop_ids).execute().data or [])
+            } if seen_shop_ids else {}
+            for lid in top_seen_ids:
+                row = seen_by_id.get(lid)
+                if not row:
+                    continue
+                most_seen.append({
+                    "id": lid,
+                    "title": row.get("title"),
+                    "shop_name": seen_shops.get(str(row.get("shop_id"))),
+                    "impressions": impressions_by_listing[lid],
+                    "reach": len(viewers_by_listing.get(lid, ())),
+                })
+        except Exception as exc:
+            logger.warning("admin stats most-seen failed: %s", exc)
 
     impressions_series = []
     for i in range(window_days):
@@ -496,6 +534,7 @@ def admin_stats_overview() -> dict[str, Any]:
             "total_messages": total_messages,
             "total_impressions": total_impressions_window,
             "impressions_last_24h": impressions_last_24h,
+            "total_reach": len(all_viewers),
             "whatsapp_clicks_window": total_wa_window,
             "messages_window": total_msg_window,
         },
@@ -512,6 +551,7 @@ def admin_stats_overview() -> dict[str, Any]:
         },
         "top_shops": enriched_top_shops,
         "top_products": enriched_top_products,
+        "most_seen": most_seen,
         "distributions": {
             "shop_types": [
                 {"label": k, "value": v} for k, v in shop_type_counts.most_common()

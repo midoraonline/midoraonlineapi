@@ -9,7 +9,7 @@ from supabase import Client
 
 from core.authz import ensure_shop_owner
 from db.supabase import get_supabase_admin, get_supabase_client
-from core.security import get_current_user_id, get_optional_user_id
+from core.security import TokenPayload, get_current_user_id, get_optional_claims, get_optional_user_id
 from payments import plan_service
 from shop import engagement_service, listing_stats
 from shop.schemas import ShopEngagementState, ViewCountResponse
@@ -223,22 +223,24 @@ async def my_liked_shops(user_id: str = Depends(get_current_user_id)) -> dict:
 async def shop_dashboard(
     shop_id: str,
     user_id: str = Depends(get_current_user_id),
+    claims: TokenPayload | None = Depends(get_optional_claims),
+    days: int = Query(30, ge=1, le=365),
 ) -> dict[str, Any]:
     """Composite endpoint: shop profile + engagement + products + lead stats.
 
-    Returns everything a merchant dashboard needs in a single call instead of
-    the previous 4 separate round-trips.
+    Owners need a plan with analytics; admins can open any shop.
     """
     admin = get_supabase_admin()
+    is_admin = bool(claims and (claims.role or "").lower() == "admin")
 
-    try:
-        ensure_shop_owner(admin, shop_id, user_id)
-    except LookupError:
-        raise HTTPException(status_code=404, detail="Shop not found")
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
-    _require_analytics(admin, user_id)
+    if not is_admin:
+        try:
+            ensure_shop_owner(admin, shop_id, user_id)
+        except LookupError:
+            raise HTTPException(status_code=404, detail="Shop not found")
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        _require_analytics(admin, user_id)
 
     shop_data: dict[str, Any] | None = None
     try:
@@ -250,6 +252,7 @@ async def shop_dashboard(
 
     if not shop_data:
         raise HTTPException(status_code=404, detail="Shop not found")
+    owner_id = str(shop_data.get("owner_id") or user_id)
 
     from platform_settings.flags import analytics_enabled
 
@@ -276,6 +279,7 @@ async def shop_dashboard(
             .execute()
         )
         product_ids = [str(row["id"]) for row in (pr.data or []) if row.get("id")]
+        seen = listing_stats.by_listing(admin, product_ids, listing_stats.since_for(days)) if analytics_on else {}
         like_counts: dict[str, int] = {}
         if product_ids:
             try:
@@ -328,6 +332,8 @@ async def shop_dashboard(
                 "like_count": like_counts.get(pid, 0),
                 "whatsapp_clicks": ec.get("whatsapp_clicks", 0),
                 "messages": ec.get("messages", 0),
+                "impressions": (seen.get(pid) or {}).get("impressions", 0),
+                "reach": (seen.get(pid) or {}).get("reach", 0),
                 "created_at": str(row["created_at"]) if row.get("created_at") else None,
                 "updated_at": str(row["created_at"]) if row.get("created_at") else None,
             })
@@ -338,7 +344,7 @@ async def shop_dashboard(
     lead_stats: dict[str, Any] = {}
     try:
         from ranking.lead_service import get_lead_stats_for_seller
-        lead_stats = get_lead_stats_for_seller(user_id)
+        lead_stats = get_lead_stats_for_seller(owner_id)
     except Exception as exc:
         logger.warning("shop_dashboard leads failed: %s", exc)
 
@@ -362,6 +368,9 @@ async def shop_dashboard(
         "products": products_list,
         "lead_stats": lead_stats,
         "analytics_enabled": analytics_on,
+        "window_days": days,
+        "impressions": sum(p["impressions"] for p in products_list),
+        "reach": sum(p["reach"] for p in products_list),
     }
 
 

@@ -12,7 +12,7 @@ Active listings (newest 1,000)
   → Score 0–100 per listing
   → Placement in 20-card blocks
   → Shared snapshot (5 min, versioned)
-  → Per request: followed-shop lift, repeat caps, paid slot, page slice
+  → Per request: optional followed-shop lift, paid slot, page slice
 ```
 
 Code: `feed/service.py` (build + serve), `quality.py`, `stages.py`, `scoring.py`,
@@ -87,11 +87,11 @@ Medium fraud flags subtract 20. `listing_score` no longer contains boost points
 
 ## 7. What changes per viewer
 
-- **Followed shops:** inside each block, organic cards from shops the viewer follows get +15 and move up.
-  They never leave their block, so variety and type mix hold.
-- **Repeat caps:** plan-based daily caps per listing, and from page 2 listings shown 3+ times in 48 h are hidden.
-- Nothing else is personal. Likes, views, saves and searches are recorded for analytics and engagement,
-  but they do not reorder the feed.
+- **Followed shops (toggle `FOLLOWED_SHOP_LIFT`):** inside each block, organic cards from shops the viewer
+  follows get +`FOLLOWED_SHOP_BOOST` and move up. They never leave their block, so variety and type mix hold.
+- Nothing is hidden per viewer: no seen-listing fatigue and no daily repeat caps, so a reload shows the same
+  order. The order only moves when the shared snapshot is rebuilt (freshness, including reposts, and quality).
+- Likes, views, saves and searches are recorded for analytics and engagement, but they do not reorder the feed.
 
 ## 8. Reload and paging
 

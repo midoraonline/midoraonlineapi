@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from db.supabase import Client, get_supabase_admin, with_supabase_retry
-from feed import boost_slots, frequency, impressions, placement, scoring, snapshots, trending
+from feed import boost_slots, impressions, placement, scoring, snapshots, trending
 from feed import config as C
 from feed import signals as sig
 from feed.catalog import PAID_BADGES, ListingFilters, card_rating, fetch_catalog_page, matching_ids, rating_map
@@ -236,20 +236,12 @@ def _home_page(
     exclude_ids: list[str] | None,
 ) -> FeedPage:
     snap = (snapshots.by_version(db, version) if version else None) or current_snapshot(db)
-    items = placement.lift_followed(snap.items, sig.followed_shop_ids(db, user_id))
+    items = snap.items
+    if C.FOLLOWED_SHOP_LIFT:
+        items = placement.lift_followed(items, sig.followed_shop_ids(db, user_id))
     modes = {i["id"]: i["mode"] for i in items}
     hidden = set(exclude_ids or [])
     lanes = boost_slots.paid_lanes(db, snap.plan)
-    if user_id or session_id:
-        if exclude_ids or page > 1:
-            hidden |= impressions.fatigued_listing_ids(
-                buyer_id=user_id,
-                session_id=session_id,
-                threshold=C.FATIGUE_THRESHOLD,
-                hours=C.FATIGUE_WINDOW_HOURS,
-            )
-        paid_ids = {pid for lane in lanes for pid in lane.seq}
-        hidden |= frequency.capped_listing_ids(db, buyer_id=user_id, session_id=session_id, boosted_ids=paid_ids)
     ids = [i["id"] for i in items if i["id"] not in hidden]
     lanes = [boost_slots.PaidLane(lane.placement, [b for b in lane.seq if b not in hidden], lane.phase) for lane in lanes]
     page_ids, has_more, paid = boost_slots.compose_paid(ids, lanes, page=1 if exclude_ids else page, limit=limit)
