@@ -454,9 +454,13 @@ def search_products(
     from feed.badges import card_statuses
 
     statuses = card_statuses(client, products)
+    from feed.badges import reposted_ids
+
+    reposted = reposted_ids(client, [str(p.get("id")) for p in products])
     for item, (_, score) in zip(items, scored):
         item["similarity_score"] = round(score, 4)
         item["card_status"] = statuses.get(str(item.get("id")))
+        item["reposted"] = str(item.get("id")) in reposted
 
     total_pages = math.ceil(total / limit) if limit else 0
 

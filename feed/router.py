@@ -53,6 +53,7 @@ async def home_feed(
     exclude_ids: str | None = Query(None, description="Legacy. Ignored when cursor is present."),
     refresh: bool = Query(False, description="Start a new Home session (pull to refresh / new listings)."),
     area: str | None = Query(None, max_length=60, description="Browsing area preference, e.g. kampala."),
+    neutral: bool = Query(False, description="Start a session with no chosen area or history (Find in feed)."),
     user_id: str | None = Depends(get_optional_user_id),
     session_id: str | None = Cookie(default=None, alias="midora_session_id"),
     session_id_header: str | None = Header(default=None, alias="X-Midora-Session"),
@@ -77,6 +78,7 @@ async def home_feed(
         filters=filters,
         version=version,
         refresh=refresh,
+        neutral=neutral,
         area=normalize_area(area) if area is not None else None,
     )
 

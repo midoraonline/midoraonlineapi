@@ -170,6 +170,7 @@ class ProductListItem(BaseModel):
     average_rating: float | None = None
     review_count: int = 0
     card_status: str | None = None
+    reposted: bool = False
 
 
 class ShopEngagementState(BaseModel):

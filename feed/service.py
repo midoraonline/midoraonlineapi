@@ -20,6 +20,8 @@ from shop.schemas import ProductResponse
 
 logger = logging.getLogger(__name__)
 
+HOME_PAGE_SIZE = 40
+
 _PRODUCT_CARD_SELECT = (
     "id,shop_id,title,description,category,item_type,price_ugx,discount_price,"
     "discount_expires_at,stock_quantity,image_urls,is_published,status,listing_score,"
@@ -329,6 +331,56 @@ def build_session_page(
     return ids, remaining > 0 and bool(ids), reasons
 
 
+def _page_ids(
+    db: Client,
+    sess: sessions.FeedSession,
+    snap: snapshots.Snapshot,
+    *,
+    page: int,
+    limit: int,
+    order: Any = None,
+) -> tuple[list[str], bool, dict[str, str], dict[str, str]]:
+    ids, has_more, reasons = build_session_page(sess, snap, page=page, limit=limit, order=order)
+    paid: dict[str, str] = {}
+    if snap.plan.paid:
+        lanes = boost_slots.paid_lanes(db, snap.plan)
+        shown = set(sess.shown())
+        lanes = [
+            boost_slots.PaidLane(lane.placement, [b for b in lane.seq if b not in shown or b in ids], lane.phase)
+            for lane in lanes
+        ]
+        ids, _, paid = boost_slots.compose_paid(
+            ids, lanes, page=1, limit=len(ids) + len(ids) // max(boost_slots.slot_every(), 1) + 1
+        )
+    return ids, has_more, reasons, paid
+
+
+def neutral_home_order(
+    db: Client,
+    *,
+    stop_at: str | None = None,
+    limit: int = HOME_PAGE_SIZE,
+    max_pages: int = 25,
+) -> list[str]:
+    """Home order for a first-time visitor with no chosen area, built exactly like a real session."""
+    snap = current_snapshot(db)
+    sess = sessions.start("neutral", datetime.now(timezone.utc))
+    out: list[str] = []
+    seen: set[str] = set()
+    for page in range(1, max_pages + 1):
+        ids, has_more, _, _ = _page_ids(db, sess, snap, page=page, limit=limit)
+        for pid in ids:
+            if pid in seen:
+                continue
+            seen.add(pid)
+            out.append(pid)
+            if pid == stop_at:
+                return out
+        if not has_more:
+            break
+    return out
+
+
 def _session_home_page(
     db: Client,
     sess: sessions.FeedSession,
@@ -339,17 +391,7 @@ def _session_home_page(
     snap = current_snapshot(db)
     area = sess.area if sess.area and sess.area != location.ALL_UGANDA else None
     order = location.ring_order(area, snap.plan)
-    ids, has_more, reasons = build_session_page(sess, snap, page=page, limit=limit, order=order)
-    if snap.plan.paid:
-        lanes = boost_slots.paid_lanes(db, snap.plan)
-        shown = set(sess.shown())
-        lanes = [
-            boost_slots.PaidLane(lane.placement, [b for b in lane.seq if b not in shown or b in ids], lane.phase)
-            for lane in lanes
-        ]
-        ids, _, paid = boost_slots.compose_paid(ids, lanes, page=1, limit=len(ids) + len(ids) // max(boost_slots.slot_every(), 1) + 1)
-    else:
-        paid = {}
+    ids, has_more, reasons, paid = _page_ids(db, sess, snap, page=page, limit=limit, order=order)
     sessions.save(db, sess)
     rows = _fetch_products_by_ids(db, ids)
     by_id = {i["id"]: i for i in snap.items}
@@ -469,9 +511,18 @@ def get_session_feed(
     limit: int = 20,
     refresh: bool = False,
     area: str | None = None,
+    neutral: bool = False,
 ) -> FeedPage | None:
     db = get_supabase_admin()
     now = datetime.now(timezone.utc)
+    if page > 1:
+        area = None
+    if neutral and page == 1:
+        key = sessions.key_for(user_id, session_id)
+        if key is None:
+            return None
+        sess = sessions.start(key, now, area=location.ALL_UGANDA)
+        return _session_home_page(db, sess, page=page, limit=limit)
     if area is None and user_id:
         key = sessions.key_for(user_id, session_id)
         current = sessions.load(db, key) if key else None

@@ -55,6 +55,7 @@ def get_home_feed(
     version: str | None = None,
     refresh: bool = False,
     area: str | None = None,
+    neutral: bool = False,
 ) -> dict[str, Any]:
     from feed.service import get_algorithm_feed, get_session_feed
     from feed.sessions import key_for
@@ -84,6 +85,7 @@ def get_home_feed(
     feed = (
         get_session_feed(
             user_id=user_id, session_id=session_id, page=page, limit=limit, refresh=refresh, area=area,
+            neutral=neutral,
         )
         if use_session
         else None
@@ -174,10 +176,11 @@ def get_home_feed(
 
     def _embed(products: list) -> list[dict[str, Any]]:
         out = []
-        from feed.badges import card_statuses
+        from feed.badges import card_statuses, reposted_ids
         from shop.locations import listing_is_online
         from shop.serializers import clip_card_description
 
+        reposted = reposted_ids(admin, [str(p.id) for p in products])
         statuses = card_statuses(
             admin,
             [
@@ -232,6 +235,7 @@ def get_home_feed(
                 "placement_reason": feed.reasons.get(str(p.id)),
                 "location_reason": feed.location_reasons.get(str(p.id)),
                 "status": statuses.get(str(p.id)),
+                "reposted": str(p.id) in reposted,
                 "average_rating": p.average_rating if p.review_count else None,
                 "review_count": int(p.review_count or 0),
                 "is_negotiable": getattr(p, "is_negotiable", True) is not False,

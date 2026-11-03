@@ -253,6 +253,15 @@ def repost_listing(admin: Any, listing_id: str, user_id: str) -> dict[str, Any]:
     return {"status": "reposted", "posted_at": now, "repost": repost_status(admin, {**listing, **patch}, user_id, plan)}
 
 
+def _home_position(admin: Any, listing_id: str) -> tuple[int | None, int, bool]:
+    from feed.service import current_snapshot, neutral_home_order
+
+    in_ranking = str(listing_id) in set(current_snapshot(admin).ids())
+    order = neutral_home_order(admin, stop_at=str(listing_id), max_pages=FEED_SCAN_MAX_PAGES)
+    position = order.index(str(listing_id)) + 1 if str(listing_id) in order else None
+    return position, len(order), in_ranking
+
+
 def _scan_position(listing_id: str, *, category: str | None) -> tuple[int | None, int]:
     from feed.catalog import ListingFilters
     from feed.service import get_algorithm_feed
@@ -281,7 +290,7 @@ def feed_position(admin: Any, listing_id: str, user_id: str) -> dict[str, Any]:
     live = listing.get("status") == "active" and bool(listing.get("is_published"))
     if not live:
         return {"listing_id": listing_id, "live": False, "position": None, "category_position": None, "category": listing.get("category")}
-    position, scanned = _scan_position(listing_id, category=None)
+    position, scanned, in_ranking = _home_position(admin, listing_id)
     cat = listing.get("category")
     cat_position, cat_scanned = _scan_position(listing_id, category=cat) if cat else (None, 0)
     boost = active_boost(admin, listing_id)
@@ -289,6 +298,7 @@ def feed_position(admin: Any, listing_id: str, user_id: str) -> dict[str, Any]:
         "listing_id": listing_id,
         "live": True,
         "position": position,
+        "in_ranking": in_ranking,
         "scanned": scanned,
         "category": cat,
         "category_position": cat_position,

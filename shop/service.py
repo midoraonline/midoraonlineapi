@@ -78,9 +78,10 @@ def list_products(
             raise
     total = r.count if hasattr(r, "count") and r.count is not None else len(r.data or [])
     total_pages = (total + limit - 1) // limit if limit else 0
-    from feed.badges import card_statuses
+    from feed.badges import card_statuses, reposted_ids
 
     statuses = card_statuses(client, r.data or [])
+    reposted = reposted_ids(client, [str(x.get("id")) for x in (r.data or [])])
     items = []
     for row in (r.data or []):
         image_urls = row.get("image_urls")
@@ -111,6 +112,7 @@ def list_products(
                 created_at=str(row["created_at"]) if row.get("created_at") else None,
                 view_count=int(row.get("view_count") or 0),
                 card_status=statuses.get(str(row["id"])),
+                reposted=str(row["id"]) in reposted,
             )
         )
     return {
@@ -264,9 +266,10 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
     from feed.catalog import card_rating, rating_map
 
     ratings = rating_map(client, [str(row["id"]) for row in rows if row.get("id")])
-    from feed.badges import card_statuses
+    from feed.badges import card_statuses, reposted_ids
 
     statuses = card_statuses(client, rows)
+    reposted = reposted_ids(client, [str(row.get("id")) for row in rows])
     for row in rows:
         imgs = row.get("image_urls")
         if isinstance(imgs, str):
@@ -307,6 +310,7 @@ def get_similar_products(client: Any, product_id: str, limit: int = 8) -> list[d
             "seller_joined_at": s.get("joined_at"),
             "seller_last_active_at": s.get("last_active_at"),
             "card_status": statuses.get(pid),
+            "reposted": pid in reposted,
         })
     return out
 
@@ -682,9 +686,10 @@ def list_owner_products(client: Any, owner_id: str, page: int = 1, limit: int = 
     )
     total = r.count if hasattr(r, "count") and r.count is not None else len(r.data or [])
     total_pages = (total + limit - 1) // limit if limit else 0
-    from feed.badges import card_statuses
+    from feed.badges import card_statuses, reposted_ids
 
     statuses = card_statuses(client, r.data or [])
+    reposted = reposted_ids(client, [str(x.get("id")) for x in (r.data or [])])
     items = []
     for row in r.data or []:
         image_urls = row.get("image_urls")
@@ -715,6 +720,7 @@ def list_owner_products(client: Any, owner_id: str, page: int = 1, limit: int = 
                 created_at=str(row["created_at"]) if row.get("created_at") else None,
                 view_count=int(row.get("view_count") or 0),
                 card_status=statuses.get(str(row["id"])),
+                reposted=str(row["id"]) in reposted,
             )
         )
     return {
