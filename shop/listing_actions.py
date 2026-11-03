@@ -10,8 +10,8 @@ from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
-FEED_SCAN_PAGE = 72
-FEED_SCAN_MAX_PAGES = 15
+FEED_SCAN_PAGE = 40
+FEED_SCAN_MAX_PAGES = 25
 
 
 def _now() -> datetime:
@@ -242,16 +242,20 @@ def _scan_position(listing_id: str, *, category: str | None) -> tuple[int | None
     from feed.service import get_algorithm_feed
 
     filters = ListingFilters(category=category) if category else None
-    seen = 0
+    target = str(listing_id)
+    shown: set[str] = set()
+    version: str | None = None
     for page in range(1, FEED_SCAN_MAX_PAGES + 1):
-        feed = get_algorithm_feed(page=page, limit=FEED_SCAN_PAGE, category=category, filters=filters)
-        for i, card in enumerate(feed.items):
-            if str(card.id) == str(listing_id):
-                return seen + i + 1, seen + len(feed.items)
-        seen += len(feed.items)
-        if not feed.has_more or not feed.items:
+        feed = get_algorithm_feed(page=page, limit=FEED_SCAN_PAGE, category=category, filters=filters, version=version)
+        version = version or feed.version
+        fresh = [str(card.id) for card in feed.items if str(card.id) not in shown]
+        for card_id in fresh:
+            shown.add(card_id)
+            if card_id == target:
+                return len(shown), len(shown)
+        if not fresh or not feed.has_more:
             break
-    return None, seen
+    return None, len(shown)
 
 
 def feed_position(admin: Any, listing_id: str, user_id: str) -> dict[str, Any]:

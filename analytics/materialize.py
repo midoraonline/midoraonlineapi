@@ -115,6 +115,21 @@ def _materialize_one(row: dict[str, Any], *, actor_id: str | None) -> None:
             session_id=session_id,
             metadata={"source": "analytics"},
         )
+        return
+
+    if event_type == "listing:shared":
+        product_id = product_id or target_id
+        if not product_id:
+            return
+        _write_listing_event(
+            admin,
+            event_type="shared",
+            product_id=product_id,
+            shop_id=shop_id,
+            buyer_id=actor_id,
+            session_id=session_id,
+            metadata={"source": "analytics", "method": _opt_str(props.get("method")) or "unknown"},
+        )
 
 
 def _write_listing_event(
