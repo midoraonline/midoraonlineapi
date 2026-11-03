@@ -3,11 +3,8 @@ from fastapi import APIRouter, Depends
 from core.security import require_admin
 from analytics.routes import ingest, insights
 
-router = APIRouter(tags=["analytics"])
+router = APIRouter()
 
-# Public (auth-optional) ingest — every logged-in or anonymous browser can
-# post its own emitted events. Server timestamps and injects `actor_id`
-# from the session cookie, never trusting client-provided identity.
 router.include_router(ingest.router, prefix="/analytics", tags=["analytics"])
 
 # Admin-only insight queries — never exposed to browsers directly.

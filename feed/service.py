@@ -10,7 +10,7 @@ from typing import Any
 
 from core import cache
 from db.supabase import Client, get_supabase_admin, with_supabase_retry
-from feed import boost_slots, impressions, placement, scoring, snapshots, trending
+from feed import boost_slots, expiry, impressions, location, placement, scoring, sessions, snapshots, trending
 from feed import config as C
 from feed import signals as sig
 from feed.catalog import PAID_BADGES, ListingFilters, card_rating, fetch_catalog_page, matching_ids, rating_map
@@ -35,6 +35,9 @@ class FeedPage:
     version: str | None = None
     placements: dict[str, str] = field(default_factory=dict)
     trending: set[str] = field(default_factory=set)
+    reasons: dict[str, str] = field(default_factory=dict)
+    location_reasons: dict[str, str] = field(default_factory=dict)
+    session: str | None = None
 
 
 def _to_response(product: dict[str, Any]) -> ProductResponse:
@@ -82,7 +85,7 @@ def _fetch_products_by_ids(client: Client, product_ids: list[str]) -> list[dict[
 
 
 def _cards(client: Client, rows: list[dict[str, Any]]) -> list[ProductResponse]:
-    return _with_ratings(client, [_to_response(row) for row in rows])
+    return _with_ratings(client, [_to_response(row) for row in expiry.drop_expired(rows)])
 
 
 def resolve_category_filter_labels(category: str | None) -> list[str] | None:
@@ -122,7 +125,7 @@ def _ranking_rows(db: Client) -> tuple[list[dict[str, Any]], int]:
         )
 
     resp = with_supabase_retry(_run, label="feed_rank_rows")
-    rows = [r for r in (resp.data or []) if r.get("id")]
+    rows = expiry.drop_expired([r for r in (resp.data or []) if r.get("id")])
     count = getattr(resp, "count", None)
     return rows, int(count) if count is not None else len(rows)
 
@@ -133,11 +136,6 @@ def build_snapshot(db: Client) -> snapshots.Snapshot:
     meta = sig.collect_shop_meta(db, list({s for s in by_shop.values() if s}))
     fraud = sig.collect_fraud_severity(db, list(by_shop), by_shop, meta)
     seen = impressions.listing_impressions(list(by_shop), hours=C.EXPOSURE_WINDOW_HOURS)
-    shop_seen: dict[str, int] = {}
-    for lid, n in seen.items():
-        shop = by_shop.get(lid, "")
-        shop_seen[shop] = shop_seen.get(shop, 0) + n
-    multipliers = scoring.exposure_multipliers(shop_seen)
 
     eligible: list[tuple[dict[str, Any], float]] = []
     for row in rows:
@@ -160,28 +158,32 @@ def build_snapshot(db: Client) -> snapshots.Snapshot:
     for row, quality in eligible:
         pid = str(row["id"])
         shop = by_shop[pid]
+        parts = scoring.components(
+            row,
+            quality=quality,
+            shop_meta=meta.get(shop),
+            impressions=seen.get(pid, 0),
+            eligible=plan.eligible,
+            stage=plan.stage,
+            now=now,
+        )
+        penalty = C.FRAUD_MEDIUM_PENALTY if fraud.get(pid, "low") == "medium" else 0.0
         entries.append({
             "id": pid,
             "shop": shop,
             "lane": lane_of(row.get("item_type")),
-            "score": round(
-                scoring.score(
-                    row,
-                    quality=quality,
-                    shop_meta=meta.get(shop),
-                    fraud=fraud.get(pid, "low"),
-                    multiplier=multipliers.get(shop, 1.0),
-                    stage=plan.stage,
-                    now=now,
-                ),
-                3,
-            ),
+            "cat": (row.get("category") or "").strip().lower(),
+            "score": round(sum(parts.values()) - penalty, 3),
+            "parts": {k: round(v, 2) for k, v in parts.items() if v},
             "quality": quality,
             "fresh": scoring.freshness(row, now),
             "impressions": seen.get(pid, 0),
+            "posted": row.get("created_at"),
+            "geo": location.geo_of(row),
         })
     items = [
-        {"id": e["id"], "shop": e["shop"], "score": e["score"], "mode": e["mode"]}
+        {k: e[k] for k in ("id", "shop", "lane", "cat", "score", "parts", "quality", "fresh", "impressions", "posted", "geo", "mode") if e.get(k) not in (None, {}, "")}
+        | ({"reason": e["reason"]} if e.get("reason") else {})
         for e in placement.place(entries, plan)
     ]
     hot = trending.trending_ids(
@@ -192,11 +194,11 @@ def build_snapshot(db: Client) -> snapshots.Snapshot:
             for row, _ in eligible
         ],
         now,
-    )
+    ) if plan.stage >= C.TRENDING_MIN_STAGE else set()
     for item in items:
         if item["id"] in hot:
             item["trending"] = True
-    return snapshots.Snapshot(version=uuid.uuid4().hex[:12], plan=plan, items=items)
+    return snapshots.Snapshot(version=uuid.uuid4().hex[:12], plan=plan, items=items, config=C.version())
 
 
 _REBUILD_LOCK = cache.key("feed", "snap", "rebuilding")
@@ -227,6 +229,7 @@ def current_snapshot(db: Client) -> snapshots.Snapshot:
 def _rebuild(db: Client) -> snapshots.Snapshot:
     started = time.perf_counter()
     C.refresh_from_db()
+    expiry.close_expired(db)
     snap = build_snapshot(db)
     snapshots.save(db, snap)
     logger.info(
@@ -244,6 +247,7 @@ def rebuild_ranking() -> dict[str, int]:
     db = get_supabase_admin()
     C.refresh_from_db(force=True)
     snapshots.clear_memory()
+    expiry.close_expired(db)
     snap = build_snapshot(db)
     snapshots.save(db, snap)
     return {"ranked": len(snap.items), "stage": snap.plan.stage, "eligible": snap.plan.eligible}
@@ -277,6 +281,111 @@ def _home_page(
         placements={str(r["id"]): paid.get(str(r["id"])) or modes.get(str(r["id"]), "organic") for r in rows},
         trending=snap.trending(),
     )
+
+
+def _pool_entry(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **item,
+        "shop": item.get("shop") or "",
+        "lane": item.get("lane") or "product",
+        "cat": item.get("cat") or "",
+        "score": float(item.get("score") or 0),
+        "quality": float(item.get("quality") if item.get("quality") is not None else 100.0),
+        "fresh": float(item.get("fresh") or 0),
+        "impressions": int(item.get("impressions") or 0),
+    }
+
+
+def build_session_page(
+    sess: sessions.FeedSession,
+    snap: snapshots.Snapshot,
+    *,
+    page: int,
+    limit: int,
+    order: Any = None,
+) -> tuple[list[str], bool, dict[str, str]]:
+    """Fill session pages up to `page`; earlier pages are never rebuilt."""
+    reasons: dict[str, str] = {}
+    by_id = {i["id"]: i for i in snap.items}
+    for n in range(1, page + 1):
+        if str(n) in sess.pages:
+            continue
+        shown = set(sess.shown())
+        pool = [_pool_entry(i) for i in snap.items if i["id"] not in shown]
+        recent = set(sess.recent)
+        groups = order(pool) if order else [pool]
+        picked: list[dict[str, Any]] = []
+        for group in groups:
+            for subset in ([e for e in group if e["id"] not in recent], [e for e in group if e["id"] in recent]):
+                if len(picked) >= limit or not subset:
+                    continue
+                picked += placement.place(subset, snap.plan, limit=limit - len(picked), offset=(n - 1) * limit + len(picked))
+        sess.pages[str(n)] = [e["id"] for e in picked]
+        reasons.update({e["id"]: e.get("reason") or "ranked" for e in picked})
+    ids = sess.pages.get(str(page), [])
+    for pid in ids:
+        reasons.setdefault(pid, (by_id.get(pid) or {}).get("reason") or "ranked")
+    remaining = len([i for i in snap.items if i["id"] not in set(sess.shown())])
+    return ids, remaining > 0 and bool(ids), reasons
+
+
+def _session_home_page(
+    db: Client,
+    sess: sessions.FeedSession,
+    *,
+    page: int,
+    limit: int,
+) -> FeedPage:
+    snap = current_snapshot(db)
+    area = sess.area if sess.area and sess.area != location.ALL_UGANDA else None
+    order = location.ring_order(area, snap.plan)
+    ids, has_more, reasons = build_session_page(sess, snap, page=page, limit=limit, order=order)
+    if snap.plan.paid:
+        lanes = boost_slots.paid_lanes(db, snap.plan)
+        shown = set(sess.shown())
+        lanes = [
+            boost_slots.PaidLane(lane.placement, [b for b in lane.seq if b not in shown or b in ids], lane.phase)
+            for lane in lanes
+        ]
+        ids, _, paid = boost_slots.compose_paid(ids, lanes, page=1, limit=len(ids) + len(ids) // max(boost_slots.slot_every(), 1) + 1)
+    else:
+        paid = {}
+    sessions.save(db, sess)
+    rows = _fetch_products_by_ids(db, ids)
+    by_id = {i["id"]: i for i in snap.items}
+    return FeedPage(
+        items=_cards(db, rows),
+        has_more=has_more,
+        version=sess.id,
+        placements={
+            str(r["id"]): paid.get(str(r["id"])) or (by_id.get(str(r["id"])) or {}).get("mode", "organic") for r in rows
+        },
+        trending=snap.trending(),
+        reasons={str(r["id"]): reasons.get(str(r["id"]), "paid") for r in rows},
+        location_reasons={
+            pid: reason
+            for pid in (str(r["id"]) for r in rows)
+            if (reason := location.reason_for(by_id.get(pid) or {}, area))
+        },
+        session=sess.id,
+    )
+
+
+def new_listing_count(db: Client, *, user_id: str | None, session_id: str | None) -> int:
+    key = sessions.key_for(user_id, session_id)
+    sess = sessions.load(db, key) if key else None
+    if sess is None:
+        return 0
+    started = sig.parse_timestamp(sess.started_at)
+    if started is None:
+        return 0
+    shown = set(sess.shown())
+    count = 0
+    for item in current_snapshot(db).items:
+        posted = sig.parse_timestamp(item.get("posted"))
+        if posted and posted > started and item["id"] not in shown:
+            count += 1
+    return count
 
 
 def _catalog_page(
@@ -350,6 +459,33 @@ def get_algorithm_feed(
         version=version,
         exclude_ids=exclude_ids,
     )
+
+
+def get_session_feed(
+    *,
+    user_id: str | None,
+    session_id: str | None,
+    page: int = 1,
+    limit: int = 20,
+    refresh: bool = False,
+    area: str | None = None,
+) -> FeedPage | None:
+    db = get_supabase_admin()
+    now = datetime.now(timezone.utc)
+    if area is None and user_id:
+        key = sessions.key_for(user_id, session_id)
+        current = sessions.load(db, key) if key else None
+        if current is None or current.expired(now) or refresh:
+            from auth.preferences import load_preferences
+
+            area = load_preferences(user_id).get("default_area") or None
+    sess = sessions.resolve(
+        db, user_id=user_id, session_id=session_id, refresh=refresh and page == 1,
+        now=now, area=area,
+    )
+    if sess is None:
+        return None
+    return _session_home_page(db, sess, page=page, limit=limit)
 
 
 def get_latest_feed(*, limit: int = 20, page: int = 1, filters: ListingFilters | None = None) -> list[ProductResponse]:

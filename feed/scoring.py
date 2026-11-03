@@ -4,10 +4,40 @@ from datetime import datetime
 from typing import Any
 
 from feed import config as C
+from feed.expiry import deadline_end
 from feed.signals import parse_timestamp
+from feed.stages import lane_of
 
 VERIFIED_BADGES = frozenset({"identity_verified", "business_verified", "professional_verified", "verified"})
 HIDDEN_FRAUD = frozenset({"high", "critical"})
+
+FRESHNESS_BANDS: tuple[tuple[float, float], ...] = (
+    (6, 100.0),
+    (24, 90.0),
+    (72, 75.0),
+    (120, 60.0),
+    (192, 45.0),
+    (360, 30.0),
+    (744, 15.0),
+)
+FRESHNESS_FLOOR = 5.0
+CLOSING_OPPORTUNITY_FRESHNESS = 60.0
+
+EXPOSURE_BANDS: tuple[tuple[int, float], ...] = (
+    (0, 100.0),
+    (2, 80.0),
+    (5, 60.0),
+    (10, 40.0),
+    (20, 20.0),
+)
+EXPOSURE_FLOOR = 5.0
+
+
+def _band(hours: float) -> float:
+    for limit, value in FRESHNESS_BANDS:
+        if hours < limit:
+            return value
+    return FRESHNESS_FLOOR
 
 
 def freshness(product: dict[str, Any], now: datetime) -> float:
@@ -15,7 +45,32 @@ def freshness(product: dict[str, Any], now: datetime) -> float:
     if ts is None:
         return 0.0
     hours = max((now - ts).total_seconds() / 3600.0, 0.0)
-    return 100.0 * 0.5 ** (hours / max(C.FRESHNESS_HALF_LIFE_HOURS, 1.0))
+    lane = lane_of(product.get("item_type"))
+    if lane == "service":
+        hours /= max(C.SERVICE_FRESHNESS_STRETCH, 1.0)
+    elif lane == "opportunity":
+        hours /= max(C.OPPORTUNITY_FRESHNESS_STRETCH, 1.0)
+    value = _band(hours)
+    if lane == "opportunity":
+        end = deadline_end(product.get("listing_meta"))
+        if end is not None and 0 < (end - now).total_seconds() <= C.CLOSING_SOON_HOURS * 3600:
+            value = max(value, CLOSING_OPPORTUNITY_FRESHNESS)
+    return value
+
+
+def exposure(impressions: int) -> float:
+    for limit, value in EXPOSURE_BANDS:
+        if impressions <= limit:
+            return value
+    return EXPOSURE_FLOOR
+
+
+def weights(eligible: int) -> tuple[float, float, float]:
+    if eligible >= C.MVP_LATE_MIN:
+        return C.LATE_QUALITY_WEIGHT, C.LATE_FRESHNESS_WEIGHT, C.LATE_EXPOSURE_WEIGHT
+    if eligible >= C.MVP_MID_MIN:
+        return C.MID_QUALITY_WEIGHT, C.MID_FRESHNESS_WEIGHT, C.MID_EXPOSURE_WEIGHT
+    return C.EARLY_QUALITY_WEIGHT, C.EARLY_FRESHNESS_WEIGHT, C.EARLY_EXPOSURE_WEIGHT
 
 
 def trust(meta: dict[str, Any] | None) -> float:
@@ -28,22 +83,6 @@ def trust(meta: dict[str, Any] | None) -> float:
     return score
 
 
-def exposure_balance(multiplier: float) -> float:
-    floor = C.EXPOSURE_MIN_MULTIPLIER
-    if multiplier >= 1.0 or floor >= 1.0:
-        return 100.0
-    return max(0.0, (multiplier - floor) / (1.0 - floor)) * 100.0
-
-
-def exposure_multipliers(shop_impressions: dict[str, int]) -> dict[str, float]:
-    target = max(C.EXPOSURE_TARGET_IMPRESSIONS, 1.0)
-    return {
-        shop: max(C.EXPOSURE_MIN_MULTIPLIER, 1.0 / (1.0 + max(n, 0) / target))
-        for shop, n in shop_impressions.items()
-        if shop
-    }
-
-
 def engagement(product: dict[str, Any]) -> float:
     return min(float(product.get("listing_score") or 0), 100.0)
 
@@ -53,18 +92,20 @@ def components(
     *,
     quality: float,
     shop_meta: dict[str, Any] | None,
-    multiplier: float,
+    impressions: int,
+    eligible: int,
     stage: int,
     now: datetime,
 ) -> dict[str, float]:
+    wq, wf, we = weights(eligible)
     return {
-        "quality": quality * C.QUALITY_WEIGHT / 100.0,
-        "freshness": freshness(product, now) * C.FRESHNESS_WEIGHT / 100.0,
+        "quality": quality * wq / 100.0,
+        "freshness": freshness(product, now) * wf / 100.0,
+        "exposure": exposure(impressions) * we / 100.0,
         "trust": trust(shop_meta) * C.TRUST_WEIGHT / 100.0,
         "engagement": (
             engagement(product) * C.ENGAGEMENT_WEIGHT / 100.0 if stage >= C.ENGAGEMENT_MIN_STAGE else 0.0
         ),
-        "exposure": exposure_balance(multiplier) * C.EXPOSURE_WEIGHT / 100.0,
     }
 
 
@@ -74,11 +115,12 @@ def score(
     quality: float,
     shop_meta: dict[str, Any] | None,
     fraud: str,
-    multiplier: float,
+    impressions: int,
+    eligible: int,
     stage: int,
     now: datetime,
 ) -> float:
-    total = sum(
-        components(product, quality=quality, shop_meta=shop_meta, multiplier=multiplier, stage=stage, now=now).values()
+    parts = components(
+        product, quality=quality, shop_meta=shop_meta, impressions=impressions, eligible=eligible, stage=stage, now=now
     )
-    return total - (C.FRAUD_MEDIUM_PENALTY if fraud == "medium" else 0.0)
+    return sum(parts.values()) - (C.FRAUD_MEDIUM_PENALTY if fraud == "medium" else 0.0)

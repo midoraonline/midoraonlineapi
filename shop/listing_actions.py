@@ -141,19 +141,33 @@ def repost_status(admin: Any, listing: dict[str, Any], user_id: str, plan: dict[
     }
 
 
+def boosts_open(admin: Any) -> bool:
+    from feed.service import current_plan
+
+    try:
+        return current_plan(admin).paid
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("boost stage check failed: %s", exc)
+        return False
+
+
 def promote_options(admin: Any, listing_id: str, user_id: str) -> dict[str, Any]:
     listing = owned_listing(admin, listing_id, user_id)
     plan = _plan(admin, user_id)
-    try:
-        packages = (
-            admin.table("boost_plans").select("*")
-            .eq("is_active", True).order("price_amount").execute().data or []
-        )
-    except Exception:  # noqa: BLE001
-        packages = []
+    open_ = boosts_open(admin)
+    packages: list[dict[str, Any]] = []
+    if open_:
+        try:
+            packages = (
+                admin.table("boost_plans").select("*")
+                .eq("is_active", True).order("price_amount").execute().data or []
+            )
+        except Exception:  # noqa: BLE001
+            packages = []
     return {
         "listing_id": listing_id,
         "plan": {"key": plan.get("key"), "name": plan.get("name")},
+        "boosts_open": open_,
         "packages": packages,
         "allowance": boost_allowance(admin, user_id, plan),
         "active_boost": active_boost(admin, listing_id),
@@ -165,6 +179,8 @@ def boost_listing(admin: Any, listing_id: str, user_id: str, package_id: str, us
     listing = owned_listing(admin, listing_id, user_id)
     if listing.get("status") != "active" or not listing.get("is_published"):
         raise _err(409, "Only live ads can be boosted.", "not_live")
+    if not boosts_open(admin):
+        raise _err(409, "Boosts open once Midora has more listings. Until then every ad is ranked on quality and freshness.", "boosts_closed")
     if active_boost(admin, listing_id):
         raise _err(409, "This ad is already boosted.", "already_boosted")
     pkg = admin.table("boost_plans").select("*").eq("id", package_id).limit(1).execute().data or []

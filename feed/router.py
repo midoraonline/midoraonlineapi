@@ -1,7 +1,9 @@
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Cookie, Depends, Header, Query, Response
+from pydantic import BaseModel, Field
 
+from core.rate_limit import RateLimitDemand
 from core.schemas import PaginationParams
 from core.security import get_optional_user_id
 from shop.schemas import ProductResponse
@@ -49,15 +51,22 @@ async def home_feed(
     page: int = Query(1, ge=1),
     cursor: str | None = Query(None, description="Continuation cursor: v:<version>:p:<page> or p:<page>."),
     exclude_ids: str | None = Query(None, description="Legacy. Ignored when cursor is present."),
+    refresh: bool = Query(False, description="Start a new Home session (pull to refresh / new listings)."),
+    area: str | None = Query(None, max_length=60, description="Browsing area preference, e.g. kampala."),
     user_id: str | None = Depends(get_optional_user_id),
     session_id: str | None = Cookie(default=None, alias="midora_session_id"),
     session_id_header: str | None = Header(default=None, alias="X-Midora-Session"),
 ) -> dict[str, Any]:
+    from feed.location import normalize_area
+    from feed.sessions import key_for
+
     session = session_id_header or session_id
     cursor_page, version = _decode_cursor(cursor)
     effective_page = cursor_page or page
     excluded = [] if cursor_page is not None else _split_ids(exclude_ids)
-    if not user_id:
+    if key_for(user_id, session) is not None:
+        response.headers["Cache-Control"] = "private, no-store"
+    elif not user_id:
         response.headers["Cache-Control"] = "public, s-maxage=60, stale-while-revalidate=120"
     return get_home_feed(
         limit=limit,
@@ -67,7 +76,51 @@ async def home_feed(
         session_id=session,
         filters=filters,
         version=version,
+        refresh=refresh,
+        area=normalize_area(area) if area is not None else None,
     )
+
+
+@router.get("/home/new")
+async def home_new_count(
+    response: Response,
+    user_id: str | None = Depends(get_optional_user_id),
+    session_id: str | None = Cookie(default=None, alias="midora_session_id"),
+    session_id_header: str | None = Header(default=None, alias="X-Midora-Session"),
+) -> dict[str, int]:
+    from db.supabase import get_supabase_admin
+
+    response.headers["Cache-Control"] = "private, no-store"
+    count = feed_service.new_listing_count(
+        get_supabase_admin(), user_id=user_id, session_id=session_id_header or session_id
+    )
+    return {"count": count}
+
+
+class DemandRequest(BaseModel):
+    need: str = Field(..., min_length=3, max_length=200)
+    category: str | None = Field(None, max_length=80)
+    area: str | None = Field(None, max_length=60)
+    notify: bool = False
+
+
+@router.post("/demand", status_code=202)
+async def request_demand(
+    body: DemandRequest,
+    _: RateLimitDemand,
+    user_id: str | None = Depends(get_optional_user_id),
+) -> dict[str, Any]:
+    from feed.demand import record_request
+    from feed.location import normalize_area
+
+    record_request(
+        actor_id=user_id,
+        need=body.need,
+        category=body.category,
+        area=normalize_area(body.area),
+        notify=body.notify,
+    )
+    return {"ok": True, "alerts": bool(body.notify and user_id)}
 
 
 @router.get("/locations")
@@ -90,7 +143,12 @@ async def refresh_ranking(
     from media.routes import authorize_cron
 
     authorize_cron(authorization)
-    return feed_service.rebuild_ranking()
+    result: dict[str, Any] = dict(feed_service.rebuild_ranking())
+    from db.supabase import get_supabase_admin
+    from feed.seller_nudges import run_stock_nudges
+
+    result["stock_nudges"] = run_stock_nudges(get_supabase_admin())
+    return result
 
 
 @router.get("/latest", response_model=list[ProductResponse])

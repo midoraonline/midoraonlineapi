@@ -53,19 +53,23 @@ def get_home_feed(
     category: str | None = None,
     filters: ListingFilters | None = None,
     version: str | None = None,
+    refresh: bool = False,
+    area: str | None = None,
 ) -> dict[str, Any]:
-    from feed.service import get_algorithm_feed
+    from feed.service import get_algorithm_feed, get_session_feed
+    from feed.sessions import key_for
 
     admin = get_supabase_admin()
     is_guest = not user_id
     active = filters or ListingFilters(category=(category or "").strip() or None)
-    if is_guest and not exclude_ids and not version and not active.is_active():
+    use_session = not active.is_active() and key_for(user_id, session_id) is not None
+    if is_guest and not use_session and not exclude_ids and not version and not active.is_active():
         from feed.service import current_snapshot
 
         version = current_snapshot(admin).version
     guest_cache_key = (
         _guest_key(page, limit, active.cache_token(), version)
-        if is_guest and not exclude_ids
+        if is_guest and not exclude_ids and not use_session
         else None
     )
     if guest_cache_key:
@@ -77,7 +81,13 @@ def get_home_feed(
             _guest_home_cache[guest_cache_key] = (time.monotonic(), shared)
             return shared
 
-    feed = get_algorithm_feed(
+    feed = (
+        get_session_feed(
+            user_id=user_id, session_id=session_id, page=page, limit=limit, refresh=refresh, area=area,
+        )
+        if use_session
+        else None
+    ) or get_algorithm_feed(
         user_id=user_id,
         page=page,
         limit=limit,
@@ -219,6 +229,8 @@ def get_home_feed(
                 "stock_quantity": int(getattr(p, "stock_quantity", 0) or 0),
                 "shop": shop,
                 "placement": feed.placements.get(str(p.id), "organic"),
+                "placement_reason": feed.reasons.get(str(p.id)),
+                "location_reason": feed.location_reasons.get(str(p.id)),
                 "status": statuses.get(str(p.id)),
                 "average_rating": p.average_rating if p.review_count else None,
                 "review_count": int(p.review_count or 0),
@@ -236,6 +248,7 @@ def get_home_feed(
         "total": feed.total if feed.total is not None else ((page - 1) * limit) + len(algorithm_paged),
         "has_more": feed.has_more,
         "next_cursor": next_cursor,
+        "session": feed.session,
     }
     if guest_cache_key:
         if len(_guest_home_cache) > 500:

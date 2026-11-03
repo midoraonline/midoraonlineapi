@@ -427,6 +427,17 @@ def search_products(
     limit = min(max(limit, 1), 100)
     offset = (page - 1) * limit
 
+    query_location: str | None = None
+    if not filters.location and filters.lat is None:
+        from dataclasses import replace
+
+        from feed.location import split_query_place
+
+        rest, place = split_query_place(q)
+        if place and len(rest) >= MIN_QUERY_LEN:
+            q, query_location = rest, place
+            filters = replace(filters, location=place)
+
     # Keyword first so "head" matches Headphones. Vector only fills gaps —
     # it used to report total=all embeddings, which skipped keyword entirely.
     # Filters are inside the keyword query, before range.
@@ -457,6 +468,12 @@ def search_products(
             result_count=total,
             search_mode=mode,
         )
+        if total == 0:
+            from feed.demand import record_zero_results
+
+            record_zero_results(
+                actor_id=user_id, query=q, category=filters.category, location_name=filters.location, client=client
+            )
 
     return {
         "items": items,
@@ -465,5 +482,6 @@ def search_products(
         "limit": limit,
         "total_pages": total_pages,
         "query": q,
+        "query_location": query_location,
         "mode": mode,
     }

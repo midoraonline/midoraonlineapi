@@ -1,6 +1,7 @@
 """Refresh-token families: reuse stays inside one login."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,7 @@ from auth.routes import session as session_routes
 from auth.service import (
     create_access_and_refresh_tokens,
     decode_token,
+    revoke_refresh_token,
     rotate_refresh_token,
 )
 
@@ -91,6 +93,11 @@ def _record(client: _Client, token: str) -> dict:
     return next(row for row in client.db["refresh_tokens"] if row["jti"] == jti)
 
 
+def _age(client: _Client, token: str, seconds: int = 60) -> None:
+    row = _record(client, token)
+    row["revoked_at"] = (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+
+
 def test_rotation_keeps_family_and_replaces_the_presented_token(monkeypatch):
     client = _bind(monkeypatch)
     _, refresh = create_access_and_refresh_tokens("user-1", "customer")
@@ -112,6 +119,7 @@ def test_reuse_within_a_family_revokes_that_family(monkeypatch):
     _, refresh = create_access_and_refresh_tokens("user-1", "customer")
     family_id = _record(client, refresh)["family_id"]
     _, current, _ = rotate_refresh_token(refresh)
+    _age(client, refresh)
 
     with pytest.raises(ValueError):
         rotate_refresh_token(refresh)
@@ -123,11 +131,35 @@ def test_reuse_within_a_family_revokes_that_family(monkeypatch):
         rotate_refresh_token(current)
 
 
+def test_parallel_refresh_within_grace_keeps_the_family(monkeypatch):
+    client = _bind(monkeypatch)
+    _, refresh = create_access_and_refresh_tokens("user-1", "customer")
+    _, first, _ = rotate_refresh_token(refresh)
+    revoked_at = _record(client, refresh)["revoked_at"]
+
+    _, second, _ = rotate_refresh_token(refresh)
+
+    assert _record(client, refresh)["revoked_at"] == revoked_at
+    assert not _record(client, first).get("revoked_at")
+    assert not _record(client, second).get("revoked_at")
+    rotate_refresh_token(first)
+
+
+def test_revoked_token_without_replacement_gets_no_grace(monkeypatch):
+    client = _bind(monkeypatch)
+    _, refresh = create_access_and_refresh_tokens("user-1", "customer")
+    revoke_refresh_token(refresh)
+
+    with pytest.raises(ValueError):
+        rotate_refresh_token(refresh)
+
+
 def test_reused_revoked_token_does_not_revoke_a_newer_login(monkeypatch):
     client = _bind(monkeypatch)
     _, old_refresh = create_access_and_refresh_tokens("user-1", "customer")
     old_family = _record(client, old_refresh)["family_id"]
     _, old_current, _ = rotate_refresh_token(old_refresh)
+    _age(client, old_refresh)
 
     _, new_refresh = create_access_and_refresh_tokens("user-1", "customer")
     new_family = _record(client, new_refresh)["family_id"]
@@ -160,6 +192,7 @@ def test_revoked_refresh_returns_401_and_clears_cookie(monkeypatch):
     api, client = _refresh_client(monkeypatch)
     _, refresh = create_access_and_refresh_tokens("user-1", "customer")
     _, current, _ = rotate_refresh_token(refresh)
+    _age(client, refresh)
     _, other_login = create_access_and_refresh_tokens("user-1", "customer")
 
     response = api.post("/api/v1/auth/refresh", cookies={"midora_refresh": refresh})

@@ -169,7 +169,8 @@ def test_feed_config(body: dict[str, Any] = Body(default_factory=dict)) -> dict[
 
     shop_ids = list({str(p.get("shop_id", "")) for p in products if p.get("shop_id")})
     shop_meta = feed_signals.collect_shop_meta(admin, shop_ids)
-    stage = feed_service.current_plan(admin).stage
+    plan = feed_service.current_plan(admin)
+    stage = plan.stage
 
     def _score_all() -> list[dict[str, Any]]:
         now = datetime.now(timezone.utc)
@@ -179,7 +180,8 @@ def test_feed_config(body: dict[str, Any] = Body(default_factory=dict)) -> dict[
                 p,
                 quality=listing_quality(p),
                 shop_meta=shop_meta.get(str(p.get("shop_id") or "")),
-                multiplier=1.0,
+                impressions=0,
+                eligible=plan.eligible,
                 stage=stage,
                 now=now,
             )

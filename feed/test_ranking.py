@@ -21,10 +21,10 @@ def test_stage_thresholds_follow_growth_stages():
     ]
 
 
-def test_mvp_stage_has_paid_slots_but_no_exploration_or_type_mix():
+def test_mvp_stage_has_no_paid_slots_exploration_or_type_mix():
     plan = plan_for({"product": 120, "service": 40, "opportunity": 30})
     assert plan.stage == 2
-    assert plan.paid and not plan.type_mix and plan.exploration_per_block == 0
+    assert not plan.paid and not plan.type_mix and plan.exploration_per_block == 0
 
 
 def test_type_mix_needs_depth_in_every_lane():
@@ -44,24 +44,26 @@ def test_lane_mapping():
 def test_quality_rewards_complete_listings():
     full = {"item_type": "product", "title": "Samsung Galaxy A54 128GB", "description": "x" * 90,
             "price_ugx": 900000, "image_urls": ["a.jpg", "b.jpg"], "location_name": "Ntinda", "category": "Phones"}
-    bare = {"item_type": "product", "title": "Phone", "image_urls": []}
-    service = {"item_type": "service", "title": "Residential plumbing", "description": "y" * 40,
-               "listing_meta": {"pricing_model": "quote"}, "location_name": "Kampala", "category": "Plumbing"}
+    bare = {"item_type": "product", "title": "Phone", "image_urls": [], "stock_quantity": 0}
+    service = {"item_type": "service", "title": "Residential plumbing", "description": "y" * 90,
+               "listing_meta": {"pricing_model": "quote", "service_areas": ["Kampala"], "availability": "Mon-Sat"},
+               "image_urls": ["p.jpg"], "category": "Plumbing"}
     assert listing_quality(full) == 100
     assert listing_quality(bare) < C.QUALITY_MIN
-    assert listing_quality(service) == 90
+    assert listing_quality(service) == 100
 
 
-def test_freshness_decays_smoothly():
+def test_freshness_uses_age_bands():
     now = datetime.now(timezone.utc)
-    new = scoring.freshness({"created_at": now.isoformat()}, now)
-    half = scoring.freshness({"created_at": (now - timedelta(hours=C.FRESHNESS_HALF_LIFE_HOURS)).isoformat()}, now)
-    assert round(new) == 100 and round(half) == 50
+    ago = lambda h: {"created_at": (now - timedelta(hours=h)).isoformat()}
+    assert [scoring.freshness(ago(h), now) for h in (1, 10, 30, 80, 130, 200, 400, 800)] == [
+        100, 90, 75, 60, 45, 30, 15, 5,
+    ]
 
 
 def test_medium_fraud_is_penalised():
     now = datetime.now(timezone.utc)
-    args = dict(quality=80.0, shop_meta=None, multiplier=1.0, stage=1, now=now)
+    args = dict(quality=80.0, shop_meta=None, impressions=0, eligible=10, stage=1, now=now)
     assert scoring.score({}, fraud="medium", **args) == scoring.score({}, fraud="low", **args) - C.FRAUD_MEDIUM_PENALTY
 
 
@@ -230,6 +232,7 @@ def test_card_badges_disclose_paid_outside_paid_slots(monkeypatch):
     from feed import badges
 
     monkeypatch.setattr(badges, "paid_placements", lambda c, ids: {"b": "boosted", "s": "sponsored"})
+    monkeypatch.setattr(badges, "paid_open", lambda c: True)
     old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
     rows = [
         {"id": "b", "item_type": "product", "created_at": old},

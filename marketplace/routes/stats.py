@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-WINDOW_MINUTES = 15
+WINDOW_MINUTES = 3
 INSTANCE_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
     re.IGNORECASE,
@@ -92,7 +92,7 @@ async def leave_presence(
 
 @router.get("/online-users")
 async def get_online_users() -> dict[str, Any]:
-    """Count distinct app instances active in the last 15 minutes."""
+    """People with an active tab in the last few minutes: signed-in users once, guests per tab."""
     admin = get_supabase_admin()
     since = (datetime.now(timezone.utc) - timedelta(minutes=WINDOW_MINUTES)).isoformat()
 
@@ -100,11 +100,15 @@ async def get_online_users() -> dict[str, Any]:
     try:
         r = (
             admin.table("online_presence")
-            .select("instance_id", count="exact")
+            .select("instance_id,user_id")
             .gte("last_seen_at", since)
+            .limit(5000)
             .execute()
         )
-        count = int(r.count or 0)
+        rows = r.data or []
+        signed_in = {str(row["user_id"]) for row in rows if row.get("user_id")}
+        guests = sum(1 for row in rows if not row.get("user_id"))
+        count = len(signed_in) + guests
     except Exception as exc:
         logger.warning("online-users presence query failed: %s", exc)
 

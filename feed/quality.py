@@ -10,33 +10,71 @@ def _text_len(value: Any) -> int:
     return len(str(value or "").strip())
 
 
-def _media_points(product: dict[str, Any], lane: str) -> float:
-    if lane != "product":
-        return 30.0
+def _meta(product: dict[str, Any]) -> dict[str, Any]:
+    meta = product.get("listing_meta")
+    return meta if isinstance(meta, dict) else {}
+
+
+def _photos(product: dict[str, Any]) -> int:
     images = product.get("image_urls")
-    photos = count_photos(images if isinstance(images, list) else [])
-    if photos >= 2:
-        return 30.0
-    return 20.0 if photos == 1 else 0.0
+    return count_photos(images if isinstance(images, list) else [])
 
 
-def _value_points(product: dict[str, Any], lane: str) -> float:
-    price = float(product.get("price_ugx") or 0)
-    meta = product.get("listing_meta") if isinstance(product.get("listing_meta"), dict) else {}
-    if lane == "product":
-        return 15.0 if price > 0 else 0.0
-    if lane == "service":
-        return 15.0 if price > 0 or meta.get("pricing_model") == "quote" else 8.0
-    return 15.0 if price > 0 or meta.get("deadline") or meta.get("compensation") else 8.0
+def _scaled(length: int, full: int, half: int, points: float) -> float:
+    return points if length >= full else points / 2 if length >= half else 0.0
+
+
+def _has(meta: dict[str, Any], *keys: str) -> bool:
+    for key in keys:
+        value = meta.get(key)
+        if isinstance(value, list) and any(str(v).strip() for v in value):
+            return True
+        if isinstance(value, bool) and value:
+            return True
+        if isinstance(value, str) and value.strip():
+            return True
+    return False
+
+
+def _product(p: dict[str, Any], meta: dict[str, Any]) -> float:
+    photos = _photos(p)
+    score = 30.0 if photos >= 2 else 20.0 if photos == 1 else 0.0
+    score += _scaled(_text_len(p.get("title")), 10, 3, 10.0) + _scaled(_text_len(p.get("description")), 80, 30, 10.0)
+    score += 20.0 if float(p.get("price_ugx") or 0) > 0 else 0.0
+    score += 15.0 if _text_len(p.get("location_name")) or _has(meta, "delivery_areas", "nationwide_delivery") else 0.0
+    stock = p.get("stock_quantity")
+    score += 15.0 if stock is None or int(stock or 0) > 0 else 0.0
+    return score
+
+
+def _service(p: dict[str, Any], meta: dict[str, Any]) -> float:
+    description = _text_len(p.get("description"))
+    score = 20.0 if _photos(p) >= 1 else 10.0 if description >= 150 else 0.0
+    score += _scaled(_text_len(p.get("title")), 10, 3, 10.0) + _scaled(description, 80, 30, 15.0)
+    if _has(meta, "service_areas", "service_area", "remote_service"):
+        score += 20.0
+    elif _text_len(p.get("location_name")):
+        score += 10.0
+    score += 15.0 if float(p.get("price_ugx") or 0) > 0 or _has(meta, "pricing_model") else 0.0
+    score += 10.0 + (10.0 if _has(meta, "availability") else 0.0)
+    return score
+
+
+def _opportunity(p: dict[str, Any], meta: dict[str, Any]) -> float:
+    score = _scaled(_text_len(p.get("title")), 10, 3, 10.0) + _scaled(_text_len(p.get("description")), 80, 30, 15.0)
+    score += 10.0 + (10.0 if _has(meta, "opportunity_kind", "employment_type", "employment", "organisation") else 0.0)
+    score += 15.0 if _text_len(p.get("location_name")) or _has(meta, "work_mode") else 0.0
+    score += 15.0 if _has(meta, "deadline") else 0.0
+    score += 15.0 if _text_len(meta.get("requirements")) >= 10 else 0.0
+    score += 10.0
+    return score
 
 
 def listing_quality(product: dict[str, Any]) -> float:
     lane = lane_of(product.get("item_type"))
-    title = _text_len(product.get("title"))
-    description = _text_len(product.get("description"))
-    score = _media_points(product, lane) + _value_points(product, lane)
-    score += 20.0 if title >= 10 else 10.0 if title >= 3 else 0.0
-    score += 20.0 if description >= 80 else 10.0 if description >= 30 else 0.0
-    score += 10.0 if _text_len(product.get("location_name")) else 0.0
-    score += 5.0 if _text_len(product.get("category")) else 0.0
-    return score
+    meta = _meta(product)
+    if lane == "service":
+        return _service(product, meta)
+    if lane == "opportunity":
+        return _opportunity(product, meta)
+    return _product(product, meta)

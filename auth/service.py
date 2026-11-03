@@ -275,6 +275,22 @@ def _family_id_of(record: dict[str, Any], jti: str) -> str:
     return str(record.get("family_id") or jti)
 
 
+REFRESH_REUSE_GRACE_SECONDS = 10
+
+
+def _within_reuse_grace(record: dict[str, Any]) -> bool:
+    """Parallel requests (two tabs, page + API) may present the same token moments after it rotated."""
+    if not record.get("replaced_by"):
+        return False
+    try:
+        revoked = datetime.fromisoformat(str(record["revoked_at"]).replace("Z", "+00:00"))
+    except (KeyError, ValueError):
+        return False
+    if revoked.tzinfo is None:
+        revoked = revoked.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - revoked <= timedelta(seconds=REFRESH_REUSE_GRACE_SECONDS)
+
+
 def _revoke_refresh_family(family_id: str) -> None:
     """Revoke active refresh tokens in one login family."""
     client = get_supabase_admin()
@@ -372,7 +388,7 @@ def rotate_refresh_token(
     record = _fetch_refresh_record(jti)
     if record is None:
         raise ValueError("Invalid refresh token")
-    if record.get("revoked_at"):
+    if record.get("revoked_at") and not _within_reuse_grace(record):
         family_id = _family_id_of(record, jti)
         logger.warning(
             "Refresh token reuse detected for user %s family %s", user_id, family_id
@@ -403,7 +419,8 @@ def rotate_refresh_token(
         user_agent=user_agent,
         ip=ip,
     )
-    _revoke_refresh_record(jti, replaced_by=new_jti)
+    if not record.get("revoked_at"):
+        _revoke_refresh_record(jti, replaced_by=new_jti)
 
     return access, new_refresh, claims
 

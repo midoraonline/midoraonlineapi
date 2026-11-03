@@ -30,6 +30,7 @@ class Snapshot:
     version: str
     plan: StagePlan
     items: list[dict[str, Any]] = field(default_factory=list)
+    config: str = ""
 
     def ids(self) -> list[str]:
         return [i["id"] for i in self.items]
@@ -38,7 +39,7 @@ class Snapshot:
         return {i["id"] for i in self.items if i.get("trending")}
 
     def payload(self) -> dict[str, Any]:
-        return {"plan": self.plan.as_dict(), "items": self.items}
+        return {"plan": self.plan.as_dict(), "items": self.items, "config": self.config}
 
     @classmethod
     def from_row(cls, row: dict[str, Any] | None) -> "Snapshot | None":
@@ -50,6 +51,7 @@ class Snapshot:
             version=str(row["version"]),
             plan=StagePlan.from_dict(payload.get("plan")),
             items=[i for i in items if isinstance(i, dict) and i.get("id")],
+            config=str(payload.get("config") or ""),
         )
 
 

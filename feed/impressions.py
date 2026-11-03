@@ -17,6 +17,19 @@ def _since(hours: float) -> str:
     return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
 
 
+def _own_listings(admin: Any, listing_ids: list[str], user_id: str) -> set[str]:
+    try:
+        shops = admin.table("shops").select("id").eq("owner_id", user_id).execute().data or []
+        shop_ids = [str(s["id"]) for s in shops if s.get("id")]
+        if not shop_ids:
+            return set()
+        rows = admin.table("products").select("id").in_("id", listing_ids).in_("shop_id", shop_ids).execute().data or []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("own listing check failed: %s", exc)
+        return set()
+    return {str(r["id"]) for r in rows if r.get("id")}
+
+
 def record_impressions(
     items: Iterable[dict[str, Any]],
     *,
@@ -38,6 +51,12 @@ def record_impressions(
         seen[listing_id] = {"listing_id": listing_id, "pool": pool, "position": position}
     if not seen:
         return 0
+
+    if buyer_id:
+        for lid in _own_listings(admin, list(seen), buyer_id):
+            seen.pop(lid, None)
+        if not seen:
+            return 0
 
     column, value = ("buyer_id", buyer_id) if buyer_id else ("session_id", session_id)
     if value:

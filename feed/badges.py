@@ -60,6 +60,16 @@ def trending_ids(client: Any) -> set[str]:
         return set()
 
 
+def paid_open(client: Any) -> bool:
+    try:
+        from feed.service import current_plan
+
+        return current_plan(client).paid
+    except Exception as exc:  # noqa: BLE001
+        logger.info("paid stage unavailable: %s", exc)
+        return False
+
+
 def card_statuses(
     client: Any,
     rows: list[dict[str, Any]],
@@ -69,7 +79,7 @@ def card_statuses(
 ) -> dict[str, str | None]:
     """rows need id, item_type, listing_meta and first_posted_at/created_at."""
     ids = [str(r.get("id")) for r in rows if r.get("id")]
-    paid = paid_placements(client, ids)
+    paid = paid_placements(client, ids) if paid_open(client) else {}
     hot = trending_ids(client) if trending is None else trending
     now = datetime.now(timezone.utc)
     out: dict[str, str | None] = {}

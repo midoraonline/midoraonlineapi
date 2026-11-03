@@ -507,6 +507,16 @@ async def get_product(
     return detail
 
 
+def _reject_past_deadline(row: dict) -> None:
+    from feed.expiry import is_expired
+
+    if is_expired(row):
+        raise HTTPException(
+            status_code=400,
+            detail={"detail": "The deadline has passed. Set a new deadline to make this listing available again.", "code": "deadline_passed"},
+        )
+
+
 @router_products.patch("/{product_id}", response_model=ProductResponse)
 async def update_product(
   product_id: str,
@@ -529,7 +539,7 @@ async def update_product(
     existing_r = (
         client.table("products")
         .select(
-            "shop_id,is_published,image_urls,price_ugx,item_type,location_name,category,description,listing_meta,status,stock_quantity"
+            "shop_id,is_published,image_urls,price_ugx,item_type,location_name,category,description,listing_meta,status,stock_quantity,created_at,first_posted_at"
         )
         .eq("id", product_id)
         .limit(1)
@@ -545,6 +555,7 @@ async def update_product(
         )
         if reactivating:
             gate_body = {**fields, "is_published": True}
+            _reject_past_deadline({**existing, **fields})
         await _enforce_publish_gates(
             client,
             user_id=user_id,
@@ -557,6 +568,10 @@ async def update_product(
     updated = shop_service.update_product(client, product_id, body)
     if not updated:
         raise HTTPException(status_code=404, detail="Product not found")
+
+    from feed.meaningful import maybe_refresh
+
+    maybe_refresh(get_supabase_admin(), product_id, existing, fields)
 
     await publish_product_updated(
         updated,
@@ -681,6 +696,7 @@ async def toggle_product_availability(
     update: dict[str, object] = {"is_published": new_val}
     current_status = str(existing.get("status") or "")
     if new_val:
+        _reject_past_deadline(existing)
         if current_status in CLOSING_STATUSES:
             if stock_required(existing.get("item_type")) and int(existing.get("stock_quantity") or 0) <= 0:
                 raise HTTPException(

@@ -32,11 +32,31 @@ class NotificationPreferences(BaseModel):
     reports: bool = False
 
 
+def _area(value: object) -> str | None:
+    if value is None or str(value).strip() == "":
+        return None
+    from feed.location import normalize_area
+
+    area = normalize_area(str(value))
+    if area is None:
+        raise ValueError("unknown browsing area")
+    return area
+
+
 class UserPreferences(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     theme: Theme = "system"
+    default_area: str | None = None
     notifications: NotificationPreferences = Field(default_factory=NotificationPreferences)
+
+    @field_validator("default_area", mode="before")
+    @classmethod
+    def _default_area(cls, value: object) -> str | None:
+        try:
+            return _area(value)
+        except ValueError:
+            return None
 
     @field_validator("theme", mode="before")
     @classmethod
@@ -66,7 +86,13 @@ class UserPreferencesPatch(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     theme: Theme | None = None
+    default_area: str | None = None
     notifications: NotificationPreferencesPatch | None = None
+
+    @field_validator("default_area", mode="before")
+    @classmethod
+    def _default_area(cls, value: object) -> str | None:
+        return _area(value) if value not in (None, "") else ""
 
     @field_validator("theme", mode="before")
     @classmethod
@@ -93,6 +119,8 @@ def merge_preferences(current: Any, patch: UserPreferencesPatch) -> dict[str, An
     base = coerce_preferences(current)
     if patch.theme is not None:
         base["theme"] = patch.theme
+    if "default_area" in patch.model_fields_set:
+        base["default_area"] = patch.default_area or None
     if patch.notifications is not None:
         sent = patch.notifications.model_dump(exclude_unset=True)
         base["notifications"].update({key: value for key, value in sent.items() if value is not None})

@@ -26,6 +26,15 @@ def my_boosts(
     return svc.owner_boosts(get_supabase_admin(), user_id, [x.strip() for x in ids.split(",") if x.strip()])
 
 
+@router.get("/attention")
+def attention(response: Response, user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
+    """Recent nudges on my listings: deadline passed or stock looks out of date."""
+    from feed.seller_nudges import attention_for
+
+    response.headers["Cache-Control"] = "no-store"
+    return {"items": attention_for(get_supabase_admin(), user_id)}
+
+
 @router.get("/{listing_id}/promote")
 def promote_options(listing_id: str, response: Response, user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
     """Boost packages, free boosts left this month, active boost and repost limits."""

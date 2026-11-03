@@ -596,3 +596,26 @@ async def event_trend(
     return EventTrendResponse(
         event_type=event_type, window_days=window_days, points=points
     )
+
+
+class DemandRow(BaseModel):
+    kind: str
+    what: str
+    where: str
+    count: int
+
+
+class DemandResponse(BaseModel):
+    window_days: int
+    rows: list[DemandRow]
+
+
+@router.get("/demand", response_model=DemandResponse)
+async def unmet_demand(window_days: int = Query(30, ge=1, le=365)) -> DemandResponse:
+    """What buyers asked for or searched without results, by area. Aggregated only."""
+    from feed.demand import REQUEST_EVENT, ZERO_RESULTS_EVENT, summary
+
+    since, _ = _window_bounds(window_days)
+    admin = get_supabase_admin()
+    rows = summary(_rows(admin, REQUEST_EVENT, since), _rows(admin, ZERO_RESULTS_EVENT, since))
+    return DemandResponse(window_days=window_days, rows=[DemandRow(**r) for r in rows])

@@ -31,6 +31,13 @@ def _resolve_seller_id(seller_id: str | None, shop_id: str | None) -> str | None
 
 async def on_product_status_changed(event: ProductStatusChangedEvent) -> None:
     """Send in-app notification and web push when product status updates."""
+    if event.new_status == "active" and event.product_id:
+        try:
+            from feed.demand import notify_matches
+
+            notify_matches(event.product_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("demand alerts failed for %s: %s", event.product_id, exc)
     user_id = _resolve_seller_id(event.seller_id, event.shop_id)
     if not user_id:
         return

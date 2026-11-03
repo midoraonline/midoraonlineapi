@@ -104,4 +104,5 @@ RateLimitRefresh = Annotated[None, Depends(rate_limit(limit=30, window_seconds=6
 RateLimitOtp = Annotated[None, Depends(rate_limit(limit=5, window_seconds=60, bucket="auth.otp"))]
 RateLimitIngest = Annotated[None, Depends(rate_limit(limit=60, window_seconds=60, bucket="analytics.ingest"))]
 RateLimitAi = Annotated[None, Depends(rate_limit(limit=20, window_seconds=60, bucket="ai.public"))]
+RateLimitDemand = Annotated[None, Depends(rate_limit(limit=5, window_seconds=60, bucket="feed.demand"))]
 RateLimitGoogle = Annotated[None, Depends(rate_limit(limit=20, window_seconds=60, bucket="auth.google"))]
