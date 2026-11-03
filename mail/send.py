@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 _conf: FastMail | None = None
 
+# A blocked or slow SMTP host must fail fast; the 60s default stalled every email behind it.
+SMTP_TIMEOUT_SECONDS = 15
+
 
 def get_mail() -> FastMail:
     global _conf
@@ -35,6 +38,7 @@ def get_mail() -> FastMail:
             MAIL_SERVER="smtp.gmail.com",
             MAIL_STARTTLS=True,
             MAIL_SSL_TLS=False,
+            TIMEOUT=SMTP_TIMEOUT_SECONDS,
         )
         _conf = FastMail(config)
     return _conf
@@ -106,15 +110,15 @@ async def _send_html(
 # ---------------------------------------------------------------------------
 
 
-async def _enqueue(to: str, subject: str, body_html: str) -> None:
+async def _enqueue(to: str, subject: str, body_html: str, *, dedupe: bool = True) -> None:
     from mail.queue import enqueue_mail
-    await enqueue_mail(to=to, subject=subject, body_html=body_html)
+    await enqueue_mail(to=to, subject=subject, body_html=body_html, dedupe=dedupe)
 
 async def send_verification_email(to: str, verification_link: str) -> None:
     from mail.templates import render_verify_email
 
     subject, body = render_verify_email(verification_link=verification_link)
-    await _enqueue(to=to, subject=subject, body_html=body)
+    await _enqueue(to=to, subject=subject, body_html=body, dedupe=False)
 
 
 async def send_password_reset_email(to: str, link: str) -> None:
@@ -126,16 +130,23 @@ async def send_password_reset_email(to: str, link: str) -> None:
         "<p>The link works once and expires in 60 minutes. If you didn't ask, ignore this email; "
         "your password stays the same.</p>",
     )
-    await _enqueue(to=to, subject="Reset your Midora password", body_html=body)
+    await _enqueue(to=to, subject="Reset your Midora password", body_html=body, dedupe=False)
+
+
+class EmailNotSent(RuntimeError):
+    pass
 
 
 async def send_email_otp(to: str, code: str) -> None:
+    from mail.queue import deliver_now
+
     body = _html_shell(
         "Your Midora code",
         f"<p>Your verification code is <strong>{code}</strong>.</p>"
         "<p>It expires in 10 minutes. If you did not ask for this, you can ignore the email.</p>",
     )
-    await _enqueue(to=to, subject="Your Midora verification code", body_html=body)
+    if not await deliver_now(to, "Your Midora verification code", body):
+        raise EmailNotSent("verification code email was not delivered")
 
 
 # ---------------------------------------------------------------------------

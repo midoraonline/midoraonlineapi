@@ -156,20 +156,11 @@ def _signal_worker() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def enqueue_mail(
-    to: str | list[str],
-    subject: str,
-    body_html: str,
-) -> None:
-    """Insert into mail_queue. The worker claims rows atomically from the DB."""
-    recipients = filter_recipients([to] if isinstance(to, str) else list(to))
-    if not recipients:
-        return
-
+def _insert_rows(recipients: list[str], subject: str, body_html: str, *, dedupe: bool) -> list[str]:
     admin = get_supabase_admin()
-    inserted = False
+    ids: list[str] = []
     for recipient in recipients:
-        if _recent_duplicate(recipient, subject):
+        if dedupe and _recent_duplicate(recipient, subject):
             logger.info(
                 "Skipping duplicate mail enqueue (recipient=%s subject=%r)",
                 recipient,
@@ -177,38 +168,112 @@ async def enqueue_mail(
             )
             continue
         try:
-            admin.table("mail_queue").insert({
+            r = admin.table("mail_queue").insert({
                 "recipient": recipient,
                 "subject": subject,
                 "body_html": body_html,
                 "status": "pending",
             }).execute()
-            inserted = True
+            if r.data and r.data[0].get("id"):
+                ids.append(str(r.data[0]["id"]))
         except Exception as exc:
             logger.warning("Failed to enqueue mail to %s: %s", recipient, exc)
+    return ids
 
-    if inserted:
+
+async def enqueue_mail(
+    to: str | list[str],
+    subject: str,
+    body_html: str,
+    *,
+    dedupe: bool = True,
+) -> list[str]:
+    """Insert into mail_queue and send those rows right away. Returns the new row ids.
+
+    Rows are sent by id, so older stuck or failing mail can't hold a new email back.
+    Codes and links pass dedupe=False because a resend must really go out.
+    """
+    recipients = filter_recipients([to] if isinstance(to, str) else list(to))
+    if not recipients:
+        return []
+    ids = _insert_rows(recipients, subject, body_html, dedupe=dedupe)
+    if ids:
         _signal_worker()
-        await _send_now_if_serverless(len(recipients))
+        await _dispatch(ids)
+    return ids
+
+
+async def deliver_now(to: str, subject: str, body_html: str) -> bool:
+    """Send one email and wait for the result. A failed send is not retried later.
+
+    For one-time codes: when it can't be sent the caller tells the user, so a late
+    retry would deliver a code that has already been revoked.
+    """
+    recipients = filter_recipients([to])
+    ids = _insert_rows(recipients, subject, body_html, dedupe=False) if recipients else []
+    if not ids:
+        return False
+    await send_ids(ids)
+    ok = all(_status_of(i) == "sent" for i in ids)
+    if not ok:
+        for mail_id in ids:
+            try:
+                get_supabase_admin().table("mail_queue").update({"status": "failed"}).eq("id", mail_id).neq("status", "sent").execute()
+            except Exception as exc:
+                logger.warning("could not close failed code email %s: %s", mail_id, exc)
+    return ok
 
 
 INLINE_SEND_LIMIT = 5
+_background: set[asyncio.Task[Any]] = set()
 
 
-async def _send_now_if_serverless(count: int) -> None:
-    """Vercel has no worker and kills unawaited work after the response.
+async def _dispatch(ids: list[str]) -> None:
+    """Serverless freezes after the response, so send inside the request.
 
-    Send right here, inside the awaited request, so the email goes out
-    before the function freezes. The cron drain catches anything left.
+    Elsewhere send in the background so the request isn't held up by SMTP.
+    The worker and the cron drain still retry anything that fails.
     """
     from core.runtime import is_serverless
 
-    if not is_serverless():
+    if is_serverless():
+        try:
+            await send_ids(ids)
+        except Exception as exc:
+            logger.warning("inline mail send failed; cron drain will retry: %s", exc)
         return
+    task = asyncio.create_task(send_ids(ids))
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
+
+def _claim_id(mail_id: str) -> dict[str, Any] | None:
+    """Atomically take one pending row; None when another sender already has it."""
     try:
-        await drain_mail_queue(min(max(count, 1), INLINE_SEND_LIMIT))
+        r = (
+            get_supabase_admin()
+            .table("mail_queue")
+            .update({"status": "processing"})
+            .eq("id", mail_id)
+            .eq("status", "pending")
+            .execute()
+        )
+        return r.data[0] if r.data else None
     except Exception as exc:
-        logger.warning("inline mail send failed; cron drain will retry: %s", exc)
+        logger.warning("mail claim by id failed (id=%s): %s", mail_id, exc)
+        return None
+
+
+async def send_ids(ids: list[str]) -> int:
+    sent = 0
+    for mail_id in ids[:INLINE_SEND_LIMIT]:
+        record = _claim_id(mail_id)
+        if not record:
+            continue
+        await _send_and_mark(record)
+        if _status_of(mail_id) == "sent":
+            sent += 1
+    return sent
 
 
 async def drain_mail_queue(limit: int = 50) -> dict[str, int]:

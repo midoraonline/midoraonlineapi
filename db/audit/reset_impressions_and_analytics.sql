@@ -19,15 +19,15 @@
 
 BEGIN;
 
--- fraud_flags.event_id references listing_events with no ON DELETE rule, so
--- truncating listing_events fails unless this FK is detached first. This
--- keeps the fraud_flags rows (trust & safety history, not tracking data) —
--- it just nulls out their now-irrelevant link to the deleted raw event.
+-- fraud_flags.event_id references listing_events with no ON DELETE rule.
+-- TRUNCATE checks for the FK constraint's existence regardless of row data,
+-- so nulling the reference alone doesn't satisfy it — use DELETE instead of
+-- TRUNCATE for listing_events, which respects the now-clean row-level check.
 UPDATE public.fraud_flags SET event_id = NULL WHERE event_id IS NOT NULL;
 
 -- Raw tracking logs
 TRUNCATE TABLE public.listing_impressions;
-TRUNCATE TABLE public.listing_events;
+DELETE FROM public.listing_events;
 TRUNCATE TABLE public.analytics_events;
 
 -- Aggregate counters derived from the logs above
