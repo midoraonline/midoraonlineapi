@@ -114,10 +114,16 @@ async def _enqueue(to: str, subject: str, body_html: str, *, dedupe: bool = True
     from mail.queue import enqueue_mail
     await enqueue_mail(to=to, subject=subject, body_html=body_html, dedupe=dedupe)
 
-async def send_verification_email(to: str, verification_link: str) -> None:
+async def send_verification_email(to: str, verification_link: str, *, confirm: bool = False) -> None:
     from mail.templates import render_verify_email
 
     subject, body = render_verify_email(verification_link=verification_link)
+    if confirm:
+        from mail.queue import deliver_now
+
+        if not await deliver_now(to, subject, body):
+            raise EmailNotSent("verification link email was not delivered")
+        return
     await _enqueue(to=to, subject=subject, body_html=body, dedupe=False)
 
 

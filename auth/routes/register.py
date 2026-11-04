@@ -73,14 +73,24 @@ async def register(
     )
 
 
+async def send_new_verification_link(user_id: str, email: str, *, confirm: bool) -> None:
+    """Issue a fresh one-time link and email it. With confirm=True a failed send raises."""
+    from uuid import uuid4
+
+    from db.supabase import get_supabase_admin
+
+    token = uuid4().hex
+    get_supabase_admin().table("email_verification_tokens").insert({"user_id": user_id, "token": token}).execute()
+    link = f"{get_settings().api_base_url.rstrip('/')}/api/v1/auth/verify-email?token={token}"
+    await send_verification_email(email, link, confirm=confirm)
+
+
 @router.post("/verify-email/resend")
 async def resend_verification_email(
     _: RateLimitOtp,
     user_id: str = Depends(get_current_user_id),
 ):
     """Send a fresh verification link to the signed-in user's email."""
-    from uuid import uuid4
-
     from db.supabase import get_supabase_admin
 
     client = get_supabase_admin()
@@ -97,13 +107,8 @@ async def resend_verification_email(
         raise HTTPException(status_code=404, detail="Account not found")
     if rows[0].get("email_verified"):
         return {"message": "Email already verified", "already_verified": True}
-    token = uuid4().hex
-    client.table("email_verification_tokens").insert(
-        {"user_id": user_id, "token": token}
-    ).execute()
-    link = f"{get_settings().api_base_url.rstrip('/')}/api/v1/auth/verify-email?token={token}"
     try:
-        await send_verification_email(rows[0]["email"], link)
+        await send_new_verification_link(user_id, rows[0]["email"], confirm=True)
     except Exception as exc:
         logger.warning("resend verification failed for %s: %s", user_id, exc)
         raise HTTPException(

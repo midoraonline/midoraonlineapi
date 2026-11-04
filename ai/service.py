@@ -130,6 +130,13 @@ def _response_text(resp: Any) -> str:
     return resp.text if hasattr(resp, "text") else str(resp)
 
 
+def _finish_reason(resp: Any) -> str:
+    try:
+        return str(resp.candidates[0].finish_reason)
+    except Exception:
+        return "unknown"
+
+
 # ---------------------------------------------------------------------------
 # Backwards-compatible sync wrapper (used by legacy call sites)
 # ---------------------------------------------------------------------------
@@ -185,18 +192,35 @@ def generate_logo(
 # Shop concierge
 # ---------------------------------------------------------------------------
 
-SHOP_SYSTEM = """You are the in-shop AI concierge for a Midora Online store.
+SHOP_SYSTEM = """You are the in-shop AI assistant for a Midora Online store in Uganda.
 
-The shop's catalog and contact details are already provided in this system prompt.
-Answer the customer's question using that information.
+The shop's live listings and contact details are provided below. Answer the
+customer's latest message using that information.
 
 Guidelines:
-- Be friendly, concise, and accurate.
-- Never fabricate product prices, stock levels, or contact details.
-- If a product is not in the catalog, say it is not listed rather than guessing.
-- If the catalog section below is empty, tell the customer you are unable to
-  retrieve product details right now and suggest they try again shortly.
+- Be friendly, concise and accurate. Greet only once; don't repeat introductions.
+- Write prices like "UGX 350,000". Never invent prices, stock or contact details.
+- If something isn't in the listings, say it isn't listed rather than guessing.
+- You cannot send messages, place orders, or contact the seller on the customer's
+  behalf. When the customer wants the seller to reach out, to buy, or to negotiate,
+  tell them to tap "Message seller" on the listing or shop page, or to WhatsApp the
+  shop using the number below if one is given.
+- If the listings section is empty, say you can't load the shop's items right now
+  and suggest messaging the seller.
 """
+
+_SHOP_FALLBACK = (
+    "I couldn't answer that just now. You can tap \"Message seller\" on this shop or a "
+    "listing to reach the seller directly."
+)
+
+
+def _safe_text(resp: Any) -> str:
+    try:
+        text = getattr(resp, "text", None)
+    except Exception:
+        text = None
+    return (text or "").strip()
 
 
 async def chat_with_shop_tools(
@@ -318,7 +342,20 @@ async def chat_with_shop_tools(
             )
 
         if not function_calls:
-            return _response_text(resp)
+            text = _safe_text(resp)
+            if not text:
+                logger.warning(
+                    "chat_with_shop_tools empty reply shop=%s finish=%s; retrying with last message",
+                    shop_id,
+                    _finish_reason(resp),
+                )
+                retry = await client.aio.models.generate_content(
+                    model=model,
+                    contents=contents[-1:],
+                    config=types.GenerateContentConfig(system_instruction=[system]),
+                )
+                text = _safe_text(retry)
+            return text or _SHOP_FALLBACK
 
         # 6. Tool fallback — only reached when catalog was missing.
         #    Execute tools off the event loop, then one final call for the answer.
@@ -357,14 +394,14 @@ async def chat_with_shop_tools(
             contents=contents,
             config=final_config,
         )
-        return _response_text(final_resp)
+        return _safe_text(final_resp) or _SHOP_FALLBACK
 
     except AIRateLimitError:
         raise
     except Exception as exc:
         _raise_if_rate_limited(exc)
         logger.exception("chat_with_shop_tools failed shop=%s", shop_id)
-        return "Sorry, I couldn't process that."
+        return _SHOP_FALLBACK
 
 
 # ---------------------------------------------------------------------------

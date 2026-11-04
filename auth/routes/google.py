@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
@@ -17,7 +18,21 @@ from auth.service import access_ttl_seconds, refresh_ttl_seconds
 from core.config import get_settings
 from core.rate_limit import RateLimitGoogle
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+
+async def _verify_if_needed(result: dict) -> None:
+    if not result.get("needs_email_verification"):
+        return
+    from auth.routes.register import send_new_verification_link
+
+    user = result["user"]
+    try:
+        await send_new_verification_link(str(user["id"]), user["email"], confirm=False)
+    except Exception:
+        logger.warning("google: verification link not queued for %s", user.get("id"), exc_info=True)
 
 
 @router.get("/google/url", response_model=GoogleOAuthUrlResponse)
@@ -45,6 +60,7 @@ async def google_oauth_callback(
     frontend_callback_url = settings.google_oauth_frontend_callback_url.strip()
     try:
         result = await asyncio.to_thread(handle_callback, code=code, state=state)
+        await _verify_if_needed(result)
         if frontend_callback_url:
             # Session tokens stay in cookies. The redirect only signals success.
             response = RedirectResponse(
@@ -118,6 +134,7 @@ async def google_oauth_exchange(body: GoogleCodeExchangeRequest, response: Respo
         raise HTTPException(status_code=400, detail="Google sign-in failed") from exc
     except Exception:
         raise HTTPException(status_code=400, detail="Google sign-in failed")
+    await _verify_if_needed(result)
     set_auth_cookies(
         response,
         access_token=result["access_token"],

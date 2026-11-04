@@ -50,6 +50,16 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _format_ugx(value: Any) -> str:
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return "price on request"
+    if amount <= 0:
+        return "price on request"
+    return f"UGX {amount:,.0f}"
+
+
 def pull_shop_catalog(shop_id: str, max_products: int = 50) -> dict[str, Any]:
     """
     Pull shop and product data from Supabase (read-only).
@@ -78,6 +88,8 @@ def pull_shop_catalog(shop_id: str, max_products: int = 50) -> dict[str, Any]:
                 "id,item_type,title,description,price_ugx,stock_quantity,image_urls,category,is_published,ai_seo_tags"
             )
             .eq("shop_id", shop_id)
+            .eq("is_published", True)
+            .eq("status", "active")
             .order("created_at", desc=True)
             .limit(max_products)
             .execute()
@@ -103,15 +115,15 @@ def pull_shop_catalog(shop_id: str, max_products: int = 50) -> dict[str, Any]:
             f"Availability: {shop.get('availability') or ''}\n"
         )
 
-    content.append("Products:")
+    content.append(f"Live listings ({len(products)}):")
     for p in products:
         title = p.get("title") or ""
         item_type = p.get("item_type") or "product"
-        price = p.get("price_ugx")
+        price = _format_ugx(p.get("price_ugx"))
         stock = p.get("stock_quantity")
         description = p.get("description") or ""
         content.append(
-            f"- {title} ({item_type}) | Price: {price} UGX | Stock: {stock}\n"
+            f"- {title} ({item_type}) | Price: {price} | Stock: {stock if stock is not None else 'not stated'}\n"
             f"  Description: {description}"
         )
 

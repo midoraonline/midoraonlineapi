@@ -153,11 +153,18 @@ def _google_columns() -> str:
     return auth_service._USER_LOGIN_COLUMNS + ",google_sub"
 
 
+def google_email_verified(profile: dict[str, Any]) -> bool:
+    """Google marks Gmail addresses verified; some Workspace or legacy accounts aren't."""
+    value = profile.get("email_verified")
+    return value is True or str(value).strip().lower() == "true"
+
+
 def _get_or_create_local_user(google_profile: dict[str, Any]) -> dict[str, Any]:
     client = get_supabase_admin()
     email = str(google_profile["email"]).strip().lower()
     full_name = google_profile.get("name")
     google_sub = str(google_profile.get("sub") or "").strip() or None
+    verified_by_google = google_email_verified(google_profile)
 
     user = None
     if google_sub:
@@ -166,7 +173,7 @@ def _get_or_create_local_user(google_profile: dict[str, Any]) -> dict[str, Any]:
         user = auth_service.lookup_user_by("email", email, columns=_google_columns())
     if user:
         updates: dict[str, Any] = {}
-        if not user.get("email_verified"):
+        if not user.get("email_verified") and verified_by_google:
             updates["email_verified"] = True
         if not user.get("full_name") and full_name:
             updates["full_name"] = full_name
@@ -194,7 +201,7 @@ def _get_or_create_local_user(google_profile: dict[str, Any]) -> dict[str, Any]:
         "password_hash": auth_service.unusable_password_hash(),
         "full_name": full_name,
         "user_role": user_role,
-        "email_verified": True,
+        "email_verified": verified_by_google,
     }
     if google_sub:
         payload["google_sub"] = google_sub
@@ -258,4 +265,5 @@ def handle_callback(code: str, state: str | None = None) -> dict[str, Any]:
         "user": user,
         "access_token": access_token,
         "refresh_token": refresh_token,
+        "needs_email_verification": not user.get("email_verified"),
     }

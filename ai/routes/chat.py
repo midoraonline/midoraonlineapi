@@ -175,6 +175,7 @@ async def send_message(
     session_id: str,
     body: MessageCreate,
     client: Annotated[Client, Depends(get_supabase_client)],
+    _: RateLimitAi,
     user_id: str | None = Depends(get_optional_user_id),
 ):
     message = (body.message or "").strip()
