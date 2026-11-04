@@ -77,6 +77,16 @@ def _get_model() -> str:
     return get_settings().gemini_model
 
 
+CHAT_TIMEOUT_SECONDS = 40
+
+
+def _chat_config(types: Any, system: str, **extra: Any) -> Any:
+    """Chat replies don't need reasoning; thinking on 2.5-flash adds 5-20s per turn."""
+    if "flash" in _get_model().lower():
+        extra.setdefault("thinking_config", types.ThinkingConfig(thinking_budget=0))
+    return types.GenerateContentConfig(system_instruction=[system], **extra)
+
+
 def _parse_retry_after(exc: Exception) -> int:
     """Extract the retryDelay seconds from a Gemini 429 error string."""
     match = re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+)", str(exc))
@@ -302,12 +312,11 @@ async def chat_with_shop_tools(
     }
 
     if catalog_is_embedded:
-        gen_config = types.GenerateContentConfig(
-            system_instruction=[system],
-        )
+        gen_config = _chat_config(types, system)
     else:
-        gen_config = types.GenerateContentConfig(
-            system_instruction=[system],
+        gen_config = _chat_config(
+            types,
+            system,
             tools=list(tool_registry.values()),
             automatic_function_calling=types.AutomaticFunctionCallingConfig(
                 disable=True
@@ -352,7 +361,7 @@ async def chat_with_shop_tools(
                 retry = await client.aio.models.generate_content(
                     model=model,
                     contents=contents[-1:],
-                    config=types.GenerateContentConfig(system_instruction=[system]),
+                    config=_chat_config(types, system),
                 )
                 text = _safe_text(retry)
             return text or _SHOP_FALLBACK
@@ -388,7 +397,7 @@ async def chat_with_shop_tools(
             )
 
         # Use tool-config-free config for the final answer call
-        final_config = types.GenerateContentConfig(system_instruction=[system])
+        final_config = _chat_config(types, system)
         final_resp = await client.aio.models.generate_content(
             model=model,
             contents=contents,
@@ -466,9 +475,7 @@ async def chat_midora_info(message: str) -> str:
                     parts=[types.Part.from_text(text=message)],
                 )
             ],
-            config=types.GenerateContentConfig(
-                system_instruction=[MIDORA_INFO_SYSTEM],
-            ),
+            config=_chat_config(types, MIDORA_INFO_SYSTEM),
         )
         return _response_text(resp)
     except AIRateLimitError:
@@ -892,16 +899,23 @@ async def chat_create_shop(
                 0, types.Content(role="user", parts=[types.Part.from_text(text=known)])
             )
 
-        resp = await client.aio.models.generate_content(
-            model=_get_model(),
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=[CREATE_SHOP_SYSTEM],
+        resp = await asyncio.wait_for(
+            client.aio.models.generate_content(
+                model=_get_model(),
+                contents=contents,
+                config=_chat_config(types, CREATE_SHOP_SYSTEM),
             ),
+            timeout=CHAT_TIMEOUT_SECONDS,
         )
-        reply = _response_text(resp)
+        reply = _response_text(resp) or ""
     except AIRateLimitError:
         raise
+    except asyncio.TimeoutError:
+        logger.warning("chat_create_shop timed out after %ss", CHAT_TIMEOUT_SECONDS)
+        return (
+            "That took too long on my side. Please send your message again.",
+            None,
+        )
     except Exception as exc:
         _raise_if_rate_limited(exc)
         logger.exception("chat_create_shop failed")

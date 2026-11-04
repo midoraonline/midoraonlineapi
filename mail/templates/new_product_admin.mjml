@@ -18,7 +18,7 @@
   <mj-body background-color="#f6f7f9">
     <mj-section padding="24px 20px 8px 20px">
       <mj-column>
-        <mj-image src="cid:midora_logo" alt="Midora" width="130px" align="center" padding="0" />
+        <mj-image src="$logo_url" alt="Midora" width="130px" align="center" padding="0" />
       </mj-column>
     </mj-section>
 

@@ -1,16 +1,12 @@
-"""SMTP helpers built on fastapi-mail.
+"""Email senders. Bodies come from MJML templates (mail/templates); delivery goes
+through the Next.js nodemailer relay when configured, else SMTP via fastapi-mail.
 
-All templates are simple inline HTML (with a plain-text fallback where it
-matters). Every send is best-effort — callers catch exceptions so email
-failures never break the underlying flow.
-
-All public `send_*` functions now enqueue rather than send synchronously.
+All public `send_*` functions enqueue rather than send synchronously.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from typing import Iterable
 
 from fastapi_mail import ConnectionConfig, FastMail, MessageSchema, MessageType
@@ -49,29 +45,27 @@ def get_mail() -> FastMail:
 # ---------------------------------------------------------------------------
 
 
-_LOGO_CID = "midora_logo"
-_LOGO_PATH = os.path.join(os.path.dirname(__file__), "..", "static", "logo.png")
-
-
 def _html_shell(title: str, inner: str) -> str:
-    """Wrap email body HTML in a minimal, email-client-safe shell."""
-    return f"""
-    <div style=\"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#f6f7f9;padding:32px 16px;\">
-      <div style=\"max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;\">
-        <div style=\"padding:24px 28px;border-bottom:1px solid #f1f5f9;text-align:center;\">
-          <img src=\"cid:{_LOGO_CID}\" alt=\"Midora\" style=\"max-width:140px;height:auto;\" />
-          <div style=\"margin-top:8px;font-size:18px;font-weight:600;color:#0f172a;\">{title}</div>
-        </div>
-        <div style=\"padding:24px 28px;font-size:15px;line-height:1.55;color:#1f2937;\">
-          {inner}
-        </div>
-        <div style=\"padding:20px 28px;border-top:1px solid #f1f5f9;font-size:12px;color:#64748b;\">
-          You're receiving this message from the Midora team. If you have
-          questions, simply reply to this email.
-        </div>
-      </div>
-    </div>
-    """.strip()
+    """Wrap notice HTML in the shared MJML layout."""
+    from mail.templates import render_layout
+
+    return render_layout(title=title, content_html=inner)
+
+
+RELAY_TIMEOUT_SECONDS = 20
+
+
+async def _send_via_relay(url: str, secret: str, recipients: list[str], subject: str, body_html: str) -> None:
+    import httpx
+
+    async with httpx.AsyncClient(timeout=RELAY_TIMEOUT_SECONDS) as client:
+        r = await client.post(
+            url,
+            json={"to": recipients, "subject": subject, "html": body_html},
+            headers={"Authorization": f"Bearer {secret}"},
+        )
+    if r.status_code >= 300:
+        raise RuntimeError(f"mail relay {r.status_code}: {r.text[:200]}")
 
 
 async def _send_html(
@@ -84,23 +78,16 @@ async def _send_html(
     recipients = [to] if isinstance(to, str) else [r for r in to if r]
     if not recipients:
         return
+    relay = get_settings().resolved_mail_relay()
+    if relay:
+        await _send_via_relay(relay[0], relay[1], recipients, subject, body_html)
+        return
     mail = get_mail()
     message = MessageSchema(
         subject=subject,
         recipients=recipients,
         body=body_html,
         subtype=MessageType.html,
-        attachments=[
-            {
-                "file": _LOGO_PATH,
-                "headers": {
-                    "Content-ID": f"<{_LOGO_CID}>",
-                    "Content-Disposition": "inline; filename=\"logo.png\"",
-                },
-                "mime_type": "image",
-                "mime_subtype": "png",
-            }
-        ],
     )
     await mail.send_message(message)
 
@@ -145,13 +132,10 @@ class EmailNotSent(RuntimeError):
 
 async def send_email_otp(to: str, code: str) -> None:
     from mail.queue import deliver_now
+    from mail.templates import render_email_code
 
-    body = _html_shell(
-        "Your Midora code",
-        f"<p>Your verification code is <strong>{code}</strong>.</p>"
-        "<p>It expires in 10 minutes. If you did not ask for this, you can ignore the email.</p>",
-    )
-    if not await deliver_now(to, "Your Midora verification code", body):
+    subject, body = render_email_code(code=code)
+    if not await deliver_now(to, subject, body):
         raise EmailNotSent("verification code email was not delivered")
 
 

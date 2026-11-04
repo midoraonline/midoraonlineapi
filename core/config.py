@@ -137,6 +137,20 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("REVALIDATE_SECRET", "NEXT_REVALIDATE_SECRET"),
     )
+    # Mail goes out through the Next.js nodemailer route when SMTP is blocked on this host.
+    mail_relay_url: str = Field(default="", alias="MAIL_RELAY_URL")
+    mail_relay_secret: str = Field(default="", alias="MAIL_RELAY_SECRET")
+
+    def resolved_mail_relay(self) -> tuple[str, str] | None:
+        secret = (self.mail_relay_secret or self.revalidate_secret or "").strip()
+        url = (self.mail_relay_url or "").strip()
+        if not url:
+            front = (self.frontend_public_url or "").strip().rstrip("/")
+            if front.startswith("https://"):
+                url = f"{front}/api/mail/send"
+        if url.lower() in ("off", "smtp") or not url or not secret:
+            return None
+        return url, secret
 
     # ------------------------------------------------------------------
     # Web Push (VAPID). Generate a keypair with:

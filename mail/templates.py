@@ -50,9 +50,19 @@ def _compile_template(name: str) -> Template:
     return Template(output.content)
 
 
+def logo_url() -> str:
+    from core.config import get_settings
+
+    front = (get_settings().frontend_public_url or "").strip().rstrip("/")
+    if front.startswith("https://"):
+        return f"{front}/logo.png"
+    return "https://www.midoraonline.com/logo.png"
+
+
 def _render(name: str, /, **variables: object) -> str:
     """Render a compiled template, substituting ``$var`` placeholders."""
     template = _compile_template(name)
+    variables.setdefault("logo_url", logo_url())
     # safe_substitute leaves unknown `$foo` intact rather than raising —
     # protects against email regressions if a caller forgets a var.
     return template.safe_substitute(**variables)
@@ -61,6 +71,15 @@ def _render(name: str, /, **variables: object) -> str:
 # ---------------------------------------------------------------------------
 # Public renderers — each returns (subject, body_html)
 # ---------------------------------------------------------------------------
+
+
+def render_layout(*, title: str, content_html: str, preview: str = "") -> str:
+    """Shared branded shell for notices that don't need their own template."""
+    return _render("layout", title=title, content=content_html, preview=preview or title)
+
+
+def render_email_code(*, code: str) -> tuple[str, str]:
+    return "Your Midora verification code", _render("email_code", code=code)
 
 
 def render_verify_email(*, verification_link: str) -> tuple[str, str]:
