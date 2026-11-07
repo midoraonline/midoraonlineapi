@@ -21,14 +21,16 @@
       }
     </mj-style>
   </mj-head>
-  <mj-body background-color="#f6f7f9">
+  <mj-body background-color="#f6f7f9" css-class="em-body">
     <mj-section padding="24px 20px 8px 20px">
       <mj-column>
-        <mj-image src="$logo_url" alt="Midora" width="130px" align="center" padding="0" />
+        <mj-raw>
+          <div style="text-align:center;"><img class="em-logo-light" src="$logo_url" alt="Midora" width="130" style="width:130px;height:auto;border:0;display:inline-block;" /><!--[if !mso]><!--><img class="em-logo-dark" src="$dark_logo_url" alt="Midora" width="130" style="width:130px;height:auto;border:0;display:none;max-height:0;overflow:hidden;" /><!--<![endif]--></div>
+        </mj-raw>
       </mj-column>
     </mj-section>
 
-    <mj-section background-color="#ffffff" border-radius="18px" padding="32px 36px">
+    <mj-section background-color="#ffffff" border-radius="18px" padding="32px 36px" css-class="em-card">
       <mj-column>
         <mj-text>
           <span class="badge">Pending review</span>

@@ -55,6 +55,16 @@ FLAGS: dict[str, dict[str, Any]] = {
         "public": True,
         "description": "Pause new shops, new listings, and listing edits. Marking a listing sold or closed still works.",
     },
+    "phone_verification_required": {
+        "default": False,
+        "public": True,
+        "description": "Require a verified phone (SMS or WhatsApp code) before posting a listing or creating a shop. When off, WhatsApp buttons show without a verified phone.",
+    },
+    "email_verification_required": {
+        "default": False,
+        "public": True,
+        "description": "Require a verified email before posting a listing or creating a shop.",
+    },
     "listing_media_limits": {
         "default": True,
         "public": False,
@@ -261,6 +271,14 @@ def listings_require_review() -> bool:
 
 def ai_moderation_enabled() -> bool:
     return enabled("ai_moderation")
+
+
+def phone_verification_required() -> bool:
+    return enabled("phone_verification_required")
+
+
+def email_verification_required() -> bool:
+    return enabled("email_verification_required")
 
 
 def public_flags() -> dict[str, bool]:

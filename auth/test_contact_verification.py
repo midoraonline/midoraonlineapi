@@ -130,24 +130,47 @@ def test_normalize_phone_defaults_to_uganda():
 
 
 def test_posting_requires_both_channels_verified():
+    strict = {"require_phone": True, "require_email": True}
     # Arrange / Act
     nothing = contact_verification_status(
-        {"email": "a@midora.app", "email_verified": False, "phone_number": "0700", "phone_verified": False}
+        {"email": "a@midora.app", "email_verified": False, "phone_number": "0700", "phone_verified": False}, **strict
     )
     email_only = contact_verification_status(
-        {"email": "a@midora.app", "email_verified": True, "phone_number": None, "phone_verified": False}
+        {"email": "a@midora.app", "email_verified": True, "phone_number": None, "phone_verified": False}, **strict
     )
     phone_only = contact_verification_status(
-        {"email": "a@midora.app", "email_verified": False, "phone_number": "0700", "phone_verified": True}
+        {"email": "a@midora.app", "email_verified": False, "phone_number": "0700", "phone_verified": True}, **strict
     )
     both = contact_verification_status(
-        {"email": "a@midora.app", "email_verified": True, "phone_number": "0700", "phone_verified": True}
+        {"email": "a@midora.app", "email_verified": True, "phone_number": "0700", "phone_verified": True}, **strict
     )
     # Assert
     assert (nothing["can_post"], nothing["required_channel"]) == (False, "phone")
     assert (email_only["can_post"], email_only["required_channel"]) == (False, "phone")
     assert (phone_only["can_post"], phone_only["required_channel"]) == (False, "email")
     assert (both["can_post"], both["required_channel"]) == (True, None)
+
+
+def test_switches_off_let_unverified_sellers_post():
+    row = {"email": "a@midora.app", "email_verified": False, "phone_number": None, "phone_verified": False}
+    off = contact_verification_status(row, require_phone=False, require_email=False)
+    email_only = contact_verification_status(row, require_phone=False, require_email=True)
+    assert (off["can_post"], off["required_channel"]) == (True, None)
+    assert (email_only["can_post"], email_only["required_channel"]) == (False, "email")
+
+
+def test_gate_is_skipped_when_switches_off(monkeypatch):
+    from shop.publish_gates import assert_contact_verified, assert_owner_phone_for_whatsapp
+
+    monkeypatch.setattr("platform_settings.flags.phone_verification_required", lambda: False)
+    monkeypatch.setattr("platform_settings.flags.email_verification_required", lambda: False)
+
+    def _no_db():
+        raise AssertionError("database should not be read")
+
+    monkeypatch.setattr("db.supabase.get_supabase_admin", _no_db)
+    assert_contact_verified("user-1")
+    assert assert_owner_phone_for_whatsapp(object(), "owner-1") is True
 
 
 
@@ -292,6 +315,9 @@ def test_unverified_seller_is_blocked_from_posting(monkeypatch):
     from fastapi import HTTPException
 
     from shop.publish_gates import assert_contact_verified
+
+    monkeypatch.setattr("platform_settings.flags.phone_verification_required", lambda: True)
+    monkeypatch.setattr("platform_settings.flags.email_verification_required", lambda: True)
 
     class _Users:
         def __init__(self, row):

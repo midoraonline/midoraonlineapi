@@ -389,6 +389,8 @@ def _session_home_page(
     limit: int,
 ) -> FeedPage:
     snap = current_snapshot(db)
+    if not sess.known:
+        sess.known = snap.ids()
     area = sess.area if sess.area and sess.area != location.ALL_UGANDA else None
     order = location.ring_order(area, snap.plan)
     ids, has_more, reasons, paid = _page_ids(db, sess, snap, page=page, limit=limit, order=order)
@@ -422,10 +424,13 @@ def new_listing_count(db: Client, *, user_id: str | None, session_id: str | None
     if started is None:
         return 0
     shown = set(sess.shown())
+    known = set(sess.known)
     count = 0
     for item in current_snapshot(db).items:
+        if item["id"] in shown:
+            continue
         posted = sig.parse_timestamp(item.get("posted"))
-        if posted and posted > started and item["id"] not in shown:
+        if (known and item["id"] not in known) or (posted and posted > started):
             count += 1
     return count
 
@@ -536,7 +541,25 @@ def get_session_feed(
     )
     if sess is None:
         return None
+    if page == 1 and not refresh and sess.pages and _new_since(sess, current_snapshot(db)):
+        # Same order as before plus the new listings; no "seen before" demotion on a plain reload.
+        sess = sessions.start(sess.key, now, area=sess.area)
     return _session_home_page(db, sess, page=page, limit=limit)
+
+
+def _new_since(sess: sessions.FeedSession, snap: snapshots.Snapshot) -> bool:
+    """A listing went live (posted, approved or reposted) after this session's page 1 was built."""
+    if not sess.known:
+        return False
+    known = set(sess.known) | set(sess.shown())
+    started = sig.parse_timestamp(sess.started_at)
+    for item in snap.items:
+        if item["id"] not in known:
+            return True
+        posted = sig.parse_timestamp(item.get("posted"))
+        if started and posted and posted > started and item["id"] not in set(sess.shown()):
+            return True
+    return False
 
 
 def get_latest_feed(*, limit: int = 20, page: int = 1, filters: ListingFilters | None = None) -> list[ProductResponse]:

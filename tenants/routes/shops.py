@@ -63,6 +63,12 @@ async def update_shop(
 
         # Replaced or removed logo/banner: delete it from UploadThing if unused.
         background_tasks.add_task(cleanup_removed_media, old_images, new_images)
+    if not shop.get("is_active") and not shop.get("is_personal"):
+        from listingModeration.shops import review_shop_inline
+
+        decision = await review_shop_inline(shop_id)
+        if decision is not None and decision.status.value == "approved":
+            shop["is_active"] = True
     return shop
 
 

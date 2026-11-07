@@ -203,6 +203,13 @@ def sync_product_status(product_id: UUID, decision: ModerationDecision) -> None:
         import asyncio
         from common.events.publishers import publish_product_status_changed
         product = r.data[0]
+        if target == "active":
+            try:
+                from feed.invalidate import invalidate_feed_caches
+
+                invalidate_feed_caches(admin)
+            except Exception:  # noqa: BLE001
+                pass
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(publish_product_status_changed(product, new_status=target, reason=decision.reason))

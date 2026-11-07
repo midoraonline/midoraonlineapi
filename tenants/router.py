@@ -92,8 +92,16 @@ async def create_shop(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    shop_id = str(shop.get("id") or "")
+    if shop_id and not shop.get("is_active"):
+        from listingModeration.shops import review_shop_inline
+
+        decision = await review_shop_inline(shop_id)
+        if decision is not None and decision.status.value == "approved":
+            shop["is_active"] = True
+
     await tenants_service.send_shop_opened_emails(
-        client, user_id, str(shop.get("id") or ""), body.name
+        client, user_id, shop_id, body.name
     )
 
     # Auto-promote customer → merchant; refresh cookies so JWT role matches.

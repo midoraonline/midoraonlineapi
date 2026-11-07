@@ -154,10 +154,13 @@ def assert_price_for_publish(price_ugx: float | None, item_type: str | None) -> 
 
 
 def assert_contact_verified(user_id: str) -> None:
-    """Phone and email must both be verified before a listing is created or published."""
+    """Enforce the phone/email checks that admins have switched on before posting or opening a shop."""
     from auth.contact import contact_verification_status
     from db.supabase import get_supabase_admin
+    from platform_settings import flags
 
+    if not flags.phone_verification_required() and not flags.email_verification_required():
+        return
     row = (
         get_supabase_admin()
         .table("users")
@@ -228,7 +231,11 @@ def assert_can_publish(
 
 
 def assert_owner_phone_for_whatsapp(client: Any, owner_id: str | None) -> bool:
-    """Return True when the seller's phone is verified (WhatsApp CTA allowed)."""
+    """Return True when the WhatsApp CTA may show (verified phone, or phone checks switched off)."""
+    from platform_settings import flags
+
+    if not flags.phone_verification_required():
+        return True
     if not owner_id:
         return False
     try:

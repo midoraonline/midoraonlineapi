@@ -21,3 +21,11 @@ def test_every_template_compiles_without_cid_logo():
     for path in templates._TEMPLATES_DIR.glob("*.mjml"):
         html = templates._render(path.stem)
         assert "cid:midora_logo" not in html, path.name
+
+
+def test_every_template_supports_dark_mode():
+    for path in templates._TEMPLATES_DIR.glob("*.mjml"):
+        html = templates._render(path.stem)
+        assert templates.logo_url() in html and templates.dark_logo_url() in html, path.name
+        assert 'name="color-scheme"' in html and "prefers-color-scheme: dark" in html, path.name
+        assert "em-card" in html and "em-logo-dark" in html, path.name

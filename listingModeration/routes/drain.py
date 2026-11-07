@@ -84,9 +84,12 @@ async def drain_post(authorization: Optional[str] = Header(default=None)) -> Dra
 
 
 async def _run_reconcile() -> dict:
+    from listingModeration.shops import review_inactive_shops
+
     counts = pipeline.reconcile(config.reconcile_limit)
     drained = await pipeline.process_batch(config.batch_size)
-    return {"reconcile": counts, "drain": drained}
+    shops = await review_inactive_shops()
+    return {"reconcile": counts, "drain": drained, "shops": shops}
 
 
 @router.get("/reconcile")

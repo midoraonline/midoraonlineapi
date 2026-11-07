@@ -28,6 +28,8 @@ def test_defaults_when_table_is_empty(monkeypatch):
         "listings_require_review": False,
         "ai_moderation": True,
         "maintenance_mode": False,
+        "phone_verification_required": False,
+        "email_verification_required": False,
     }
     assert all(isinstance(value, bool) for value in public.values())
 

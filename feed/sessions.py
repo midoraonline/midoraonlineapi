@@ -29,6 +29,7 @@ class FeedSession:
     pages: dict[str, list[str]] = field(default_factory=dict)
     recent: list[str] = field(default_factory=list)
     area: str | None = None
+    known: list[str] = field(default_factory=list)
 
     def shown(self) -> list[str]:
         out: list[str] = []
@@ -43,7 +44,7 @@ class FeedSession:
     def as_dict(self) -> dict[str, Any]:
         return {
             "key": self.key, "id": self.id, "started_at": self.started_at, "expires_at": self.expires_at,
-            "pages": self.pages, "recent": self.recent, "area": self.area,
+            "pages": self.pages, "recent": self.recent, "area": self.area, "known": self.known,
         }
 
     @classmethod
@@ -59,6 +60,7 @@ class FeedSession:
             pages={str(k): [str(i) for i in v] for k, v in pages.items() if isinstance(v, list)},
             recent=[str(i) for i in raw.get("recent") or []],
             area=raw.get("area") or None,
+            known=[str(i) for i in raw.get("known") or []],
         )
 
 

@@ -47,22 +47,55 @@ def _compile_template(name: str) -> Template:
     for warning in output.warnings or []:
         logger.warning("mrml warning in %s.mjml: %s", name, warning)
 
-    return Template(output.content)
+    return Template(_with_dark_mode(output.content))
+
+
+# Apple Mail, iOS and Outlook honour prefers-color-scheme; Outlook.com tags dark mode with [data-ogsc].
+_DARK_HEAD = """<meta name="color-scheme" content="light dark" />
+<meta name="supported-color-schemes" content="light dark" />
+<style type="text/css">
+  :root { color-scheme: light dark; supported-color-schemes: light dark; }
+  @media (prefers-color-scheme: dark) {
+    body, .em-body, .em-body > div { background-color: #0f1115 !important; }
+    .em-logo-light { display: none !important; max-height: 0 !important; }
+    .em-logo-dark { display: inline-block !important; max-height: none !important; }
+    .em-card, .em-card > table, .em-card > table > tbody > tr > td { background-color: #181b22 !important; }
+    .em-card td > div, .em-card p, .em-card li, .em-card strong { color: #e5e7eb !important; }
+    .em-body .muted, .em-body .muted div { color: #9ca3af !important; }
+    .em-card .em-code, .em-card .em-code > div { background-color: #2a1c15 !important; color: #f59e6b !important; }
+  }
+  [data-ogsc] .em-logo-light { display: none !important; max-height: 0 !important; }
+  [data-ogsc] .em-logo-dark { display: inline-block !important; max-height: none !important; }
+</style>
+"""
+
+
+def _with_dark_mode(html: str) -> str:
+    if "</head>" not in html:
+        return html
+    return html.replace("</head>", _DARK_HEAD + "</head>", 1)
 
 
 def logo_url() -> str:
+    return f"{_asset_base()}/lightlogo.png"
+
+
+def dark_logo_url() -> str:
+    return f"{_asset_base()}/darklogo.png"
+
+
+def _asset_base() -> str:
     from core.config import get_settings
 
     front = (get_settings().frontend_public_url or "").strip().rstrip("/")
-    if front.startswith("https://"):
-        return f"{front}/logo.png"
-    return "https://www.midoraonline.com/logo.png"
+    return front if front.startswith("https://") else "https://www.midoraonline.com"
 
 
 def _render(name: str, /, **variables: object) -> str:
     """Render a compiled template, substituting ``$var`` placeholders."""
     template = _compile_template(name)
     variables.setdefault("logo_url", logo_url())
+    variables.setdefault("dark_logo_url", dark_logo_url())
     # safe_substitute leaves unknown `$foo` intact rather than raising —
     # protects against email regressions if a caller forgets a var.
     return template.safe_substitute(**variables)
