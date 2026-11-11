@@ -54,3 +54,6 @@ pywebpush>=2.0.0,<3.0
 
 # Tests
 pytest>=8.0.0,<9.0
+
+# Phone number parsing/validation for every country (shop WhatsApp numbers)
+phonenumbers>=8.13,<10

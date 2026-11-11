@@ -31,6 +31,7 @@ class ShopCreate(BaseModel):
     logo_url: str | None = None
     shop_email: str | None = None
     whatsapp_number: str | None = None
+    whatsapp_country: str | None = None
     contacts: list[dict] | None = None
     social_links: list[dict] | None = None
     location: dict | None = None
@@ -65,6 +66,7 @@ class ShopUpdate(BaseModel):
     logo_url: str | None = None
     shop_email: str | None = None
     whatsapp_number: str | None = None
+    whatsapp_country: str | None = None
     contacts: list[dict] | None = None
     social_links: list[dict] | None = None
     location: dict | None = None
@@ -106,6 +108,8 @@ class ShopResponse(BaseModel):
     shop_email: str | None
     whatsapp_number: str | None
     whatsapp_verified: bool = False
+    whatsapp_registered: bool | None = None
+    whatsapp_public: bool = False
     contacts: list[dict] | None
     social_links: list[dict] | None
     location: dict | None
@@ -135,14 +139,6 @@ class ShopResponse(BaseModel):
     seller_name: str | None = None
     joined_at: str | None = None
     last_active_at: str | None = None
-
-
-class SendShopWhatsAppCodeRequest(BaseModel):
-    whatsapp_number: str
-
-
-class ConfirmShopWhatsAppCodeRequest(BaseModel):
-    code: str
 
 
 class ShopListItem(BaseModel):

@@ -53,8 +53,13 @@ async def update_shop(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
+    from common.whatsapp_number import WhatsAppNumberError
+
     old_images = tenants_service.shop_image_urls(client, shop_id)
-    shop = tenants_service.update_shop(client, shop_id, body, viewer_id=user_id)
+    try:
+        shop = tenants_service.update_shop(client, shop_id, body, viewer_id=user_id)
+    except WhatsAppNumberError as exc:
+        raise HTTPException(status_code=400, detail={"detail": str(exc), "code": exc.code}) from exc
     if not shop:
         raise HTTPException(status_code=404, detail="Shop not found")
     new_images = tenants_service.shop_image_urls(client, shop_id)

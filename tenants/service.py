@@ -194,6 +194,15 @@ def list_my_shops(client: Any, owner_id: str, page: int = 1, limit: int = 20) ->
     return {"items": items, "total": total, "page": page, "limit": limit, "total_pages": total_pages}
 
 
+def _clean_whatsapp(number: str | None, country: str | None) -> str | None:
+    """E.164 for a non-empty number (any country, Uganda default); None clears it."""
+    from common.whatsapp_number import normalize_whatsapp
+
+    if not (number or "").strip():
+        return None
+    return normalize_whatsapp(number, country)
+
+
 def _shop_write_payload(data: ShopCreate) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "name": data.name,
@@ -202,7 +211,7 @@ def _shop_write_payload(data: ShopCreate) -> dict[str, Any]:
         "about": data.about,
         "logo_url": data.logo_url,
         "shop_email": data.shop_email,
-        "whatsapp_number": data.whatsapp_number,
+        "whatsapp_number": _clean_whatsapp(data.whatsapp_number, data.whatsapp_country),
         "contacts": data.contacts,
         "social_links": data.social_links,
         "location": data.location,
@@ -296,7 +305,7 @@ def create_shop(client: Any, owner_id: str, data: ShopCreate) -> dict:
 # Columns needed for public shop pages (avoid select *).
 _SHOP_DETAIL_COLS = (
     "id,owner_id,name,slug,category,description,about,logo_url,shop_email,"
-    "whatsapp_number,whatsapp_verified,contacts,social_links,location,availability,theme_config,"
+    "whatsapp_number,whatsapp_verified,whatsapp_registered,whatsapp_public,contacts,social_links,location,availability,theme_config,"
     "shop_type,is_active,is_personal,subscription_end_date,created_at,updated_at,view_count,"
     "trust_score,seller_score,fraud_score,trust_badges,available_now,last_seen_at"
 )
@@ -347,8 +356,10 @@ def get_shop(client: Any, shop_id: str, viewer_id: str | None = None) -> dict | 
     from shop.publish_gates import assert_owner_phone_for_whatsapp
     verified = assert_owner_phone_for_whatsapp(client, out.get("owner_id"))
     out["owner_phone_verified"] = verified
-    if not verified:
-        out["whatsapp_number"] = None
+    is_owner = bool(viewer_id) and str(viewer_id) == str(out.get("owner_id"))
+    if not is_owner:
+        # Shoppers only ever see a number that is on WhatsApp (generated column) and whose owner passed the phone gate.
+        out["whatsapp_number"] = out["whatsapp_number"] if (verified and out["whatsapp_public"]) else None
     return out
 
 
@@ -387,13 +398,21 @@ def update_shop(client: Any, shop_id: str, data: ShopUpdate, viewer_id: str | No
     """
     payload = data.model_dump(exclude_unset=True)
     payload.pop("available_now", None)
+    country = payload.pop("whatsapp_country", None)
     if "theme_config" in payload:
         payload["theme_config"] = _theme_config_for_db(data.theme_config)
     if "whatsapp_number" in payload:
+        payload["whatsapp_number"] = _clean_whatsapp(payload["whatsapp_number"], country)
         current = client.table("shops").select("whatsapp_number").eq("id", shop_id).limit(1).execute()
         current_number = current.data[0].get("whatsapp_number") if current.data else None
         if payload["whatsapp_number"] != current_number:
-            payload["whatsapp_verified"] = False
+            # A different number must prove itself again: OTP or a fresh library check.
+            payload.update(
+                whatsapp_verified=False,
+                whatsapp_registered=None,
+                whatsapp_checked_at=None,
+                whatsapp_check_source=None,
+            )
     if not payload:
         return get_shop(client, shop_id, viewer_id=viewer_id)
     r = client.table("shops").update(payload).eq("id", shop_id).execute()
@@ -422,6 +441,8 @@ def _row_to_shop_response(row: dict) -> dict:
         "shop_email": row.get("shop_email"),
         "whatsapp_number": row.get("whatsapp_number"),
         "whatsapp_verified": bool(row.get("whatsapp_verified") or False),
+        "whatsapp_registered": row.get("whatsapp_registered"),
+        "whatsapp_public": bool(row.get("whatsapp_public")),
         "contacts": row.get("contacts"),
         "social_links": row.get("social_links"),
         "location": row.get("location"),

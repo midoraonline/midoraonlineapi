@@ -84,15 +84,16 @@ class Settings(BaseSettings):
     # Server-side background removal (remove.bg). Full-resolution PNG output.
     remove_bg_api_key: str = Field(default="", alias="REMOVE_BG_API_KEY")
 
-    # Africa's Talking — SMS (phone verification) + WhatsApp (WhatsApp verification)
+    # Africa's Talking — SMS only (account phone verification)
     africastalking_api_key: str = Field(default="", alias="AFRICASTALKING_API_KEY")
     africastalking_username: str = Field(default="", alias="AFRICASTALKING_USERNAME")
     africastalking_sender_id: str = Field(default="", alias="AFRICASTALKING_SENDER_ID")
-    # WhatsApp Business number (E.164) registered with Africa's Talking that
-    # sends OTP messages. Required only for WhatsApp verification.
-    africastalking_whatsapp_number: str = Field(
-        default="", alias="AFRICASTALKING_WHATSAPP_NUMBER"
-    )
+
+    # wa-checker worker (whatsapp-web.js "is this number on WhatsApp?"). Empty URL = disabled,
+    # shops then fall back to OTP verification.
+    wa_checker_url: str = Field(default="", alias="WA_CHECKER_URL")
+    wa_checker_token: str = Field(default="", alias="WA_CHECKER_TOKEN")
+    wa_checker_timeout_seconds: float = Field(default=25.0, alias="WA_CHECKER_TIMEOUT_SECONDS")
 
     # App-auth JWT settings (for custom auth)
     app_jwt_secret: str = Field(default="CHANGE_ME_IN_PROD", alias="APP_JWT_SECRET")

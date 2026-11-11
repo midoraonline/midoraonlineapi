@@ -106,3 +106,4 @@ RateLimitIngest = Annotated[None, Depends(rate_limit(limit=60, window_seconds=60
 RateLimitAi = Annotated[None, Depends(rate_limit(limit=20, window_seconds=60, bucket="ai.public"))]
 RateLimitDemand = Annotated[None, Depends(rate_limit(limit=5, window_seconds=60, bucket="feed.demand"))]
 RateLimitGoogle = Annotated[None, Depends(rate_limit(limit=20, window_seconds=60, bucket="auth.google"))]
+RateLimitWhatsAppCheck = Annotated[None, Depends(rate_limit(limit=6, window_seconds=60, bucket="shop.whatsapp_check"))]

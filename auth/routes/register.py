@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -26,7 +27,9 @@ async def register(
 
     try:
         assert_signups_open()
-        result = sign_up(
+        # bcrypt + several PostgREST calls are blocking; keep them off the event loop (login does too).
+        result = await asyncio.to_thread(
+            sign_up,
             email=body.email,
             password=body.password,
             full_name=body.full_name,

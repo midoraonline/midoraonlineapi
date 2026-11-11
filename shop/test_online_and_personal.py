@@ -395,5 +395,5 @@ def test_personal_seller_card_uses_the_user_profile():
     assert shop["last_active_at"] == "2026-09-01"
     assert "phone_verified" in shop["trust_badges"]
     assert "shop_listed" not in shop["trust_badges"]
-    assert shop["whatsapp_number"] == "+256700"
+    assert shop["whatsapp_number"] is None  # a verified phone is not proof of WhatsApp
     assert shop["logo_url"] == "https://cdn.example/a.png"

@@ -110,10 +110,10 @@ def get_home_feed(
 
             shop_rows = None
             for cols in (
-                "id,name,slug,logo_url,owner_id,whatsapp_number,"
+                "id,name,slug,logo_url,owner_id,whatsapp_number:whatsapp_public,"
                 "is_active,category,trust_score,trust_badges,available_now,location,"
                 "is_personal,created_at,last_seen_at",
-                "id,name,slug,logo_url,owner_id,whatsapp_number,"
+                "id,name,slug,logo_url,owner_id,whatsapp_number:whatsapp_public,"
                 "is_active,category,trust_score,trust_badges,available_now,location",
             ):
                 try:

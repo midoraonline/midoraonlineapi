@@ -1,8 +1,7 @@
-"""OTP codes for phone (SMS), shop WhatsApp, and account email.
+"""OTP codes for phone (SMS) and account email.
 
 `verification_codes.phone_number` stores the contact being proved (E.164
-phone or email). Callers update users.phone_verified / email_verified /
-shops.whatsapp_verified after confirm.
+phone or email). Callers update users.phone_verified / email_verified after confirm.
 """
 
 from __future__ import annotations
@@ -165,11 +164,9 @@ def send_verification_code(
         target_id=target_id,
     )
     message = f"Your Midora verification code is {code}. It expires in {CODE_TTL_MINUTES} minutes."
-    from notifications.africastalking import send_sms, send_whatsapp_text
+    from notifications.africastalking import send_sms
 
-    if channel == "whatsapp":
-        sent = send_whatsapp_text(phone_number, message)
-    elif channel == "sms":
+    if channel == "sms":
         sent = send_sms(phone_number, message)
     else:
         sent = True

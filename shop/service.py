@@ -596,11 +596,11 @@ _DETAIL_COLS = (
     "ai_seo_tags,ai_generated_desc,review_notes,reviewed_at,created_at,view_count,"
 )
 _SHOP_EMBED = (
-    "shops(id,name,slug,logo_url,owner_id,whatsapp_number,"
+    "shops(id,name,slug,logo_url,owner_id,whatsapp_number:whatsapp_public,"
     "is_active,trust_score,available_now,location,trust_badges,created_at,last_seen_at"
 )
 _CARD_SHOP_COLS = (
-    "id,name,slug,whatsapp_number,owner_id,is_active,trust_badges,available_now,"
+    "id,name,slug,whatsapp_number:whatsapp_public,owner_id,is_active,trust_badges,available_now,"
     "created_at,last_seen_at,is_personal"
 )
 

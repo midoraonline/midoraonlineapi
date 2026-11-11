@@ -315,6 +315,13 @@ class AccountInactive(ValueError):
         self.status = status
 
 
+def assert_status_active(status: Any) -> None:
+    """Same rule as assert_account_active, for a status already read with the user row."""
+    value = str(status or "active")
+    if value != "active":
+        raise AccountInactive(value)
+
+
 def assert_account_active(user_id: str) -> None:
     """Raise AccountInactive unless users.status is active (or unreadable)."""
     try:
@@ -343,8 +350,10 @@ def create_access_and_refresh_tokens(
     *,
     user_agent: str | None = None,
     ip: str | None = None,
+    verify_active: bool = True,
 ) -> Tuple[str, str]:
-    assert_account_active(user_id)
+    if verify_active:
+        assert_account_active(user_id)
     access = _encode_jwt(_build_access_claims(user_id, role))
     jti = uuid4().hex
     family_id = str(uuid4())

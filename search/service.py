@@ -269,9 +269,9 @@ def _attach_shops(client: Any, products: list[dict[str, Any]]) -> list[dict[str,
             resp = None
             for cols in (
                 "id,name,slug,logo_url,owner_id,is_active,category,trust_score,location,"
-                "available_now,whatsapp_number,trust_badges,is_personal,created_at,last_seen_at",
+                "available_now,whatsapp_number:whatsapp_public,trust_badges,is_personal,created_at,last_seen_at",
                 "id,name,slug,logo_url,owner_id,is_active,category,trust_score,location,"
-                "available_now,whatsapp_number,trust_badges",
+                "available_now,whatsapp_number:whatsapp_public,trust_badges",
             ):
                 try:
                     resp = client.table("shops").select(cols).in_("id", shop_ids).execute()

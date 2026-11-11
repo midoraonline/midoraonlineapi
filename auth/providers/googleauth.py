@@ -71,9 +71,6 @@ def get_redirect_url(state: str | None = None) -> str:
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": GOOGLE_SCOPES,
-        "access_type": "offline",
-        "include_granted_scopes": "true",
-        "prompt": "consent",
     }
     params["state"] = safe_state
     return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
@@ -159,6 +156,32 @@ def google_email_verified(profile: dict[str, Any]) -> bool:
     return value is True or str(value).strip().lower() == "true"
 
 
+def _find_google_user(google_sub: str | None, email: str) -> dict[str, Any] | None:
+    """One round trip: match by google_sub or email, preferring the sub match."""
+    if not google_sub:
+        return auth_service.lookup_user_by("email", email, columns=_google_columns())
+    client = get_supabase_admin()
+    quoted_email = '"' + email.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    quoted_sub = '"' + google_sub.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    try:
+        rows = (
+            client.table("users")
+            .select(_google_columns())
+            .or_(f"google_sub.eq.{quoted_sub},email.eq.{quoted_email}")
+            .limit(2)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        # google_sub column missing (pre-migration): fall back to the email lookup.
+        return auth_service.lookup_user_by("email", email, columns=_google_columns())
+    for row in rows:
+        if row.get("google_sub") == google_sub:
+            return row
+    return rows[0] if rows else None
+
+
 def _get_or_create_local_user(google_profile: dict[str, Any]) -> dict[str, Any]:
     client = get_supabase_admin()
     email = str(google_profile["email"]).strip().lower()
@@ -166,11 +189,7 @@ def _get_or_create_local_user(google_profile: dict[str, Any]) -> dict[str, Any]:
     google_sub = str(google_profile.get("sub") or "").strip() or None
     verified_by_google = google_email_verified(google_profile)
 
-    user = None
-    if google_sub:
-        user = auth_service.lookup_user_by("google_sub", google_sub, columns=_google_columns())
-    if user is None:
-        user = auth_service.lookup_user_by("email", email, columns=_google_columns())
+    user = _find_google_user(google_sub, email)
     if user:
         updates: dict[str, Any] = {}
         if not user.get("email_verified") and verified_by_google:
@@ -248,9 +267,12 @@ def handle_callback(code: str, state: str | None = None) -> dict[str, Any]:
     profiled = time.perf_counter()
     user = _get_or_create_local_user(google_profile)
     stored = time.perf_counter()
+    # The row we just read already carries `status`; skip a second users query.
+    auth_service.assert_status_active(user.get("status"))
     access_token, refresh_token = auth_service.create_access_and_refresh_tokens(
         user_id=str(user["id"]),
         role=user.get("user_role", "customer"),
+        verify_active=False,
     )
     logger.info(
         "auth:google source=%s token_ms=%.1f profile_ms=%.1f db_ms=%.1f refresh_ms=%.1f total_ms=%.1f",

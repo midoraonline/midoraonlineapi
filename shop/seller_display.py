@@ -42,8 +42,7 @@ def apply_seller_profile(shop: dict[str, Any], user: dict | None) -> None:
     shop["trust_badges"] = badges
     if not shop.get("logo_url") and user.get("avatar_url"):
         shop["logo_url"] = user.get("avatar_url")
-    if user.get("phone_verified") and user.get("phone_number") and not shop.get("whatsapp_number"):
-        shop["whatsapp_number"] = user.get("phone_number")
+    # A verified phone is not proof of WhatsApp, so it is never promoted to a WhatsApp number here.
 
 
 def _load_users(client: Any, user_ids: list[str]) -> dict[str, dict]:

@@ -59,6 +59,7 @@ def sign_up(
         role=user.get("user_role", "customer"),
         user_agent=user_agent,
         ip=ip,
+        verify_active=False,
     )
     return {
         "user": user,
@@ -81,11 +82,13 @@ def sign_in(
     if not user:
         raise ValueError("Invalid email or password")
     verified = time.perf_counter()
+    auth_service.assert_status_active(user.get("status"))
     access_token, refresh_token = auth_service.create_access_and_refresh_tokens(
         user_id=str(user["id"]),
         role=user.get("user_role", "customer"),
         user_agent=user_agent,
         ip=ip,
+        verify_active=False,
     )
     logger.info(
         "auth:login token_ms=%.1f total_ms=%.1f",
