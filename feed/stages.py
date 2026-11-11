@@ -61,8 +61,6 @@ class StagePlan:
 def plan_for(by_lane: dict[str, int], *, eligible: int | None = None) -> StagePlan:
     total = sum(by_lane.values()) if eligible is None else eligible
     stage = stage_for(total)
-    targets = lane_targets()
-    deep = all(by_lane.get(lane, 0) >= C.TYPE_DEPTH_BLOCKS * targets[lane] for lane in LANES)
     exploration = 0
     if stage == 3:
         exploration = C.EXPLORATION_STAGE_3
@@ -72,7 +70,7 @@ def plan_for(by_lane: dict[str, int], *, eligible: int | None = None) -> StagePl
         stage=stage,
         eligible=total,
         by_lane=dict(by_lane),
-        type_mix=stage >= C.TYPE_MIX_MIN_STAGE and deep,
+        type_mix=stage >= C.TYPE_MIX_MIN_STAGE,
         exploration_per_block=exploration,
         paid=stage >= C.PAID_MIN_STAGE,
     )

@@ -101,3 +101,83 @@ def test_new_listing_count(monkeypatch):
     monkeypatch.setattr(sessions, "load", lambda db, key: sess)
     monkeypatch.setattr(service, "current_snapshot", lambda db: snap)
     assert service.new_listing_count(None, user_id=None, session_id="abcdef123456") == 2
+
+
+# --- session stays put; own posts refresh it; the type mix survives rings and recents ---
+
+from datetime import timedelta as _td  # noqa: E402
+
+
+class _Shops:
+    def __init__(self, owned):
+        self.owned, self._ids = owned, []
+
+    def table(self, _name):
+        return self
+
+    def select(self, *_a):
+        return self
+
+    def eq(self, *_a):
+        return self
+
+    def in_(self, _k, ids):
+        self._ids = ids
+        return self
+
+    def limit(self, _n):
+        return self
+
+    def execute(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(data=[{"id": i} for i in self._ids if i in self.owned])
+
+
+def _session_with_new(shop):
+    snap = _snap(30)
+    sess = _fresh()
+    service.build_session_page(sess, snap, page=1, limit=20)
+    sess.known = snap.ids()
+    later = _snap(30)
+    later.items.append(
+        {"id": "new1", "shop": shop, "lane": "product", "score": 99, "quality": 80,
+         "posted": (NOW + _td(minutes=5)).isoformat(), "mode": "organic"}
+    )
+    return sess, later
+
+
+def test_other_peoples_new_listing_does_not_restart_the_session():
+    sess, snap = _session_with_new("someone_else")
+    assert service._own_listing_new(_Shops({"mine"}), sess, snap, "u1") is False
+    assert [i["id"] for i in service._new_listings(sess, snap)] == ["new1"]  # counted, so the banner can say so
+
+
+def test_own_new_listing_restarts_the_session():
+    sess, snap = _session_with_new("mine")
+    assert service._own_listing_new(_Shops({"mine"}), sess, snap, "u1") is True
+    assert service._own_listing_new(_Shops({"mine"}), sess, snap, None) is False
+
+
+def test_type_mix_holds_across_location_rings_and_recents():
+    items = []
+    for lane, n in (("product", 80), ("service", 40), ("opportunity", 30)):
+        for i in range(n):
+            items.append({"id": f"{lane[0]}{i}", "shop": f"{lane[0]}s{i}", "lane": lane, "score": 100 - i,
+                          "quality": 80, "posted": (NOW - _td(days=2)).isoformat(), "mode": "organic",
+                          "cat": f"c{i % 7}"})
+    snap = Snapshot(version="v1", plan=StagePlan(stage=3, eligible=len(items), type_mix=True), items=items)
+
+    def rings(pool):  # products are all "local"; services and opportunities only exist further out
+        out = [[], [], []]
+        for e in pool:
+            out[{"product": 0, "service": 1, "opportunity": 2}[e["lane"]]].append(e)
+        return out
+
+    sess = _fresh()
+    sess.recent = [f"p{i}" for i in range(10)]
+    ids, _, _ = service.build_session_page(sess, snap, page=1, limit=40, order=rings)
+    by_id = {i["id"]: i["lane"] for i in items}
+    for block in (ids[:20], ids[20:40]):
+        lanes = [by_id[x] for x in block]
+        assert (lanes.count("product"), lanes.count("service"), lanes.count("opportunity")) == (12, 5, 3)

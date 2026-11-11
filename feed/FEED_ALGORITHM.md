@@ -24,15 +24,15 @@ Code: `feed/service.py` (build + serve), `quality.py`, `stages.py`, `scoring.py`
 | Stage | Eligible listings | Type mix | Exploration per 20 | Paid per 20 |
 |---|---|---|---|---|
 | 0 | 0 | – | – | – |
-| 1 | 1–49 | no | 0 | 1 |
-| 2 | 50–199 | no | 0 | 1 |
-| 3 | 200–499 | 60/25/15 if every type is deep | 1 | 1 |
+| 1 | 1–49 | 60/25/15 | 0 | 1 |
+| 2 | 50–199 | 60/25/15 | 0 | 1 |
+| 3 | 200–499 | 60/25/15 | 1 | 1 |
 | 4 | 500–999 | same | 2 | 1 |
 | 5 | 1,000–4,999 | same, engagement starts counting | 2 | 1 |
 | 6 | 5,000+ | same | 2 | 1 |
 
-A type is deep when it has at least 3 blocks' worth of its target
-(products 12, services 5, opportunities 3 per block). Thin types never get forced.
+The mix is on from the first listing. Per block of 20: 12 products, 5 services, 3 opportunities.
+A type with fewer listings than its share simply gives its slots to the others; nothing is invented.
 
 ## 3. Listing quality (0–100)
 
@@ -65,7 +65,8 @@ Medium fraud flags subtract 20. `listing_score` no longer contains boost points
 - Cards are placed in blocks of 20, best score first.
 - Soft seller rules: at most 2 cards per seller per block and no seller twice in a row.
   When supply is thin the rules relax (spacing first, then the cap) instead of ending the feed.
-- From stage 3, when types are deep, each pick goes to the type furthest below its block target.
+- From the first listing, each pick goes to the type furthest below its block target, across the whole page
+  (location ring and recently-shown only set a preference order inside each type).
 - Exploration slots (stage 3+) go to quality ≥ 60 listings with under 50 impressions in 24 h,
   preferring fresh and high-quality ones. If none qualify, the slot stays organic.
 

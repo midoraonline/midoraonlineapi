@@ -98,7 +98,9 @@ def _lane_keeps(block: list[Entry], targets: dict[str, int], remaining: list[Ent
 
 
 def place(entries: list[Entry], plan: StagePlan, *, limit: int | None = None, offset: int = 0) -> list[Entry]:
-    remaining = sorted(entries, key=lambda e: e["score"], reverse=True)
+    # `tier` (optional) ranks groups such as local/nearby/wider and not-recently-shown first;
+    # score orders within a tier. Lane targets still apply across all tiers of the page.
+    remaining = sorted(entries, key=lambda e: (e.get("tier", 0), -e["score"]))
     explore_at = exploration_positions(plan.exploration_per_block)
     targets = lane_targets() if plan.type_mix else {}
     cap = min(C.RANKED_MAX, limit) if limit is not None else C.RANKED_MAX

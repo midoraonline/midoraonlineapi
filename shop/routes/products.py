@@ -1,6 +1,7 @@
 from typing import Annotated
 import logging
 
+from pydantic import BaseModel
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from supabase import Client
 
@@ -221,12 +222,14 @@ async def create_listing(
     background_tasks: BackgroundTasks,
     client: Annotated[Client, Depends(get_supabase_client)],
     user_id: str = Depends(get_current_user_id),
+    personal: bool = Query(False, description="Explicit 'Other': publish on the personal profile, never a shop."),
 ):
     """Publish a listing without choosing a shop.
 
     A hidden personal seller profile is created on first use. If the user
-    already has one real shop, the listing is attached to it. Several real
-    shops require POST /shops/{shop_id}/products.
+    already has one real shop, the listing is attached to it, unless
+    `personal=true` (the "Other" choice). Several real shops require
+    POST /shops/{shop_id}/products or `personal=true`.
     """
     from auth import service as auth_service
     from auth.cookies import set_auth_cookies
@@ -234,7 +237,7 @@ async def create_listing(
 
     assert_posting_open()
     try:
-        shop_id, _created_personal = resolve_shop_for_direct_post(client, user_id)
+        shop_id, _created_personal = resolve_shop_for_direct_post(client, user_id, personal_only=personal)
     except ShopChoiceRequired:
         raise HTTPException(
             status_code=400,
@@ -583,6 +586,46 @@ async def update_product(
         from media.cleanup import cleanup_removed_media
 
         background_tasks.add_task(cleanup_removed_media, old_urls, updated.get("image_urls") or [])
+    return updated
+
+
+class MoveListingBody(BaseModel):
+    shop_id: str | None = None  # None = "Other" (no shop)
+
+
+@router_products.post("/{product_id}/move", response_model=ProductResponse)
+async def move_product(
+    product_id: str,
+    body: MoveListingBody,
+    client: Annotated[Client, Depends(get_supabase_client)],
+    user_id: str = Depends(get_current_user_id),
+):
+    """Attach a listing to one of your shops, or detach it to "Other"."""
+    from shop.move import MoveError, move_listing
+    from shop.personal import PersonalShopUnavailable
+
+    try:
+        move_listing(client, product_id, user_id, body.shop_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Listing or shop not found")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except MoveError as exc:
+        raise HTTPException(status_code=400, detail={"detail": str(exc), "code": exc.code})
+    except PersonalShopUnavailable:
+        raise HTTPException(
+            status_code=400,
+            detail={"detail": "Run migration 043_personal_seller_shops.sql first.", "code": "migration_required"},
+        )
+
+    from core.next_cache import revalidate_nextjs_cache_tag
+    from feed.invalidate import invalidate_feed_caches
+
+    invalidate_feed_caches(get_supabase_admin())
+    revalidate_nextjs_cache_tag("shops")
+    updated = shop_service.get_product(client, product_id, user_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Product not found")
     return updated
 
 

@@ -21,18 +21,26 @@ def test_stage_thresholds_follow_growth_stages():
     ]
 
 
-def test_mvp_stage_has_no_paid_slots_exploration_or_type_mix():
+def test_mvp_stage_has_no_paid_slots_or_exploration_but_mixes_types():
     plan = plan_for({"product": 120, "service": 40, "opportunity": 30})
     assert plan.stage == 2
-    assert not plan.paid and not plan.type_mix and plan.exploration_per_block == 0
+    assert plan.type_mix and not plan.paid and plan.exploration_per_block == 0
 
 
-def test_type_mix_needs_depth_in_every_lane():
+def test_type_mix_is_on_from_the_first_listing_even_with_thin_lanes():
+    assert plan_for({"product": 3}).type_mix
     thin = plan_for({"product": 400, "service": 50, "opportunity": 4})
-    deep = plan_for({"product": 400, "service": 50, "opportunity": 40})
-    assert thin.stage == deep.stage == 3
-    assert thin.paid and thin.exploration_per_block == 1
-    assert not thin.type_mix and deep.type_mix
+    assert thin.stage == 3 and thin.type_mix and thin.paid
+    assert not plan_for({}).type_mix
+
+
+def test_thin_lane_gets_what_exists_and_products_fill_the_rest():
+    entries = (
+        [_entry(f"p{i}", f"ps{i}", 100 - i) for i in range(30)]
+        + [_entry("s0", "ss0", 1, lane="service")]
+    )
+    out = P.place(entries, plan_for({"product": 30, "service": 1}))
+    assert len(out) == 31 and [e["lane"] for e in out[:20]].count("service") == 1
 
 
 def test_lane_mapping():

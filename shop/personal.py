@@ -98,12 +98,17 @@ def get_or_create_personal_shop(client: Any, owner_id: str) -> tuple[str, bool]:
     return str(r.data[0]["id"]), True
 
 
-def resolve_shop_for_direct_post(client: Any, owner_id: str) -> tuple[str, bool]:
+def resolve_shop_for_direct_post(
+    client: Any, owner_id: str, *, personal_only: bool = False
+) -> tuple[str, bool]:
     """Shop id for a listing posted without a shop id.
 
     Returns (shop_id, created_personal).
     One real shop is reused. Several real shops require an explicit shop id.
+    `personal_only` is the explicit "Other / no shop" choice: always the personal profile.
     """
+    if personal_only:
+        return get_or_create_personal_shop(client, owner_id)
     personal = find_personal_shop(client, owner_id)
     if personal and personal.get("id"):
         return str(personal["id"]), False

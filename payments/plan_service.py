@@ -176,6 +176,16 @@ def assert_can_create_product(client: Any, shop_id: str, owner_id: str) -> None:
         assert_identity_verified(client, shop_id, detail=IDENTITY_LISTING_DETAIL)
 
 
+def assert_shop_has_room(client: Any, shop_id: str, owner_id: str) -> None:
+    """Per-shop item cap only. Used when an existing listing moves in: the owner's total does not grow."""
+    plan = get_user_plan(client, owner_id)
+    if _count(client, "products", "shop_id", shop_id) >= plan["max_products_per_shop"]:
+        raise PermissionError(
+            f"Your {plan['name']} plan allows up to {plan['max_products_per_shop']} item(s) per shop. "
+            "Upgrade your plan to list more items."
+        )
+
+
 def assert_identity_for_paid_plan(client: Any, shop_id: str, plan_tier: str) -> None:
     """Phase 3 unlock: Standard/Premium require Identity Verified."""
     tier = (plan_tier or BASIC).strip().lower()

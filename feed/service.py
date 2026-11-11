@@ -316,12 +316,12 @@ def build_session_page(
         pool = [_pool_entry(i) for i in snap.items if i["id"] not in shown]
         recent = set(sess.recent)
         groups = order(pool) if order else [pool]
-        picked: list[dict[str, Any]] = []
-        for group in groups:
-            for subset in ([e for e in group if e["id"] not in recent], [e for e in group if e["id"] in recent]):
-                if len(picked) >= limit or not subset:
-                    continue
-                picked += placement.place(subset, snap.plan, limit=limit - len(picked), offset=(n - 1) * limit + len(picked))
+        # One placement over the whole page: location ring and "recently shown" only set a
+        # preference (tier), so the type mix holds for every block of 20 across rings.
+        for gi, group in enumerate(groups):
+            for e in group:
+                e["tier"] = gi * 2 + (1 if e["id"] in recent else 0)
+        picked = placement.place([e for g in groups for e in g], snap.plan, limit=limit, offset=(n - 1) * limit)
         sess.pages[str(n)] = [e["id"] for e in picked]
         reasons.update({e["id"]: e.get("reason") or "ranked" for e in picked})
     ids = sess.pages.get(str(page), [])
@@ -541,25 +541,48 @@ def get_session_feed(
     )
     if sess is None:
         return None
-    if page == 1 and not refresh and sess.pages and _new_since(sess, current_snapshot(db)):
-        # Same order as before plus the new listings; no "seen before" demotion on a plain reload.
+    if page == 1 and not refresh and sess.pages and _own_listing_new(db, sess, current_snapshot(db), user_id):
+        # The viewer just posted: rebuild their session so their listing shows. Other people's
+        # new listings never enter a session; they are announced by /home/new instead.
         sess = sessions.start(sess.key, now, area=sess.area)
     return _session_home_page(db, sess, page=page, limit=limit)
 
 
+def _new_listings(sess: sessions.FeedSession, snap: snapshots.Snapshot) -> list[dict[str, Any]]:
+    """Listings that went live (posted, approved or reposted) after this session's page 1 was built."""
+    if not sess.known:
+        return []
+    shown = set(sess.shown())
+    known = set(sess.known) | shown
+    started = sig.parse_timestamp(sess.started_at)
+    out = []
+    for item in snap.items:
+        if item["id"] in shown:
+            continue
+        posted = sig.parse_timestamp(item.get("posted"))
+        if item["id"] not in known or (started and posted and posted > started):
+            out.append(item)
+    return out
+
+
 def _new_since(sess: sessions.FeedSession, snap: snapshots.Snapshot) -> bool:
     """A listing went live (posted, approved or reposted) after this session's page 1 was built."""
-    if not sess.known:
+    return bool(_new_listings(sess, snap))
+
+
+def _own_listing_new(db: Client, sess: sessions.FeedSession, snap: snapshots.Snapshot, user_id: str | None) -> bool:
+    """True when one of the new listings belongs to a shop the viewer owns."""
+    if not user_id:
         return False
-    known = set(sess.known) | set(sess.shown())
-    started = sig.parse_timestamp(sess.started_at)
-    for item in snap.items:
-        if item["id"] not in known:
-            return True
-        posted = sig.parse_timestamp(item.get("posted"))
-        if started and posted and posted > started and item["id"] not in set(sess.shown()):
-            return True
-    return False
+    shop_ids = {str(i.get("shop")) for i in _new_listings(sess, snap) if i.get("shop")}
+    if not shop_ids:
+        return False
+    try:
+        rows = db.table("shops").select("id").eq("owner_id", user_id).in_("id", sorted(shop_ids)).limit(1).execute()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("own new listing check skipped: %s", exc)
+        return False
+    return bool(rows.data)
 
 
 def get_latest_feed(*, limit: int = 20, page: int = 1, filters: ListingFilters | None = None) -> list[ProductResponse]:
