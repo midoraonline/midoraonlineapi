@@ -1,4 +1,4 @@
-"""Shop WhatsApp numbers: normalised for every country, checked via the worker, hidden unless on WhatsApp."""
+"""Shop WhatsApp numbers: normalised for every country, verified by a Cloud API code, hidden until verified."""
 import pathlib
 import re
 from types import SimpleNamespace
@@ -7,7 +7,7 @@ import pytest
 
 from shop.routes import whatsapp as whatsapp_routes
 from common.whatsapp_number import WhatsAppNumberError, link_digits, normalize_whatsapp
-from shop import whatsapp_check
+from notifications import whatsapp_cloud
 from tenants import service as tenants_service
 from tenants.schemas import ShopUpdate
 
@@ -40,115 +40,183 @@ def test_link_digits_has_no_plus():
     assert link_digits("+256700123456") == "256700123456"
 
 
-# ---- lookup order: cache, then worker, unknown never recorded -------------------------------
+# ---- extra shop phone numbers ------------------------------------------------------------------
 
-def test_cache_hit_skips_worker(monkeypatch):
-    monkeypatch.setattr(whatsapp_check, "cached_result", lambda e164: True)
-    monkeypatch.setattr(whatsapp_check, "ask_worker", lambda e164: pytest.fail("worker must not be called"))
-    assert whatsapp_check.lookup("+256700123456") == (True, "cache")
+def test_extra_contacts_are_normalised_and_typed():
+    from common.whatsapp_number import clean_shop_contacts
 
-
-def test_live_answer_is_cached(monkeypatch):
-    stored = []
-    monkeypatch.setattr(whatsapp_check, "cached_result", lambda e164: None)
-    monkeypatch.setattr(whatsapp_check, "ask_worker", lambda e164: False)
-    monkeypatch.setattr(whatsapp_check, "_store", lambda *a: stored.append(a))
-    assert whatsapp_check.lookup("+256700123456") == (False, "library")
-    assert stored == [("+256700123456", False, "library")]
-
-
-def test_worker_down_is_unknown_and_not_cached(monkeypatch):
-    monkeypatch.setattr(whatsapp_check, "cached_result", lambda e164: None)
-    monkeypatch.setattr(whatsapp_check, "ask_worker", lambda e164: None)
-    monkeypatch.setattr(whatsapp_check, "_store", lambda *a: pytest.fail("unknown must not be cached"))
-    assert whatsapp_check.lookup("+256700123456") == (None, "unavailable")
+    out = clean_shop_contacts([
+        {"type": "phone", "label": " Branch ", "value": "0700123456"},
+        {"type": "whatsapp", "value": "+254712345678"},
+        {"type": "javascript", "value": "0701234567"},
+        {"value": "   "},
+    ])
+    assert out == [
+        {"type": "phone", "label": "Branch", "value": "+256700123456"},
+        {"type": "whatsapp", "label": None, "value": "+254712345678"},
+        {"type": "phone", "label": None, "value": "+256701234567"},
+    ]
 
 
-def test_unknown_leaves_shop_untouched(monkeypatch):
-    monkeypatch.setattr(whatsapp_check, "get_supabase_admin", lambda: pytest.fail("no write for unknown"))
-    whatsapp_check.record_on_shop("s1", None, "unavailable")
+@pytest.mark.parametrize(
+    "contacts",
+    [
+        [{"value": n} for n in ("0700123456", "0701234567", "0702234567", "0703234567")],
+        [{"type": "whatsapp", "value": "0700123456"}, {"type": "whatsapp", "value": "0701234567"}],
+        [{"value": "0700123456"}, {"value": "+256700123456"}],
+        [{"value": "12"}],
+    ],
+)
+def test_extra_contacts_rules(contacts):
+    from common.whatsapp_number import clean_shop_contacts
 
+    with pytest.raises(WhatsAppNumberError):
+        clean_shop_contacts(contacts)
+
+
+def test_shop_by_slug_hides_unverified_numbers_from_buyers(monkeypatch):
+    row = {
+        "id": "s", "owner_id": "o", "whatsapp_number": "+256700123456", "whatsapp_public": None,
+        "contacts": [{"type": "phone", "value": "+256701234567"}],
+    }
+    client = SimpleNamespace(table=lambda name: _Table([], data=[row]))
+    monkeypatch.setattr(tenants_service.engagement_service, "get_shop_engagement", lambda *a, **k: {})
+    monkeypatch.setattr("shop.publish_gates.assert_owner_phone_for_whatsapp", lambda *a: False)
+    out = tenants_service.get_shop_by_slug(client, "s", viewer_id=None)
+    assert out["whatsapp_number"] is None and out["contacts"] == []
+    owner = tenants_service.get_shop_by_slug(client, "s", viewer_id="o")
+    assert owner["whatsapp_number"] == "+256700123456" and owner["contacts"]
+
+
+# ---- Cloud API sender -------------------------------------------------------------------------
 
 class _Resp:
     def __init__(self, status, body=None):
         self.status_code, self._body, self.text = status, body or {}, str(body)
+        self.content = b"x"
 
     def json(self):
         return self._body
 
 
-def _configure(monkeypatch, url="https://checker.example"):
-    settings = SimpleNamespace(wa_checker_url=url, wa_checker_token="tok", wa_checker_timeout_seconds=1)
-    monkeypatch.setattr(whatsapp_check, "get_settings", lambda: settings)
+def _configure(monkeypatch, token="tok"):
+    settings = SimpleNamespace(
+        whatsapp_api_url="https://graph.facebook.com",
+        whatsapp_api_version="v21.0",
+        whatsapp_api_token=token,
+        whatsapp_phone_number_id="123",
+        whatsapp_message_template="midorawhatsapp",
+        whatsapp_template_language="en_US",
+        whatsapp_timeout_seconds=1,
+    )
+    monkeypatch.setattr(whatsapp_cloud, "get_settings", lambda: settings)
 
 
-@pytest.mark.parametrize(
-    "status,body,expected",
-    [(200, {"registered": True}, True), (200, {"registered": False}, False),
-     (429, {"error": "rate_limited"}, None), (503, {"error": "unavailable"}, None),
-     (200, {"registered": "maybe"}, None)],
-)
-def test_worker_responses(monkeypatch, status, body, expected):
-    _configure(monkeypatch)
-    monkeypatch.setattr(whatsapp_check.httpx, "post", lambda *a, **k: _Resp(status, body))
-    assert whatsapp_check.ask_worker("+256700123456") is expected
-
-
-def test_worker_network_error_is_unknown(monkeypatch):
-    _configure(monkeypatch)
-
-    def boom(*a, **k):
-        raise whatsapp_check.httpx.ConnectError("down")
-
-    monkeypatch.setattr(whatsapp_check.httpx, "post", boom)
-    assert whatsapp_check.ask_worker("+256700123456") is None
-
-
-def test_disabled_without_config(monkeypatch):
-    _configure(monkeypatch, url="")
-    monkeypatch.setattr(whatsapp_check.httpx, "post", lambda *a, **k: pytest.fail("must not call"))
-    assert whatsapp_check.ask_worker("+256700123456") is None
-
-
-def test_worker_gets_bearer_token_and_e164(monkeypatch):
+def test_otp_is_sent_as_authentication_template(monkeypatch):
     _configure(monkeypatch)
     seen = {}
 
     def fake_post(url, json, headers, timeout):
         seen.update(url=url, json=json, headers=headers)
-        return _Resp(200, {"registered": True})
+        return _Resp(200, {"messages": [{"id": "wamid.ABC"}]})
 
-    monkeypatch.setattr(whatsapp_check.httpx, "post", fake_post)
-    whatsapp_check.ask_worker("+256700123456")
-    assert seen["url"] == "https://checker.example/check"
-    assert seen["json"] == {"number": "+256700123456"}
+    monkeypatch.setattr(whatsapp_cloud.httpx, "post", fake_post)
+    assert whatsapp_cloud.send_otp("+256700123456", "482913") == "wamid.ABC"
+    assert seen["url"] == "https://graph.facebook.com/v21.0/123/messages"
     assert seen["headers"]["Authorization"] == "Bearer tok"
+    body = seen["json"]
+    assert body["to"] == "256700123456"
+    assert body["template"]["name"] == "midorawhatsapp"
+    body_param, button = body["template"]["components"]
+    assert body_param["parameters"][0]["text"] == "482913"
+    assert button["sub_type"] == "url" and button["parameters"][0]["text"] == "482913"
 
 
-# ---- Africa's Talking WhatsApp is gone; only the library decides ------------------------------
-
-def test_no_whatsapp_otp_left():
-    from notifications import africastalking
-
-    assert not hasattr(africastalking, "send_whatsapp_text")
-    fields = get_settings_module().Settings.model_fields
-    assert "africastalking_api_key" in fields  # SMS config stays; proves we are reading the right thing
-    assert "africastalking_whatsapp_number" not in fields
-    paths = {getattr(r, "path", "") for r in whatsapp_routes.router.routes}
-    assert paths == {"/{shop_id}/whatsapp/check"}
+@pytest.mark.parametrize("status,body", [(400, {"error": {"code": 132001}}), (401, {}), (200, {"messages": []})])
+def test_rejected_send_returns_none(monkeypatch, status, body):
+    _configure(monkeypatch)
+    monkeypatch.setattr(whatsapp_cloud.httpx, "post", lambda *a, **k: _Resp(status, body))
+    assert whatsapp_cloud.send_otp("+256700123456", "111111") is None
 
 
-def get_settings_module():
+def test_network_error_returns_none(monkeypatch):
+    _configure(monkeypatch)
+
+    def boom(*a, **k):
+        raise whatsapp_cloud.httpx.ConnectError("down")
+
+    monkeypatch.setattr(whatsapp_cloud.httpx, "post", boom)
+    assert whatsapp_cloud.send_otp("+256700123456", "111111") is None
+
+
+def test_unconfigured_never_calls_meta(monkeypatch):
+    _configure(monkeypatch, token="")
+    monkeypatch.setattr(whatsapp_cloud.httpx, "post", lambda *a, **k: pytest.fail("must not call"))
+    assert whatsapp_cloud.send_otp("+256700123456", "111111") is None
+
+
+def _status_settings(monkeypatch):
+    _configure(monkeypatch)
+    whatsapp_cloud.get_settings().whatsapp_business_account_id = "waba"
+
+
+def _graph(phone_resp, template_resp):
+    def fake_get(url, params, headers, timeout):
+        return template_resp if url.endswith("/message_templates") else phone_resp
+    return fake_get
+
+
+def test_status_ready_when_template_approved(monkeypatch):
+    _status_settings(monkeypatch)
+    monkeypatch.setattr(whatsapp_cloud.httpx, "get", _graph(
+        _Resp(200, {"display_phone_number": "+256 792", "verified_name": "Midora"}),
+        _Resp(200, {"data": [{"name": "midorawhatsapp", "status": "APPROVED", "category": "AUTHENTICATION"}]}),
+    ))
+    assert whatsapp_cloud.connection_status()["ready"] is True
+
+
+def test_status_explains_pending_template(monkeypatch):
+    _status_settings(monkeypatch)
+    monkeypatch.setattr(whatsapp_cloud.httpx, "get", _graph(
+        _Resp(200, {"display_phone_number": "+256 792"}),
+        _Resp(200, {"data": [{"name": "midorawhatsapp", "status": "PENDING", "category": "AUTHENTICATION"}]}),
+    ))
+    out = whatsapp_cloud.connection_status()
+    assert out["ready"] is False
+    assert "review" in out["checks"][2]["detail"]
+
+
+def test_status_flags_expired_token(monkeypatch):
+    _status_settings(monkeypatch)
+    expired = _Resp(401, {"error": {"code": 190, "message": "expired"}})
+    monkeypatch.setattr(whatsapp_cloud.httpx, "get", _graph(expired, expired))
+    out = whatsapp_cloud.connection_status()
+    assert out["ready"] is False and "token" in out["checks"][1]["detail"]
+
+
+def test_status_lists_missing_settings(monkeypatch):
+    _configure(monkeypatch, token="")
+    whatsapp_cloud.get_settings().whatsapp_business_account_id = ""
+    monkeypatch.setattr(whatsapp_cloud.httpx, "get", lambda *a, **k: pytest.fail("must not call Meta"))
+    out = whatsapp_cloud.connection_status()
+    assert out["ready"] is False and "WHATSAPP_API_TOKEN" in out["checks"][0]["detail"]
+
+
+def test_only_code_routes_exist():
     from core import config
 
-    return config
+    fields = config.Settings.model_fields
+    assert not any(name.startswith("wa_checker") for name in fields)
+    paths = {getattr(r, "path", "") for r in whatsapp_routes.router.routes}
+    assert paths == {"/{shop_id}/whatsapp/send-code", "/{shop_id}/whatsapp/verify"}
 
 
 # ---- changing the number resets what we knew about the old one ---------------------------------
 
 class _Table:
-    def __init__(self, log):
+    def __init__(self, log, data=None):
         self.log = log
+        self.data = data if data is not None else [{"whatsapp_number": "+256700000001"}]
 
     def select(self, *_):
         return self
@@ -164,7 +232,7 @@ class _Table:
         return self
 
     def execute(self):
-        return SimpleNamespace(data=[{"whatsapp_number": "+256700000001"}])
+        return SimpleNamespace(data=self.data)
 
 
 def test_changing_number_resets_verification(monkeypatch):

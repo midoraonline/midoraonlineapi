@@ -1,4 +1,4 @@
-"""Africa's Talking SMS sender (account phone-number OTP). WhatsApp is checked by wa-checker, not here."""
+"""Africa's Talking SMS sender (account phone-number OTP). WhatsApp codes go through notifications.whatsapp_cloud."""
 
 from __future__ import annotations
 

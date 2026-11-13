@@ -203,6 +203,12 @@ def _clean_whatsapp(number: str | None, country: str | None) -> str | None:
     return normalize_whatsapp(number, country)
 
 
+def _clean_contacts(contacts: list[dict] | None) -> list[dict] | None:
+    from common.whatsapp_number import clean_shop_contacts
+
+    return clean_shop_contacts(contacts)
+
+
 def _shop_write_payload(data: ShopCreate) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "name": data.name,
@@ -212,7 +218,7 @@ def _shop_write_payload(data: ShopCreate) -> dict[str, Any]:
         "logo_url": data.logo_url,
         "shop_email": data.shop_email,
         "whatsapp_number": _clean_whatsapp(data.whatsapp_number, data.whatsapp_country),
-        "contacts": data.contacts,
+        "contacts": _clean_contacts(data.contacts),
         "social_links": data.social_links,
         "location": data.location,
         "availability": data.availability,
@@ -353,6 +359,10 @@ def get_shop(client: Any, shop_id: str, viewer_id: str | None = None) -> dict | 
         )
     )
     _decorate_seller(client, out)
+    return _gate_public_contacts(client, out, viewer_id)
+
+
+def _gate_public_contacts(client: Any, out: dict, viewer_id: str | None) -> dict:
     from shop.publish_gates import assert_owner_phone_for_whatsapp
     verified = assert_owner_phone_for_whatsapp(client, out.get("owner_id"))
     out["owner_phone_verified"] = verified
@@ -360,6 +370,8 @@ def get_shop(client: Any, shop_id: str, viewer_id: str | None = None) -> dict | 
     if not is_owner:
         # Shoppers only ever see a number that is on WhatsApp (generated column) and whose owner passed the phone gate.
         out["whatsapp_number"] = out["whatsapp_number"] if (verified and out["whatsapp_public"]) else None
+        if not verified:
+            out["contacts"] = []
     return out
 
 
@@ -375,7 +387,8 @@ def get_shop_by_slug(client: Any, slug: str, viewer_id: str | None = None) -> di
             client, str(row["id"]), viewer_id, include_lead_counts=False, include_view_count=False
         )
     )
-    return _decorate_seller(client, out)
+    _decorate_seller(client, out)
+    return _gate_public_contacts(client, out, viewer_id)
 
 
 def shop_image_urls(client: Any, shop_id: str) -> list[str]:
@@ -401,12 +414,14 @@ def update_shop(client: Any, shop_id: str, data: ShopUpdate, viewer_id: str | No
     country = payload.pop("whatsapp_country", None)
     if "theme_config" in payload:
         payload["theme_config"] = _theme_config_for_db(data.theme_config)
+    if "contacts" in payload:
+        payload["contacts"] = _clean_contacts(payload["contacts"]) or []
     if "whatsapp_number" in payload:
         payload["whatsapp_number"] = _clean_whatsapp(payload["whatsapp_number"], country)
         current = client.table("shops").select("whatsapp_number").eq("id", shop_id).limit(1).execute()
         current_number = current.data[0].get("whatsapp_number") if current.data else None
         if payload["whatsapp_number"] != current_number:
-            # A different number must prove itself again: OTP or a fresh library check.
+            # A different number must prove itself again with a WhatsApp code.
             payload.update(
                 whatsapp_verified=False,
                 whatsapp_registered=None,

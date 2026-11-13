@@ -20,6 +20,7 @@ from admin.routes import users as admin_users
 from admin.routes import plans_admin as admin_plans
 from admin.routes import boost_grants as admin_boost_grants
 from admin.routes import audit as admin_audit
+from admin.routes import whatsapp as admin_whatsapp
 from media.routes import admin_router as admin_media
 from tenants.routes import verifications as verif_admin
 
@@ -49,3 +50,4 @@ router.include_router(admin_media, tags=["admin"])
 router.include_router(admin_users.router, prefix="", tags=["admin"])
 router.include_router(admin_plans.router, prefix="", tags=["admin"])
 router.include_router(admin_audit.router, prefix="", tags=["admin"])
+router.include_router(admin_whatsapp.router, prefix="", tags=["admin"])

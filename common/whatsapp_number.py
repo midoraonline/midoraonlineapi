@@ -61,3 +61,29 @@ def region_of(e164: str) -> str | None:
         return phonenumbers.region_code_for_number(phonenumbers.parse(e164, None))
     except NumberParseException:
         return None
+
+
+MAX_EXTRA_PHONES = 3
+
+
+def clean_shop_contacts(contacts: list[dict] | None) -> list[dict] | None:
+    """Extra shop phone numbers: E.164, at most 3, at most one marked WhatsApp (not code-verified)."""
+    if contacts is None:
+        return None
+    out: list[dict] = []
+    for item in contacts:
+        if not isinstance(item, dict):
+            continue
+        raw = str(item.get("value") or "").strip()
+        if not raw:
+            continue
+        kind = "whatsapp" if str(item.get("type") or "").strip().lower() == "whatsapp" else "phone"
+        label = str(item.get("label") or "").strip()[:40] or None
+        out.append({"type": kind, "label": label, "value": normalize_whatsapp(raw)})
+    if len(out) > MAX_EXTRA_PHONES:
+        raise WhatsAppNumberError(f"Add at most {MAX_EXTRA_PHONES} extra phone numbers.", "too_many_contacts")
+    if sum(c["type"] == "whatsapp" for c in out) > 1:
+        raise WhatsAppNumberError("Only one extra number can be marked as WhatsApp.", "too_many_contacts")
+    if len({c["value"] for c in out}) != len(out):
+        raise WhatsAppNumberError("Each extra phone number can only be added once.", "duplicate_contact")
+    return out

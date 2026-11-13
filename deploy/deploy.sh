@@ -14,6 +14,18 @@ rsync -az --delete \
   --exclude='deploy' --exclude='api.env' \
   -e ssh ./ "${HOST}:${REMOTE_DIR}/"
 
+# Server .env has production-only keys, so only WHATSAPP_* keys are merged in from api.env.
+WA_ENV="$(grep -E '^WHATSAPP_[A-Z_]+=' api.env || true)"
+if [[ -n "$WA_ENV" ]]; then
+  printf '%s\n' "$WA_ENV" | ssh "$HOST" "
+    set -e
+    cp ${REMOTE_DIR}/.env /root/midoraapi.env.bak
+    { grep -vE '^(WHATSAPP_[A-Z_]+|AFRICASTALKING_WHATSAPP_NUMBER)=' /root/midoraapi.env.bak || true; cat; } > /root/midoraapi.env.new
+    install -m 600 -o midora -g midora /root/midoraapi.env.new ${REMOTE_DIR}/.env
+    rm /root/midoraapi.env.new
+  "
+fi
+
 ssh "$HOST" "
   set -e
   chown -R midora:midora ${REMOTE_DIR}

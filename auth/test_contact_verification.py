@@ -311,6 +311,36 @@ def test_sms_failure_does_not_keep_the_code(codes, monkeypatch):
     assert codes.store == []
 
 
+def test_whatsapp_code_goes_through_cloud_api(codes, monkeypatch):
+    sent = []
+    monkeypatch.setattr("notifications.whatsapp_cloud.send_otp", lambda to, code: sent.append((to, code)) or "wamid.X")
+    send_verification_code(
+        user_id="user-1",
+        phone_number="+256700123456",
+        purpose="whatsapp",
+        channel="whatsapp",
+        target_type="shop",
+        target_id="shop-1",
+    )
+    assert sent and sent[0][0] == "+256700123456" and len(sent[0][1]) == 6
+    assert codes.store[0]["channel"] == "whatsapp"
+
+
+def test_whatsapp_failure_does_not_keep_the_code(codes, monkeypatch):
+    monkeypatch.setattr("notifications.whatsapp_cloud.send_otp", lambda *_a: None)
+    with pytest.raises(VerificationError) as exc:
+        send_verification_code(
+            user_id="user-1",
+            phone_number="+256700123456",
+            purpose="whatsapp",
+            channel="whatsapp",
+            target_type="shop",
+            target_id="shop-1",
+        )
+    assert exc.value.code == "whatsapp_unavailable"
+    assert codes.store == []
+
+
 def test_unverified_seller_is_blocked_from_posting(monkeypatch):
     from fastapi import HTTPException
 

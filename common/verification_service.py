@@ -1,4 +1,4 @@
-"""OTP codes for phone (SMS) and account email.
+"""OTP codes for phone (SMS), shop WhatsApp number (Cloud API) and account email.
 
 `verification_codes.phone_number` stores the contact being proved (E.164
 phone or email). Callers update users.phone_verified / email_verified after confirm.
@@ -7,14 +7,11 @@ phone or email). Callers update users.phone_verified / email_verified after conf
 from __future__ import annotations
 
 import hashlib
-import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from db.supabase import get_supabase_admin
-
-logger = logging.getLogger(__name__)
 
 CODE_TTL_MINUTES = 10
 RESEND_COOLDOWN_SECONDS = 60
@@ -30,6 +27,7 @@ _HTTP_STATUS = {
     "code_invalid": 400,
     "code_expired": 400,
     "sms_unavailable": 400,
+    "whatsapp_unavailable": 503,
     "email_unavailable": 400,
 }
 
@@ -154,7 +152,9 @@ def send_verification_code(
     target_type: str,
     target_id: str,
 ) -> None:
-    """Generate and deliver a code. SMS failures raise `sms_unavailable`."""
+    """Generate and deliver a code by SMS or WhatsApp. A failed send revokes the code and raises."""
+    if channel not in ("sms", "whatsapp"):
+        raise ValueError(f"unsupported channel: {channel}")
     code = issue_verification_code(
         user_id=user_id,
         contact=phone_number,
@@ -163,27 +163,20 @@ def send_verification_code(
         target_type=target_type,
         target_id=target_id,
     )
-    message = f"Your Midora verification code is {code}. It expires in {CODE_TTL_MINUTES} minutes."
-    from notifications.africastalking import send_sms
+    if channel == "whatsapp":
+        from notifications.whatsapp_cloud import send_otp
 
-    if channel == "sms":
-        sent = send_sms(phone_number, message)
+        sent = bool(send_otp(phone_number, code))
+        failure = ("WhatsApp messages are unavailable right now. Try again shortly.", "whatsapp_unavailable")
     else:
-        sent = True
-    if channel == "sms" and not sent:
-        revoke_latest_code(user_id=user_id, purpose=purpose, contact=phone_number)
-        raise VerificationError(
-            "Text messages are unavailable right now. Try again shortly.",
-            "sms_unavailable",
-        )
+        from notifications.africastalking import send_sms
+
+        message = f"Your Midora verification code is {code}. It expires in {CODE_TTL_MINUTES} minutes."
+        sent = send_sms(phone_number, message)
+        failure = ("Text messages are unavailable right now. Try again shortly.", "sms_unavailable")
     if not sent:
-        logger.warning(
-            "Verification code for target=%s/%s purpose=%s could not be delivered via %s",
-            target_type,
-            target_id,
-            purpose,
-            channel,
-        )
+        revoke_latest_code(user_id=user_id, purpose=purpose, contact=phone_number)
+        raise VerificationError(*failure)
 
 
 def confirm_verification_code(

@@ -89,11 +89,15 @@ class Settings(BaseSettings):
     africastalking_username: str = Field(default="", alias="AFRICASTALKING_USERNAME")
     africastalking_sender_id: str = Field(default="", alias="AFRICASTALKING_SENDER_ID")
 
-    # wa-checker worker (whatsapp-web.js "is this number on WhatsApp?"). Empty URL = disabled,
-    # shops then fall back to OTP verification.
-    wa_checker_url: str = Field(default="", alias="WA_CHECKER_URL")
-    wa_checker_token: str = Field(default="", alias="WA_CHECKER_TOKEN")
-    wa_checker_timeout_seconds: float = Field(default=25.0, alias="WA_CHECKER_TIMEOUT_SECONDS")
+    # WhatsApp Business Cloud API (Meta) — shop WhatsApp number OTP
+    whatsapp_api_url: str = Field(default="https://graph.facebook.com", alias="WHATSAPP_API_URL")
+    whatsapp_api_version: str = Field(default="v21.0", alias="WHATSAPP_API_VERSION")
+    whatsapp_api_token: str = Field(default="", alias="WHATSAPP_API_TOKEN")
+    whatsapp_phone_number_id: str = Field(default="", alias="WHATSAPP_PHONE_NUMBER_ID")
+    whatsapp_business_account_id: str = Field(default="", alias="WHATSAPP_MESSAGING_ACCOUNT_ID")
+    whatsapp_message_template: str = Field(default="", alias="WHATSAPP_MESSAGE_TEMPLATE")
+    whatsapp_template_language: str = Field(default="en_US", alias="WHATSAPP_TEMPLATE_LANGUAGE")
+    whatsapp_timeout_seconds: float = Field(default=10.0, alias="WHATSAPP_TIMEOUT_SECONDS")
 
     # App-auth JWT settings (for custom auth)
     app_jwt_secret: str = Field(default="CHANGE_ME_IN_PROD", alias="APP_JWT_SECRET")
