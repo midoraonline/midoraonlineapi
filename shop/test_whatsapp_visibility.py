@@ -42,6 +42,54 @@ def test_link_digits_has_no_plus():
 
 # ---- extra shop phone numbers ------------------------------------------------------------------
 
+def _run(shop_id, body):
+    import asyncio
+
+    return asyncio.run(whatsapp_routes.send_shop_whatsapp_code(shop_id, object(), None, body, "u"))
+
+
+def _send_code_env(monkeypatch, stored):
+    """Fake DB with a mutable stored number; returns (state, sent) for assertions."""
+    state = {"number": stored, "verified": False}
+    sent = []
+    monkeypatch.setattr(whatsapp_routes, "_owner_or_404", lambda *a: None)
+    monkeypatch.setattr(whatsapp_routes, "_stored_number", lambda sid: (state["number"], state["verified"]))
+    monkeypatch.setattr(
+        whatsapp_routes.tenants_service,
+        "update_shop",
+        lambda client, sid, data, viewer: state.update(number=data.whatsapp_number, verified=False),
+    )
+    monkeypatch.setattr(whatsapp_routes, "send_verification_code", lambda **kw: sent.append(kw["phone_number"]))
+    return state, sent
+
+
+def test_send_code_saves_the_edited_number_and_sends_to_it(monkeypatch):
+    state, sent = _send_code_env(monkeypatch, "+256700000001")
+    out = _run(
+        "s", whatsapp_routes.SendShopWhatsAppCodeRequest(whatsapp_number="0712345678")
+    )
+    assert state["number"] == "+256712345678"
+    assert sent == ["+256712345678"]
+    assert out["whatsapp_number"] == "+256712345678"
+
+
+def test_send_code_without_a_new_number_uses_the_saved_one(monkeypatch):
+    state, sent = _send_code_env(monkeypatch, "+256700000001")
+    _run("s", None)
+    assert sent == ["+256700000001"]
+
+
+def test_send_code_rejects_a_bad_number_without_saving(monkeypatch):
+    from fastapi import HTTPException
+
+    state, sent = _send_code_env(monkeypatch, "+256700000001")
+    with pytest.raises(HTTPException) as exc:
+        _run("s", whatsapp_routes.SendShopWhatsAppCodeRequest(whatsapp_number="12"))
+    assert exc.value.status_code == 400 and sent == [] and state["number"] == "+256700000001"
+
+
+# ---- extra shop phone numbers (contacts) ----------------------------------------------------------
+
 def test_extra_contacts_are_normalised_and_typed():
     from common.whatsapp_number import clean_shop_contacts
 

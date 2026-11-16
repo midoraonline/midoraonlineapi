@@ -12,18 +12,24 @@ from common.verification_service import (
     http_status_for,
     send_verification_code,
 )
+from common.whatsapp_number import WhatsAppNumberError, normalize_whatsapp
 from core.authz import ensure_shop_owner
 from core.rate_limit import RateLimitWhatsAppCode
 from core.security import get_current_user_id
 from db.supabase import get_supabase_admin, get_supabase_client
 from tenants import service as tenants_service
-from tenants.schemas import ShopResponse
+from tenants.schemas import ShopResponse, ShopUpdate
 
 router = APIRouter()
 
 
 class ConfirmShopWhatsAppCodeRequest(BaseModel):
     code: str = Field(..., min_length=4, max_length=8)
+
+
+class SendShopWhatsAppCodeRequest(BaseModel):
+    # The number currently in the form; saved first when it differs from the stored one.
+    whatsapp_number: str | None = Field(default=None, max_length=32)
 
 
 def _owner_or_404(client: Client, shop_id: str, user_id: str) -> None:
@@ -35,7 +41,7 @@ def _owner_or_404(client: Client, shop_id: str, user_id: str) -> None:
         raise HTTPException(status_code=403, detail=str(e))
 
 
-def _saved_number(shop_id: str) -> tuple[str, bool]:
+def _stored_number(shop_id: str) -> tuple[str, bool]:
     row = (
         get_supabase_admin()
         .table("shops")
@@ -46,13 +52,17 @@ def _saved_number(shop_id: str) -> tuple[str, bool]:
         .data
         or [{}]
     )[0]
-    number = (row.get("whatsapp_number") or "").strip()
+    return (row.get("whatsapp_number") or "").strip(), bool(row.get("whatsapp_verified"))
+
+
+def _saved_number(shop_id: str) -> tuple[str, bool]:
+    number, verified = _stored_number(shop_id)
     if not number:
         raise HTTPException(
             status_code=400,
             detail={"detail": "Add a WhatsApp number first.", "code": "whatsapp_required"},
         )
-    return number, bool(row.get("whatsapp_verified"))
+    return number, verified
 
 
 def _raise(exc: VerificationError) -> None:
@@ -67,13 +77,29 @@ async def send_shop_whatsapp_code(
     shop_id: str,
     client: Annotated[Client, Depends(get_supabase_client)],
     _: RateLimitWhatsAppCode,
+    body: SendShopWhatsAppCodeRequest | None = None,
     user_id: str = Depends(get_current_user_id),
 ):
-    """Send a code to the shop's saved WhatsApp number via the official Cloud API."""
+    """Send a code to the shop's WhatsApp number via the official Cloud API.
+
+    If the request carries a number that differs from the stored one, that number is saved first
+    (resetting verification) so the code always goes to the number the owner is looking at.
+    """
     _owner_or_404(client, shop_id, user_id)
+    draft = (body.whatsapp_number or "").strip() if body else ""
+    if draft:
+        try:
+            wanted = normalize_whatsapp(draft)
+        except WhatsAppNumberError as exc:
+            raise HTTPException(status_code=400, detail={"detail": str(exc), "code": exc.code}) from exc
+        stored, _verified = _stored_number(shop_id)
+        if wanted != stored:
+            await asyncio.to_thread(
+                tenants_service.update_shop, client, shop_id, ShopUpdate(whatsapp_number=wanted), user_id
+            )
     number, verified = _saved_number(shop_id)
     if verified:
-        return {"message": "Already verified", "verified": True}
+        return {"message": "Already verified", "verified": True, "whatsapp_number": number}
     try:
         await asyncio.to_thread(
             send_verification_code,
@@ -86,7 +112,7 @@ async def send_shop_whatsapp_code(
         )
     except VerificationError as exc:
         _raise(exc)
-    return {"message": "Verification code sent on WhatsApp", "verified": False}
+    return {"message": "Verification code sent on WhatsApp", "verified": False, "whatsapp_number": number}
 
 
 @router.post("/{shop_id}/whatsapp/verify", response_model=ShopResponse)
